@@ -1,0 +1,38 @@
+# Nix / direnv
+.direnv/
+result
+result-*
+
+# Elixir / Mix
+_build/
+deps/
+.fetch
+*.ez
+
+# Erlang
+*.beam
+erl_crash.dump
+
+# Generated files
+cover/
+doc/
+
+# Phoenix (if applicable)
+/priv/static/assets/
+node_modules/
+
+# Environment
+.env
+.env.*
+!.envrc
+
+# Editor
+*.swp
+*~
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
