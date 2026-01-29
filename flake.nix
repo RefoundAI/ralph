@@ -1,11 +1,12 @@
 {
-  description = "Elixir development environment";
+  description = "Ralph - autonomous agent loop harness";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, rust-overlay }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -13,13 +14,17 @@
     {
       devShells = forAllSystems (system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ rust-overlay.overlays.default ];
+          };
         in
         {
           default = pkgs.mkShell {
             packages = with pkgs; [
-              elixir_1_19
-              erlang_27
+              (rust-bin.stable.latest.default.override {
+                extensions = [ "rust-src" "rust-analyzer" ];
+              })
             ];
           };
         });

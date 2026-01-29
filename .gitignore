@@ -3,23 +3,8 @@
 result
 result-*
 
-# Elixir / Mix
-_build/
-deps/
-.fetch
-*.ez
-
-# Erlang
-*.beam
-erl_crash.dump
-
-# Generated files
-cover/
-doc/
-
-# Phoenix (if applicable)
-/priv/static/assets/
-node_modules/
+# Rust
+/target/
 
 # Environment
 .env

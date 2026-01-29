@@ -1,0 +1,60 @@
+;; Sandbox profile for ralph - restricts filesystem writes and IPC  -*- mode: lisp-data; -*-
+;;
+;; Usage: sandbox-exec -f sandbox.sb -D PROJECT_DIR="$PWD" -D HOME="$HOME" \
+;;                     -D ROOT_GIT_DIR="..." ralph ...
+;;
+;; Allows writes only to:
+;;   - The project directory tree (resolved paths, so symlinks can't escape)
+;;   - Temp directories (/tmp, /private/tmp, /var/folders)
+;;   - Claude state directory (~/.config/claude)
+;;   - Alternative state directory (~/.local/state)
+;;   - Root git directory (for worktree support)
+;;
+;; Also blocks:
+;;   - System Events (prevents UI automation, keystrokes, clicking)
+;;
+;; Reads and network are unrestricted.
+
+(version 1)
+(allow default)
+
+;; Block System Events to prevent UI automation (keystrokes, clicks, etc.)
+;; This still allows other Apple Events (e.g., `open` command works)
+(deny mach-lookup (global-name "com.apple.systemevents"))
+
+;; Deny all file writes, then whitelist specific paths
+(deny file-write*)
+
+;; Allow writes to /dev/null (commonly used for discarding output)
+(allow file-write* (literal "/dev/null"))
+
+;; Allow writes to the project directory (passed via -D PROJECT_DIR=...)
+;; sandbox-exec resolves symlinks before matching, so writes through symlinks
+;; that resolve outside this tree will be denied
+(allow file-write* (subpath (param "PROJECT_DIR")))
+
+;; Allow writes to temp directories (needed by nix, claude, various tools)
+(allow file-write* (subpath "/tmp"))
+(allow file-write* (subpath "/private/tmp"))
+(allow file-write* (regex #"^/private/var/folders/"))
+(allow file-write* (regex #"^/var/folders/"))
+
+;; Allow writes to claude state directories
+;; Needed for: todos, session state, logs, IDE integration
+(allow file-write* (subpath (string-append (param "HOME") "/.claude")))
+(allow file-write* (subpath (string-append (param "HOME") "/.config/claude")))
+
+;; Claude also writes to ~/.claude.json directly in home
+(allow file-write* (literal (string-append (param "HOME") "/.claude.json")))
+(allow file-write* (literal (string-append (param "HOME") "/.claude.json.backup")))
+
+;; Allow writes to cache directory
+(allow file-write* (subpath (string-append (param "HOME") "/.cache")))
+
+;; Allow writes to alternative state directory (used by various tools)
+(allow file-write* (subpath (string-append (param "HOME") "/.local/state")))
+
+;; Allow writes to root worktree's .git directory
+;; When in a git worktree, commits need to write to the main repo's .git dir
+;; ROOT_GIT_DIR should be passed via -D ROOT_GIT_DIR=... (empty if not in worktree)
+(allow file-write* (subpath (param "ROOT_GIT_DIR")))

@@ -1,0 +1,19 @@
+[package]
+name = "ralph"
+version = "0.1.0"
+edition = "2021"
+description = "Autonomous agent loop harness for Claude Code"
+license = "MIT"
+authors = ["Ralph Contributors"]
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+colored = "2"
+chrono = "0.4"
+
+[profile.release]
+strip = true
+lto = true
