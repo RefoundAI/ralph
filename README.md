@@ -104,6 +104,10 @@ cargo build
 cargo test
 ```
 
+## Acknowledgements
+
+Heavily inspired by [Chris Barrett's](https://github.com/chrisbarrett) shell-based ralph harness.
+
 ## License
 
 MIT
