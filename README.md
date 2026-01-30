@@ -53,8 +53,8 @@ ralph task.md            # Use custom prompt file
 
 By default, Ralph wraps Claude in `sandbox-exec` to restrict filesystem writes:
 
-- Allowed: project directory, `/tmp`, `~/.config/claude`, `~/.cache`, git
-  worktree root
+- Allowed: project directory, temp dirs, `~/.claude`, `~/.config/claude`,
+  `~/.cache`, `~/.local/state`, and git worktree root
 - Blocked: everything else, plus `com.apple.systemevents` (prevents UI
   automation)
 

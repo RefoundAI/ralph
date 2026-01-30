@@ -31,7 +31,7 @@ macOS `sandbox-exec` integration for filesystem write restrictions:
 - **profile.rs**: Generates sandbox.sb profiles dynamically
 - **rules.rs**: Defines allow rules (e.g., `--allow=aws` grants `~/.aws` write access)
 
-The sandbox denies all writes except: project directory, temp dirs, Claude state (`~/.config/claude`), and git worktree roots. Also blocks `com.apple.systemevents` to prevent UI automation.
+The sandbox denies all writes except: project directory, temp dirs, Claude state (`~/.claude`, `~/.config/claude`), `~/.cache`, `~/.local/state`, and git worktree roots. Also blocks `com.apple.systemevents` to prevent UI automation.
 
 ### Completion Detection
 Claude's final output is scanned for sigils:
