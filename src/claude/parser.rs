@@ -17,6 +17,7 @@ pub fn parse_line(line: &str) -> Result<Option<Event>> {
 fn parse_event(raw: RawEvent) -> Event {
     match raw.event_type.as_deref() {
         Some("assistant") => {
+            let model = raw.message.as_ref().and_then(|m| m.model.clone());
             let content = raw
                 .message
                 .and_then(|m| m.content)
@@ -24,7 +25,7 @@ fn parse_event(raw: RawEvent) -> Event {
                 .into_iter()
                 .map(parse_content_block)
                 .collect();
-            Event::Assistant(Assistant { content })
+            Event::Assistant(Assistant { model, content })
         }
         Some("user") => {
             let tool_results: Vec<ToolResult> = raw

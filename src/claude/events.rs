@@ -19,6 +19,7 @@ pub enum Event {
 /// Assistant message with content blocks.
 #[derive(Debug)]
 pub struct Assistant {
+    pub model: Option<String>,
     pub content: Vec<ContentBlock>,
 }
 
@@ -78,6 +79,7 @@ pub(crate) struct RawEvent {
 
 #[derive(Deserialize)]
 pub(crate) struct RawMessage {
+    pub model: Option<String>,
     pub content: Option<Vec<RawContentBlock>>,
 }
 
