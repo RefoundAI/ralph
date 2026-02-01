@@ -28,5 +28,18 @@
             ];
           };
         });
+
+      packages = forAllSystems (system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
+          default = pkgs.rustPlatform.buildRustPackage {
+            pname = "ralph";
+            version = "0.1.0";
+            src = self;
+            cargoLock.lockFile = ./Cargo.lock;
+          };
+        });
     };
 }
