@@ -18,6 +18,12 @@ pub struct ToolCallInfo {
 pub fn format_event(event: &Event, tool_calls: &mut HashMap<String, ToolCallInfo>) {
     match event {
         Event::Assistant(assistant) => {
+            let has_text = assistant.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
+            if has_text {
+                if let Some(model) = &assistant.model {
+                    println!("{}", format!("→ {}", model).purple());
+                }
+            }
             for block in &assistant.content {
                 format_content_block(block, tool_calls);
             }
@@ -37,9 +43,12 @@ pub fn format_event(event: &Event, tool_calls: &mut HashMap<String, ToolCallInfo
                     }
                 }
 
-                // Show first 5 lines of error
+                // Show first 5 lines of error, stripping XML tags
                 for line in error.content.lines().take(5) {
-                    println!("{}", line.red());
+                    let clean = strip_xml_tags(line);
+                    if !clean.is_empty() {
+                        println!("  {}", clean.red());
+                    }
                 }
             }
         }
@@ -57,10 +66,17 @@ pub fn format_event(event: &Event, tool_calls: &mut HashMap<String, ToolCallInfo
 fn format_content_block(block: &ContentBlock, tool_calls: &mut HashMap<String, ToolCallInfo>) {
     match block {
         ContentBlock::Text { text } => {
-            println!("{}", text);
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                for line in trimmed.lines() {
+                    println!("{}", line.bright_white());
+                }
+            }
         }
         ContentBlock::Thinking { thinking } => {
-            println!("{}", thinking.dimmed());
+            for line in thinking.lines() {
+                println!("{} {}", "┊".black(), line.black());
+            }
         }
         ContentBlock::ToolUse { id, name, input } => {
             println!(
@@ -78,6 +94,20 @@ fn format_content_block(block: &ContentBlock, tool_calls: &mut HashMap<String, T
         }
         ContentBlock::Unknown => {}
     }
+}
+
+fn strip_xml_tags(s: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(c),
+            _ => {}
+        }
+    }
+    result.trim().to_string()
 }
 
 fn format_input(input: &HashMap<String, serde_json::Value>) -> String {
