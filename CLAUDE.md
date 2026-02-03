@@ -62,3 +62,27 @@ Environment variables: `RALPH_FILE`, `RALPH_LIMIT`, `RALPH_PROGRESS_FILE`, etc.
 ```bash
 nix develop  # Enters shell with Rust toolchain via rust-overlay
 ```
+
+## Releases
+
+Uses `cargo-dist` v0.30.3. Config lives in `dist-workspace.toml` (not Cargo.toml).
+
+### Key Files
+- `dist-workspace.toml` - cargo-dist configuration (targets, installers, CI settings)
+- `.github/workflows/release.yml` - Generated CI workflow, triggers on `v*` tags
+
+### Commands
+
+```bash
+dist plan                # Preview what will be built
+dist build               # Build for current platform locally
+dist generate            # Regenerate CI workflow after config changes
+```
+
+### Cutting a Release
+1. Bump version in `Cargo.toml`
+2. Commit, tag `vX.Y.Z`, push tag
+3. CI builds tarballs (.tar.xz), installer script, checksums, and source archive
+
+### Targets
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`

@@ -13,11 +13,24 @@ Claude to restrict filesystem writes to the project directory.
 
 ## Installation
 
+### Pre-built Binaries
+
+Install the latest release with the shell installer (macOS/Linux):
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Studio-Sasquatch/ralph/releases/latest/download/ralph-installer.sh | sh
+```
+
+Pre-built binaries for all platforms are also available on the
+[GitHub releases page][releases].
+
+### From Source
+
 ```bash
 cargo install --path .
 ```
 
-Or build from source:
+Or build manually:
 
 ```bash
 cargo build --release
@@ -104,6 +117,13 @@ cargo build
 cargo test
 ```
 
+### Releases
+
+Releases are built by [cargo-dist][cargo-dist] and published via GitHub Actions
+when a `v*` tag is pushed. To cut a release: bump the version in `Cargo.toml`,
+commit, tag `vX.Y.Z`, and push the tag. The CI produces platform tarballs,
+an installer script, and checksums.
+
 ## Acknowledgements
 
 Heavily inspired by [Chris Barrett's](https://github.com/chrisbarrett) shell-based ralph harness.
@@ -113,3 +133,5 @@ Heavily inspired by [Chris Barrett's](https://github.com/chrisbarrett) shell-bas
 MIT
 
 [claude-code]: https://claude.ai/code
+[releases]: https://github.com/Studio-Sasquatch/ralph/releases
+[cargo-dist]: https://opensource.axo.dev/cargo-dist/

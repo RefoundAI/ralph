@@ -5,6 +5,7 @@ edition = "2021"
 description = "Autonomous agent loop harness for Claude Code"
 license = "MIT"
 authors = ["Ralph Contributors"]
+repository = "https://github.com/Studio-Sasquatch/ralph"
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
@@ -17,3 +18,8 @@ chrono = "0.4"
 [profile.release]
 strip = true
 lto = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
