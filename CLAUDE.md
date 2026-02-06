@@ -22,8 +22,8 @@ Ralph is an autonomous agent loop harness that iteratively invokes Claude Code u
 The main loop is simple: spawn Claude, stream output, check for sigils, repeat or exit. No async runtime - uses synchronous `std::process` with `BufReader::lines()` for streaming.
 
 ### Claude Integration (`src/claude/`)
-- **client.rs**: Spawns `claude` CLI with `--output-format stream-json`, handles both direct and sandboxed execution
-- **events.rs**: Typed event structs for NDJSON parsing (Assistant, ToolResult, Result)
+- **client.rs**: Spawns `claude` CLI with `--output-format stream-json` and `--model <model>`, handles both direct and sandboxed execution. Also builds the system prompt including `<next-model>` sigil docs.
+- **events.rs**: Typed event structs for NDJSON parsing (Assistant, ToolResult, Result). Parses `<next-model>` hints from result text.
 - **parser.rs**: Deserializes raw JSON into typed events
 
 ### Sandbox (`src/sandbox/`)
@@ -33,10 +33,20 @@ macOS `sandbox-exec` integration for filesystem write restrictions:
 
 The sandbox denies all writes except: project directory, temp dirs, Claude state (`~/.claude`, `~/.config/claude`), `~/.cache`, `~/.local/state`, and git worktree roots. Also blocks `com.apple.systemevents` to prevent UI automation.
 
+### Model Strategy (`src/strategy.rs`)
+Selects which Claude model to use each iteration based on `--model-strategy`:
+- **Fixed**: Always returns the `--model` value
+- **CostOptimized** (default): Reads progress file for signals — errors/failures → `opus`, steady completions → `haiku`, uncertain → `sonnet`
+- **Escalate**: Starts at `haiku`, escalates to `sonnet`/`opus` on failure signals. Monotonic — only de-escalates via Claude hint.
+- **PlanThenExecute**: `opus` for iteration 1, `sonnet` for all subsequent iterations
+
+Claude can override any strategy for the next iteration via `<next-model>opus|sonnet|haiku</next-model>`. Overrides are logged to the progress file.
+
 ### Completion Detection
 Claude's final output is scanned for sigils:
 - `<promise>COMPLETE</promise>` - All tasks done, exit 0
 - `<promise>FAILURE</promise>` - Critical failure, exit 1
+- `<next-model>MODEL</next-model>` - Hint for next iteration's model
 
 ### Key Files
 - `prompt` (default) - Task description file read by Claude each iteration
@@ -49,13 +59,15 @@ Claude's final output is scanned for sigils:
 ralph [PROMPT_FILE]       # Default: "prompt"
   --once                  # Single iteration
   --limit=N               # Max iterations (0=unlimited)
+  --model=MODEL           # opus, sonnet, haiku (implies fixed strategy)
+  --model-strategy=STRAT  # fixed, cost-optimized, escalate, plan-then-execute
   --no-sandbox            # Disable macOS sandbox
   --allow=RULE            # Enable sandbox rule (e.g., aws)
   --progress-file=PATH    # Default: "progress.txt"
   --specs-dir=PATH        # Default: "specs"
 ```
 
-Environment variables: `RALPH_FILE`, `RALPH_LIMIT`, `RALPH_PROGRESS_FILE`, etc.
+Environment variables: `RALPH_FILE`, `RALPH_LIMIT`, `RALPH_PROGRESS_FILE`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, etc.
 
 ## Nix Development
 

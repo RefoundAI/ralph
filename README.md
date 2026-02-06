@@ -44,6 +44,8 @@ ralph                    # Loop until complete (reads "prompt" file)
 ralph --once             # Single iteration for testing
 ralph --limit=5          # Max 5 iterations
 ralph task.md            # Use custom prompt file
+ralph --model=haiku      # Use haiku for every iteration (fixed strategy)
+ralph --model-strategy=escalate  # Start cheap, escalate on errors
 ```
 
 ### How It Works
@@ -61,6 +63,47 @@ ralph task.md            # Use custom prompt file
 - **prompt** (or custom file) — describes tasks for Claude to complete
 - **progress.txt** — tracks completed work across iterations
 - **specs/** — if empty, triggers interactive spec generation mode
+
+## Model Strategy
+
+Ralph can swap between Claude models (`opus`, `sonnet`, `haiku`) across loop
+iterations to optimize cost and capability. Use `--model-strategy` to select a
+strategy, or `--model` to pin a specific model.
+
+```bash
+ralph --model=opus                        # Always use opus (fixed)
+ralph --model-strategy=cost-optimized     # Default: pick model by progress signals
+ralph --model-strategy=escalate           # Start at haiku, escalate on errors
+ralph --model-strategy=plan-then-execute  # Opus for iteration 1, sonnet after
+```
+
+### Strategies
+
+- **`cost-optimized`** (default) — Reads the progress file each iteration and
+  picks the cheapest model likely to succeed. Defaults to `sonnet`; escalates to
+  `opus` on error/failure signals; drops to `haiku` when tasks are completing
+  cleanly.
+- **`fixed`** — Always uses the model from `--model`. No swapping.
+- **`escalate`** — Starts at `haiku`. On failure signals (errors, stuck, panics),
+  escalates to `sonnet` then `opus`. Never auto-de-escalates; only a Claude hint
+  can step back down.
+- **`plan-then-execute`** — Uses `opus` for the first iteration (planning), then
+  `sonnet` for all subsequent iterations (execution).
+
+### Claude Model Hints
+
+Claude can override the strategy for the next iteration by emitting a
+`<next-model>` sigil in its output:
+
+```
+<next-model>opus</next-model>
+<next-model>sonnet</next-model>
+<next-model>haiku</next-model>
+```
+
+Hints always override the strategy's choice, apply to the next iteration only,
+and are optional. When a hint disagrees with the strategy, the override is logged
+to the progress file.
 
 ## Sandbox Mode (macOS)
 
@@ -87,6 +130,10 @@ Arguments:
 Options:
   -o, --once              Run exactly once
       --limit <N>         Maximum iterations (0 = unlimited)
+      --model <MODEL>     Model: opus, sonnet, haiku (implies --model-strategy=fixed)
+      --model-strategy <STRATEGY>
+                          Strategy: fixed, cost-optimized, escalate, plan-then-execute
+                          [default: cost-optimized]
       --no-sandbox        Disable macOS sandbox
       --progress-file     Progress file path [default: progress.txt]
       --specs-dir         Specs directory path [default: specs]
@@ -98,14 +145,16 @@ Options:
 
 ### Environment Variables
 
-| Variable              | Description                    |
-| :-------------------- | :----------------------------- |
-| `RALPH_FILE`          | Default prompt file            |
-| `RALPH_PROGRESS_FILE` | Default progress file          |
-| `RALPH_SPECS_DIR`     | Default specs directory        |
-| `RALPH_LIMIT`         | Default iteration limit        |
-| `RALPH_ITERATION`     | Current iteration (for resume) |
-| `RALPH_TOTAL`         | Total iterations (for display) |
+| Variable               | Description                    |
+| :--------------------- | :----------------------------- |
+| `RALPH_FILE`           | Default prompt file            |
+| `RALPH_PROGRESS_FILE`  | Default progress file          |
+| `RALPH_SPECS_DIR`      | Default specs directory        |
+| `RALPH_LIMIT`          | Default iteration limit        |
+| `RALPH_ITERATION`      | Current iteration (for resume) |
+| `RALPH_TOTAL`          | Total iterations (for display) |
+| `RALPH_MODEL`          | Default model (opus/sonnet/haiku) |
+| `RALPH_MODEL_STRATEGY` | Default model strategy         |
 
 ## Development
 
