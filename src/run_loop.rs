@@ -72,9 +72,19 @@ pub fn run(mut config: Config) -> Result<Outcome> {
 
         // Select model for the next iteration based on strategy,
         // passing Claude's hint (if any) from the previous result
-        let selected_model =
+        let selection =
             strategy::select_model(&mut config, next_model_hint.as_deref());
-        config.current_model = selected_model;
+
+        // Log override events when hint disagrees with strategy
+        if selection.was_overridden {
+            strategy::log_model_override(
+                &config.progress_file,
+                config.iteration,
+                &selection,
+            );
+        }
+
+        config.current_model = selection.model;
 
         formatter::print_iteration_info(&config);
     }

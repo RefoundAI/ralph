@@ -7,15 +7,36 @@ use std::fs;
 
 use crate::config::{Config, ModelStrategy};
 
+/// Result of model selection, including override information for logging.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelSelection {
+    /// The model that will actually be used.
+    pub model: String,
+    /// The model the strategy would have chosen (before hint override).
+    pub strategy_choice: String,
+    /// The hint from Claude, if any.
+    pub hint: Option<String>,
+    /// True when the hint overrode the strategy's choice (hint != strategy_choice).
+    pub was_overridden: bool,
+}
+
 /// Select the model for the current iteration based on the active strategy.
 ///
-/// Returns the model name to use (e.g. "opus", "sonnet", "haiku").
+/// Returns a `ModelSelection` containing the chosen model and override info.
 /// The `next_model_hint` parameter allows Claude to override the strategy's
-/// choice via the `<next-model>` sigil (wired in a later task).
+/// choice via the `<next-model>` sigil.
 ///
 /// For the `Escalate` strategy, this mutates `config.escalation_level` to
 /// track upward movement through the model tiers.
-pub fn select_model(config: &mut Config, next_model_hint: Option<&str>) -> String {
+pub fn select_model(config: &mut Config, next_model_hint: Option<&str>) -> ModelSelection {
+    // First, compute what the strategy would choose (without hint).
+    let strategy_choice = match config.model_strategy {
+        ModelStrategy::Fixed => select_fixed(config),
+        ModelStrategy::CostOptimized => select_cost_optimized(config),
+        ModelStrategy::Escalate => select_escalate(config),
+        ModelStrategy::PlanThenExecute => select_plan_then_execute(config),
+    };
+
     // Claude hint always wins if provided.
     // For escalate strategy, a hint can also de-escalate the level.
     if let Some(hint) = next_model_hint {
@@ -23,14 +44,48 @@ pub fn select_model(config: &mut Config, next_model_hint: Option<&str>) -> Strin
             let hint_level = model_to_level(hint);
             config.escalation_level = hint_level;
         }
-        return hint.to_string();
+        let was_overridden = hint != strategy_choice;
+        return ModelSelection {
+            model: hint.to_string(),
+            strategy_choice,
+            hint: Some(hint.to_string()),
+            was_overridden,
+        };
     }
 
-    match config.model_strategy {
-        ModelStrategy::Fixed => select_fixed(config),
-        ModelStrategy::CostOptimized => select_cost_optimized(config),
-        ModelStrategy::Escalate => select_escalate(config),
-        ModelStrategy::PlanThenExecute => select_plan_then_execute(config),
+    ModelSelection {
+        model: strategy_choice.clone(),
+        strategy_choice,
+        hint: None,
+        was_overridden: false,
+    }
+}
+
+/// Log a model override event to the progress file.
+///
+/// Called when Claude's hint disagrees with the strategy's choice.
+/// Appends a line to the progress file documenting the override.
+pub fn log_model_override(
+    progress_file: &str,
+    iteration: u32,
+    selection: &ModelSelection,
+) {
+    use std::fs::OpenOptions;
+    use std::io::Write;
+
+    let line = format!(
+        "[model-override] iteration={} strategy_choice={} hint={}\n",
+        iteration,
+        selection.strategy_choice,
+        selection.hint.as_deref().unwrap_or("none"),
+    );
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(progress_file)
+    {
+        let _ = file.write_all(line.as_bytes());
     }
 }
 
@@ -213,19 +268,19 @@ mod tests {
     #[test]
     fn fixed_strategy_returns_configured_model() {
         let mut config = fixed_config("opus");
-        assert_eq!(select_model(&mut config, None), "opus");
+        assert_eq!(select_model(&mut config, None).model, "opus");
     }
 
     #[test]
     fn fixed_strategy_returns_haiku_when_configured() {
         let mut config = fixed_config("haiku");
-        assert_eq!(select_model(&mut config, None), "haiku");
+        assert_eq!(select_model(&mut config, None).model, "haiku");
     }
 
     #[test]
     fn fixed_strategy_returns_sonnet_when_configured() {
         let mut config = fixed_config("sonnet");
-        assert_eq!(select_model(&mut config, None), "sonnet");
+        assert_eq!(select_model(&mut config, None).model, "sonnet");
     }
 
     #[test]
@@ -233,7 +288,7 @@ mod tests {
         let mut config = fixed_config("opus");
         for i in 1..=10 {
             assert_eq!(
-                select_model(&mut config, None),
+                select_model(&mut config, None).model,
                 "opus",
                 "iteration {} should still return opus",
                 i
@@ -251,13 +306,17 @@ mod tests {
             cfg = cfg.next_iteration();
         }
         assert_eq!(cfg.iteration, 50);
-        assert_eq!(select_model(&mut cfg, None), "haiku");
+        assert_eq!(select_model(&mut cfg, None).model, "haiku");
     }
 
     #[test]
     fn hint_overrides_fixed_strategy() {
         let mut config = fixed_config("haiku");
-        assert_eq!(select_model(&mut config, Some("opus")), "opus");
+        let selection = select_model(&mut config, Some("opus"));
+        assert_eq!(selection.model, "opus");
+        assert!(selection.was_overridden);
+        assert_eq!(selection.strategy_choice, "haiku");
+        assert_eq!(selection.hint, Some("opus".to_string()));
     }
 
     // --- cost-optimized strategy tests (analyze_progress heuristic) ---
@@ -342,7 +401,7 @@ mod tests {
             model: None,
         };
         let mut config = Config::from_args(args).unwrap();
-        assert_eq!(select_model(&mut config, Some("haiku")), "haiku");
+        assert_eq!(select_model(&mut config, Some("haiku")).model, "haiku");
     }
 
     // --- escalate strategy tests ---
@@ -429,8 +488,8 @@ mod tests {
         config.escalation_level = 2; // at opus level
 
         // Hint to haiku should de-escalate
-        let model = select_model(&mut config, Some("haiku"));
-        assert_eq!(model, "haiku");
+        let selection = select_model(&mut config, Some("haiku"));
+        assert_eq!(selection.model, "haiku");
         assert_eq!(config.escalation_level, 0); // level reset to haiku
     }
 
@@ -440,8 +499,8 @@ mod tests {
         assert_eq!(config.escalation_level, 0); // starts at haiku
 
         // Hint to opus should escalate
-        let model = select_model(&mut config, Some("opus"));
-        assert_eq!(model, "opus");
+        let selection = select_model(&mut config, Some("opus"));
+        assert_eq!(selection.model, "opus");
         assert_eq!(config.escalation_level, 2); // level moved to opus
     }
 
@@ -493,7 +552,7 @@ mod tests {
     fn plan_then_execute_iteration_1_returns_opus() {
         let mut config = plan_then_execute_config();
         assert_eq!(config.iteration, 1);
-        assert_eq!(select_model(&mut config, None), "opus");
+        assert_eq!(select_model(&mut config, None).model, "opus");
     }
 
     #[test]
@@ -501,7 +560,7 @@ mod tests {
         let mut config = plan_then_execute_config();
         config = config.next_iteration(); // iteration 2
         assert_eq!(config.iteration, 2);
-        assert_eq!(select_model(&mut config, None), "sonnet");
+        assert_eq!(select_model(&mut config, None).model, "sonnet");
     }
 
     #[test]
@@ -511,7 +570,7 @@ mod tests {
             config = config.next_iteration();
         }
         assert_eq!(config.iteration, 5);
-        assert_eq!(select_model(&mut config, None), "sonnet");
+        assert_eq!(select_model(&mut config, None).model, "sonnet");
     }
 
     #[test]
@@ -519,7 +578,7 @@ mod tests {
         let mut config = plan_then_execute_config();
         config = config.next_iteration(); // iteration 2
         // Hint to haiku for simple cleanup
-        assert_eq!(select_model(&mut config, Some("haiku")), "haiku");
+        assert_eq!(select_model(&mut config, Some("haiku")).model, "haiku");
     }
 
     #[test]
@@ -528,7 +587,7 @@ mod tests {
         config = config.next_iteration(); // iteration 2
         config = config.next_iteration(); // iteration 3
         // Hint to opus for a hard sub-task
-        assert_eq!(select_model(&mut config, Some("opus")), "opus");
+        assert_eq!(select_model(&mut config, Some("opus")).model, "opus");
     }
 
     #[test]
@@ -536,7 +595,7 @@ mod tests {
         let mut config = plan_then_execute_config();
         assert_eq!(config.iteration, 1);
         // Even on iteration 1, hint can override to a different model
-        assert_eq!(select_model(&mut config, Some("haiku")), "haiku");
+        assert_eq!(select_model(&mut config, Some("haiku")).model, "haiku");
     }
 
     #[test]
@@ -566,5 +625,142 @@ mod tests {
         };
         assert_eq!(config_iter10.iteration, 10);
         assert_eq!(select_plan_then_execute(&config_iter10), "sonnet");
+    }
+
+    // --- override detection and logging tests (R9) ---
+
+    #[test]
+    fn no_hint_means_no_override() {
+        let mut config = fixed_config("opus");
+        let selection = select_model(&mut config, None);
+        assert!(!selection.was_overridden);
+        assert_eq!(selection.hint, None);
+        assert_eq!(selection.strategy_choice, "opus");
+        assert_eq!(selection.model, "opus");
+    }
+
+    #[test]
+    fn hint_matching_strategy_is_not_override() {
+        let mut config = fixed_config("opus");
+        let selection = select_model(&mut config, Some("opus"));
+        assert!(!selection.was_overridden);
+        assert_eq!(selection.hint, Some("opus".to_string()));
+        assert_eq!(selection.strategy_choice, "opus");
+        assert_eq!(selection.model, "opus");
+    }
+
+    #[test]
+    fn hint_differing_from_strategy_is_override() {
+        let mut config = fixed_config("haiku");
+        let selection = select_model(&mut config, Some("opus"));
+        assert!(selection.was_overridden);
+        assert_eq!(selection.strategy_choice, "haiku");
+        assert_eq!(selection.hint, Some("opus".to_string()));
+        assert_eq!(selection.model, "opus");
+    }
+
+    /// Helper to create a unique temp file path for testing.
+    fn temp_progress_file(suffix: &str) -> String {
+        let path = std::env::temp_dir()
+            .join(format!("ralph_test_override_{}", suffix));
+        // Clean up any leftover from previous test runs
+        let _ = std::fs::remove_file(&path);
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn override_logged_to_progress_file() {
+        let progress_str = temp_progress_file("log_basic");
+
+        let selection = ModelSelection {
+            model: "opus".to_string(),
+            strategy_choice: "sonnet".to_string(),
+            hint: Some("opus".to_string()),
+            was_overridden: true,
+        };
+
+        log_model_override(&progress_str, 3, &selection);
+
+        let content = std::fs::read_to_string(&progress_str).unwrap();
+        assert!(content.contains("[model-override]"));
+        assert!(content.contains("iteration=3"));
+        assert!(content.contains("strategy_choice=sonnet"));
+        assert!(content.contains("hint=opus"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&progress_str);
+    }
+
+    #[test]
+    fn no_override_means_no_log_entry() {
+        let progress_str = temp_progress_file("no_log");
+
+        let mut config = fixed_config("opus");
+        let selection = select_model(&mut config, None);
+
+        // Should not be overridden, so we don't log
+        assert!(!selection.was_overridden);
+        // The caller (run_loop) only calls log_model_override when was_overridden is true
+        // Verify file doesn't exist (nothing was written)
+        assert!(!std::path::Path::new(&progress_str).exists());
+    }
+
+    #[test]
+    fn override_appends_to_existing_progress_file() {
+        let progress_str = temp_progress_file("append");
+
+        // Write existing content
+        std::fs::write(&progress_str, "[R1] DONE — stuff\n").unwrap();
+
+        let selection = ModelSelection {
+            model: "haiku".to_string(),
+            strategy_choice: "sonnet".to_string(),
+            hint: Some("haiku".to_string()),
+            was_overridden: true,
+        };
+
+        log_model_override(&progress_str, 5, &selection);
+
+        let content = std::fs::read_to_string(&progress_str).unwrap();
+        assert!(content.starts_with("[R1] DONE"));
+        assert!(content.contains("[model-override]"));
+        assert!(content.contains("iteration=5"));
+        assert!(content.contains("hint=haiku"));
+
+        // Cleanup
+        let _ = std::fs::remove_file(&progress_str);
+    }
+
+    #[test]
+    fn plan_then_execute_override_detected_on_iteration_2() {
+        // Plan-then-execute would choose sonnet at iteration 2,
+        // but hint overrides to opus — should be detected as override
+        let mut config = plan_then_execute_config();
+        config = config.next_iteration(); // iteration 2
+        let selection = select_model(&mut config, Some("opus"));
+        assert!(selection.was_overridden);
+        assert_eq!(selection.strategy_choice, "sonnet");
+        assert_eq!(selection.model, "opus");
+    }
+
+    #[test]
+    fn plan_then_execute_no_override_when_hint_matches() {
+        // Plan-then-execute chooses opus at iteration 1,
+        // hint also says opus — no override
+        let mut config = plan_then_execute_config();
+        let selection = select_model(&mut config, Some("opus"));
+        assert!(!selection.was_overridden);
+        assert_eq!(selection.strategy_choice, "opus");
+        assert_eq!(selection.model, "opus");
+    }
+
+    #[test]
+    fn escalate_override_detected_when_hint_differs() {
+        let mut config = escalate_config();
+        // Escalate starts at haiku (level 0), hint overrides to opus
+        let selection = select_model(&mut config, Some("opus"));
+        assert!(selection.was_overridden);
+        assert_eq!(selection.strategy_choice, "haiku");
+        assert_eq!(selection.model, "opus");
     }
 }
