@@ -231,7 +231,22 @@ Use this when:
 - The prompt contains contradictory or impossible requirements
 - You are stuck in a loop making no progress after multiple attempts
 
-Document the reason for failure in {} before outputting the sigil."#,
+Document the reason for failure in {} before outputting the sigil.
+
+## Model Hint
+
+You can influence which model Ralph selects for the NEXT iteration by emitting a
+model hint sigil anywhere in your output:
+
+- `<next-model>opus</next-model>` — request the most capable (and expensive) model
+- `<next-model>sonnet</next-model>` — request the balanced model
+- `<next-model>haiku</next-model>` — request the fastest and cheapest model
+
+Rules:
+- The hint applies to the NEXT iteration only; it is not persistent
+- Valid values are exactly: `opus`, `sonnet`, `haiku`
+- If omitted, Ralph's configured model strategy decides automatically
+- Use this when you can tell the next task is trivial (hint haiku) or complex (hint opus)"#,
         config.prompt_file,
         config.progress_file,
         config.progress_file,
@@ -273,5 +288,116 @@ fn detect_git_dir() -> String {
                 .unwrap_or_else(|_| "/dev/null".to_string())
         }
         _ => "/dev/null".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cli::Args;
+
+    fn test_config() -> Config {
+        let args = Args {
+            prompt_file: None,
+            once: false,
+            no_sandbox: false,
+            progress_file: None,
+            specs_dir: None,
+            limit: None,
+            allowed_tools: None,
+            allow: vec![],
+            model_strategy: Some("cost-optimized".to_string()),
+            model: None,
+        };
+        Config::from_args(args).unwrap()
+    }
+
+    #[test]
+    fn system_prompt_contains_next_model_tag() {
+        let config = test_config();
+        let prompt = build_system_prompt(&config);
+        assert!(
+            prompt.contains("<next-model>"),
+            "system prompt should document the <next-model> sigil"
+        );
+    }
+
+    #[test]
+    fn system_prompt_contains_all_three_model_names() {
+        let config = test_config();
+        let prompt = build_system_prompt(&config);
+        assert!(prompt.contains("opus"), "system prompt should mention opus");
+        assert!(
+            prompt.contains("sonnet"),
+            "system prompt should mention sonnet"
+        );
+        assert!(
+            prompt.contains("haiku"),
+            "system prompt should mention haiku"
+        );
+    }
+
+    #[test]
+    fn system_prompt_contains_next_model_opus_example() {
+        let config = test_config();
+        let prompt = build_system_prompt(&config);
+        assert!(
+            prompt.contains("<next-model>opus</next-model>"),
+            "system prompt should show opus example"
+        );
+    }
+
+    #[test]
+    fn system_prompt_contains_next_model_sonnet_example() {
+        let config = test_config();
+        let prompt = build_system_prompt(&config);
+        assert!(
+            prompt.contains("<next-model>sonnet</next-model>"),
+            "system prompt should show sonnet example"
+        );
+    }
+
+    #[test]
+    fn system_prompt_contains_next_model_haiku_example() {
+        let config = test_config();
+        let prompt = build_system_prompt(&config);
+        assert!(
+            prompt.contains("<next-model>haiku</next-model>"),
+            "system prompt should show haiku example"
+        );
+    }
+
+    #[test]
+    fn system_prompt_contains_completion_sigils() {
+        let config = test_config();
+        let prompt = build_system_prompt(&config);
+        assert!(
+            prompt.contains("<promise>COMPLETE</promise>"),
+            "system prompt should document COMPLETE sigil"
+        );
+        assert!(
+            prompt.contains("<promise>FAILURE</promise>"),
+            "system prompt should document FAILURE sigil"
+        );
+    }
+
+    #[test]
+    fn system_prompt_contains_prompt_file() {
+        let config = test_config();
+        let prompt = build_system_prompt(&config);
+        assert!(
+            prompt.contains(&config.prompt_file),
+            "system prompt should reference the prompt file"
+        );
+    }
+
+    #[test]
+    fn system_prompt_contains_progress_file() {
+        let config = test_config();
+        let prompt = build_system_prompt(&config);
+        assert!(
+            prompt.contains(&config.progress_file),
+            "system prompt should reference the progress file"
+        );
     }
 }
