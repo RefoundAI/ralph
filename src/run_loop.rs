@@ -66,7 +66,7 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         config = config.next_iteration();
 
         // Select model for the next iteration based on strategy
-        let selected_model = strategy::select_model(&config, None);
+        let selected_model = strategy::select_model(&mut config, None);
         config.current_model = selected_model;
 
         formatter::print_iteration_info(&config);

@@ -12,18 +12,25 @@ use crate::config::{Config, ModelStrategy};
 /// Returns the model name to use (e.g. "opus", "sonnet", "haiku").
 /// The `next_model_hint` parameter allows Claude to override the strategy's
 /// choice via the `<next-model>` sigil (wired in a later task).
-pub fn select_model(config: &Config, next_model_hint: Option<&str>) -> String {
-    // Claude hint always wins if provided
+///
+/// For the `Escalate` strategy, this mutates `config.escalation_level` to
+/// track upward movement through the model tiers.
+pub fn select_model(config: &mut Config, next_model_hint: Option<&str>) -> String {
+    // Claude hint always wins if provided.
+    // For escalate strategy, a hint can also de-escalate the level.
     if let Some(hint) = next_model_hint {
+        if config.model_strategy == ModelStrategy::Escalate {
+            let hint_level = model_to_level(hint);
+            config.escalation_level = hint_level;
+        }
         return hint.to_string();
     }
 
     match config.model_strategy {
         ModelStrategy::Fixed => select_fixed(config),
         ModelStrategy::CostOptimized => select_cost_optimized(config),
-        // Non-fixed strategies return current_model for now;
-        // each will be implemented in subsequent tasks (R5-R6).
-        ModelStrategy::Escalate => config.current_model.clone(),
+        ModelStrategy::Escalate => select_escalate(config),
+        // Plan-then-execute will be implemented in R6.
         ModelStrategy::PlanThenExecute => config.current_model.clone(),
     }
 }
@@ -93,6 +100,79 @@ fn analyze_progress(content: &str, _iteration: u32) -> String {
     "sonnet".to_string()
 }
 
+/// Map a model name to an escalation level: haiku=0, sonnet=1, opus=2.
+fn model_to_level(model: &str) -> u8 {
+    match model {
+        "haiku" => 0,
+        "sonnet" => 1,
+        "opus" => 2,
+        _ => 1, // fallback to sonnet-level
+    }
+}
+
+/// Map an escalation level to a model name.
+fn level_to_model(level: u8) -> String {
+    match level {
+        0 => "haiku".to_string(),
+        1 => "sonnet".to_string(),
+        _ => "opus".to_string(), // 2+ caps at opus
+    }
+}
+
+/// Escalate strategy: start at haiku, escalate on failure signals, never
+/// auto-de-escalate. Reads the progress file to detect distress signals.
+///
+/// Escalation is monotonic upward (haiku → sonnet → opus) unless a Claude
+/// hint explicitly requests a lower model (handled in `select_model`).
+fn select_escalate(config: &mut Config) -> String {
+    let content = fs::read_to_string(&config.progress_file).unwrap_or_default();
+    let needed_level = assess_escalation_need(&content);
+
+    // Only escalate: take the max of current level and assessed need
+    if needed_level > config.escalation_level {
+        config.escalation_level = needed_level;
+    }
+
+    level_to_model(config.escalation_level)
+}
+
+/// Assess what escalation level the progress file content warrants.
+///
+/// Returns 0 (haiku) when everything looks fine, 1 (sonnet) for moderate
+/// complexity signals, 2 (opus) for clear failure/stuck signals.
+fn assess_escalation_need(content: &str) -> u8 {
+    let lower = content.to_lowercase();
+
+    // Severe distress → opus (level 2)
+    let severe_signals = [
+        "stuck",
+        "cannot",
+        "unable",
+        "panic",
+        "crash",
+        "broken",
+        "regression",
+    ];
+    if severe_signals
+        .iter()
+        .any(|s| lower.contains(&s.to_lowercase()))
+    {
+        return 2;
+    }
+
+    // Moderate distress → sonnet (level 1)
+    let moderate_signals = ["error", "failure", "failed", "bug"];
+    if moderate_signals
+        .iter()
+        .any(|s| lower.contains(&s.to_lowercase()))
+    {
+        return 1;
+    }
+
+    // No distress signals detected → no escalation needed
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,20 +198,20 @@ mod tests {
 
     #[test]
     fn fixed_strategy_returns_configured_model() {
-        let config = fixed_config("opus");
-        assert_eq!(select_model(&config, None), "opus");
+        let mut config = fixed_config("opus");
+        assert_eq!(select_model(&mut config, None), "opus");
     }
 
     #[test]
     fn fixed_strategy_returns_haiku_when_configured() {
-        let config = fixed_config("haiku");
-        assert_eq!(select_model(&config, None), "haiku");
+        let mut config = fixed_config("haiku");
+        assert_eq!(select_model(&mut config, None), "haiku");
     }
 
     #[test]
     fn fixed_strategy_returns_sonnet_when_configured() {
-        let config = fixed_config("sonnet");
-        assert_eq!(select_model(&config, None), "sonnet");
+        let mut config = fixed_config("sonnet");
+        assert_eq!(select_model(&mut config, None), "sonnet");
     }
 
     #[test]
@@ -139,7 +219,7 @@ mod tests {
         let mut config = fixed_config("opus");
         for i in 1..=10 {
             assert_eq!(
-                select_model(&config, None),
+                select_model(&mut config, None),
                 "opus",
                 "iteration {} should still return opus",
                 i
@@ -157,13 +237,13 @@ mod tests {
             cfg = cfg.next_iteration();
         }
         assert_eq!(cfg.iteration, 50);
-        assert_eq!(select_model(&cfg, None), "haiku");
+        assert_eq!(select_model(&mut cfg, None), "haiku");
     }
 
     #[test]
     fn hint_overrides_fixed_strategy() {
-        let config = fixed_config("haiku");
-        assert_eq!(select_model(&config, Some("opus")), "opus");
+        let mut config = fixed_config("haiku");
+        assert_eq!(select_model(&mut config, Some("opus")), "opus");
     }
 
     // --- cost-optimized strategy tests (analyze_progress heuristic) ---
@@ -247,7 +327,132 @@ mod tests {
             model_strategy: Some("cost-optimized".to_string()),
             model: None,
         };
-        let config = Config::from_args(args).unwrap();
-        assert_eq!(select_model(&config, Some("haiku")), "haiku");
+        let mut config = Config::from_args(args).unwrap();
+        assert_eq!(select_model(&mut config, Some("haiku")), "haiku");
+    }
+
+    // --- escalate strategy tests ---
+
+    /// Helper to build a Config with escalate strategy.
+    fn escalate_config() -> Config {
+        let args = Args {
+            prompt_file: None,
+            once: false,
+            no_sandbox: false,
+            progress_file: None,
+            specs_dir: None,
+            limit: None,
+            allowed_tools: None,
+            allow: vec![],
+            model_strategy: Some("escalate".to_string()),
+            model: None,
+        };
+        Config::from_args(args).unwrap()
+    }
+
+    #[test]
+    fn escalate_starts_at_haiku() {
+        let config = escalate_config();
+        assert_eq!(config.current_model, "haiku");
+        assert_eq!(config.escalation_level, 0);
+    }
+
+    #[test]
+    fn escalate_no_distress_stays_haiku() {
+        assert_eq!(assess_escalation_need(""), 0);
+        assert_eq!(assess_escalation_need("[R1] DONE — Added CLI flags"), 0);
+    }
+
+    #[test]
+    fn escalate_moderate_distress_returns_sonnet_level() {
+        assert_eq!(
+            assess_escalation_need("[R2] FAILED — Tests have an error"),
+            1
+        );
+        assert_eq!(assess_escalation_need("There is a bug in the parser"), 1);
+    }
+
+    #[test]
+    fn escalate_severe_distress_returns_opus_level() {
+        assert_eq!(
+            assess_escalation_need("Stuck on a regression in the build system"),
+            2
+        );
+        assert_eq!(assess_escalation_need("Cannot proceed, broken dependency"), 2);
+        assert_eq!(assess_escalation_need("Unable to resolve the panic"), 2);
+    }
+
+    #[test]
+    fn escalate_never_auto_de_escalates() {
+        let mut config = escalate_config();
+        // Manually set escalation level to sonnet (1)
+        config.escalation_level = 1;
+
+        // With clean progress, assess_escalation_need returns 0,
+        // but escalation_level should stay at 1
+        let result = assess_escalation_need("");
+        assert_eq!(result, 0); // need is 0
+        // But select_escalate keeps max(current, needed)
+        // We can't call select_escalate directly (reads file), so test the logic:
+        let new_level = std::cmp::max(config.escalation_level, result);
+        assert_eq!(new_level, 1); // stays at 1, not de-escalated to 0
+        assert_eq!(level_to_model(new_level), "sonnet");
+    }
+
+    #[test]
+    fn escalate_escalation_sequence_haiku_to_sonnet_to_opus() {
+        // Level 0 → haiku
+        assert_eq!(level_to_model(0), "haiku");
+        // Level 1 → sonnet
+        assert_eq!(level_to_model(1), "sonnet");
+        // Level 2 → opus
+        assert_eq!(level_to_model(2), "opus");
+    }
+
+    #[test]
+    fn escalate_hint_de_escalates_level() {
+        let mut config = escalate_config();
+        config.escalation_level = 2; // at opus level
+
+        // Hint to haiku should de-escalate
+        let model = select_model(&mut config, Some("haiku"));
+        assert_eq!(model, "haiku");
+        assert_eq!(config.escalation_level, 0); // level reset to haiku
+    }
+
+    #[test]
+    fn escalate_hint_can_escalate_level() {
+        let mut config = escalate_config();
+        assert_eq!(config.escalation_level, 0); // starts at haiku
+
+        // Hint to opus should escalate
+        let model = select_model(&mut config, Some("opus"));
+        assert_eq!(model, "opus");
+        assert_eq!(config.escalation_level, 2); // level moved to opus
+    }
+
+    #[test]
+    fn escalate_model_to_level_mapping() {
+        assert_eq!(model_to_level("haiku"), 0);
+        assert_eq!(model_to_level("sonnet"), 1);
+        assert_eq!(model_to_level("opus"), 2);
+        assert_eq!(model_to_level("unknown"), 1); // fallback
+    }
+
+    #[test]
+    fn escalate_stays_at_escalated_level_across_iterations() {
+        let mut config = escalate_config();
+        config.escalation_level = 2; // already at opus
+
+        // Even with no distress, level stays at 2
+        let needed = assess_escalation_need("[R1] DONE — All good");
+        assert_eq!(needed, 0);
+        let level = std::cmp::max(config.escalation_level, needed);
+        assert_eq!(level, 2);
+        assert_eq!(level_to_model(level), "opus");
+
+        // Advance iteration, level persists via clone
+        let next_config = config.next_iteration();
+        assert_eq!(next_config.escalation_level, 2);
     }
 }

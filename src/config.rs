@@ -66,6 +66,9 @@ pub struct Config {
     pub model: Option<String>,
     /// The model selected for the current iteration, updated each loop.
     pub current_model: String,
+    /// Escalation level for the `Escalate` strategy (0=haiku, 1=sonnet, 2=opus).
+    /// Tracks the minimum model tier; the strategy never auto-de-escalates below this.
+    pub escalation_level: u8,
 }
 
 impl Config {
@@ -145,6 +148,7 @@ impl Config {
             model_strategy,
             model,
             current_model,
+            escalation_level: 0,
         })
     }
 
