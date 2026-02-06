@@ -6,6 +6,7 @@ mod claude;
 mod sandbox;
 mod output;
 mod run_loop;
+mod strategy;
 
 use anyhow::Result;
 use std::process::ExitCode;

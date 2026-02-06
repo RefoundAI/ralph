@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::claude;
 use crate::config::Config;
 use crate::output::{formatter, logger};
+use crate::strategy;
 
 /// Outcome of the loop execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +64,11 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         // Continue to next iteration
         formatter::print_separator();
         config = config.next_iteration();
+
+        // Select model for the next iteration based on strategy
+        let selected_model = strategy::select_model(&config, None);
+        config.current_model = selected_model;
+
         formatter::print_iteration_info(&config);
     }
 }
