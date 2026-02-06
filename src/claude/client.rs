@@ -14,9 +14,8 @@ use crate::sandbox;
 use super::events::{Event, ResultEvent};
 use super::parser;
 
-/// Run Claude with the given config and stream output.
-/// Returns the final result event, if any.
-pub fn run(config: &Config, log_file: Option<&str>) -> Result<Option<ResultEvent>> {
+/// Build the CLI args vec for invoking the `claude` command.
+fn build_claude_args(config: &Config) -> Vec<String> {
     let system_prompt = build_system_prompt(config);
 
     let mut args = vec![
@@ -25,6 +24,8 @@ pub fn run(config: &Config, log_file: Option<&str>) -> Result<Option<ResultEvent
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--no-session-persistence".to_string(),
+        "--model".to_string(),
+        config.current_model.clone(),
         "--system-prompt".to_string(),
         system_prompt,
         format!("@{}", config.prompt_file),
@@ -39,6 +40,14 @@ pub fn run(config: &Config, log_file: Option<&str>) -> Result<Option<ResultEvent
         args.push("--allowed-tools".to_string());
         args.push(tools);
     }
+
+    args
+}
+
+/// Run Claude with the given config and stream output.
+/// Returns the final result event, if any.
+pub fn run(config: &Config, log_file: Option<&str>) -> Result<Option<ResultEvent>> {
+    let args = build_claude_args(config);
 
     if config.use_sandbox {
         run_sandboxed(&args, log_file, config)
@@ -398,6 +407,96 @@ mod tests {
         assert!(
             prompt.contains(&config.progress_file),
             "system prompt should reference the progress file"
+        );
+    }
+
+    #[test]
+    fn claude_args_contain_model_flag() {
+        let config = test_config();
+        let args = build_claude_args(&config);
+        assert!(
+            args.contains(&"--model".to_string()),
+            "args should contain --model flag"
+        );
+    }
+
+    #[test]
+    fn claude_args_model_flag_followed_by_model_name() {
+        let config = test_config();
+        let args = build_claude_args(&config);
+        let model_idx = args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(
+            args[model_idx + 1], config.current_model,
+            "args --model should be followed by the current model name"
+        );
+    }
+
+    #[test]
+    fn claude_args_model_reflects_fixed_strategy() {
+        let args = Args {
+            prompt_file: None,
+            once: false,
+            no_sandbox: false,
+            progress_file: None,
+            specs_dir: None,
+            limit: None,
+            allowed_tools: None,
+            allow: vec![],
+            model_strategy: Some("fixed".to_string()),
+            model: Some("opus".to_string()),
+        };
+        let config = Config::from_args(args).unwrap();
+        let cli_args = build_claude_args(&config);
+        let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(
+            cli_args[model_idx + 1], "opus",
+            "fixed strategy with --model=opus should pass opus to claude CLI"
+        );
+    }
+
+    #[test]
+    fn claude_args_model_reflects_escalate_strategy() {
+        let args = Args {
+            prompt_file: None,
+            once: false,
+            no_sandbox: false,
+            progress_file: None,
+            specs_dir: None,
+            limit: None,
+            allowed_tools: None,
+            allow: vec![],
+            model_strategy: Some("escalate".to_string()),
+            model: None,
+        };
+        let config = Config::from_args(args).unwrap();
+        let cli_args = build_claude_args(&config);
+        let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(
+            cli_args[model_idx + 1], "haiku",
+            "escalate strategy should initially pass haiku to claude CLI"
+        );
+    }
+
+    #[test]
+    fn claude_args_model_reflects_plan_then_execute_strategy() {
+        let args = Args {
+            prompt_file: None,
+            once: false,
+            no_sandbox: false,
+            progress_file: None,
+            specs_dir: None,
+            limit: None,
+            allowed_tools: None,
+            allow: vec![],
+            model_strategy: Some("plan-then-execute".to_string()),
+            model: None,
+        };
+        let config = Config::from_args(args).unwrap();
+        let cli_args = build_claude_args(&config);
+        let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
+        assert_eq!(
+            cli_args[model_idx + 1], "opus",
+            "plan-then-execute strategy should initially pass opus to claude CLI"
         );
     }
 }
