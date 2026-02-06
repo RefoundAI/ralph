@@ -163,6 +163,7 @@ fn stream_output<R: std::io::Read>(
                             result: result.result.clone(),
                             duration_ms: result.duration_ms,
                             total_cost_usd: result.total_cost_usd,
+                            next_model_hint: result.next_model_hint.clone(),
                         });
                     }
                     _ => {}

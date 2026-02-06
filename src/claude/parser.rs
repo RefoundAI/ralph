@@ -44,11 +44,18 @@ fn parse_event(raw: RawEvent) -> Event {
                 Event::ToolErrors(tool_results)
             }
         }
-        Some("result") => Event::Result(ResultEvent {
-            result: raw.result,
-            duration_ms: raw.duration_ms.unwrap_or(0),
-            total_cost_usd: raw.total_cost_usd.unwrap_or(0.0),
-        }),
+        Some("result") => {
+            let next_model_hint = raw
+                .result
+                .as_deref()
+                .and_then(super::events::parse_next_model_hint);
+            Event::Result(ResultEvent {
+                result: raw.result,
+                duration_ms: raw.duration_ms.unwrap_or(0),
+                total_cost_usd: raw.total_cost_usd.unwrap_or(0.0),
+                next_model_hint,
+            })
+        }
         _ => Event::Unknown,
     }
 }

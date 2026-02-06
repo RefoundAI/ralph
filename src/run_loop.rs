@@ -46,6 +46,11 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         println!("Log available at: ");
         formatter::hyperlink(&log_file);
 
+        // Extract model hint before checking completion/failure
+        let next_model_hint = result
+            .as_ref()
+            .and_then(|r| r.next_model_hint.clone());
+
         // Check result
         if let Some(ref r) = result {
             if r.is_complete() {
@@ -65,8 +70,10 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         formatter::print_separator();
         config = config.next_iteration();
 
-        // Select model for the next iteration based on strategy
-        let selected_model = strategy::select_model(&mut config, None);
+        // Select model for the next iteration based on strategy,
+        // passing Claude's hint (if any) from the previous result
+        let selected_model =
+            strategy::select_model(&mut config, next_model_hint.as_deref());
         config.current_model = selected_model;
 
         formatter::print_iteration_info(&config);
