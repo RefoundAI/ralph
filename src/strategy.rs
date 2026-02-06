@@ -30,8 +30,7 @@ pub fn select_model(config: &mut Config, next_model_hint: Option<&str>) -> Strin
         ModelStrategy::Fixed => select_fixed(config),
         ModelStrategy::CostOptimized => select_cost_optimized(config),
         ModelStrategy::Escalate => select_escalate(config),
-        // Plan-then-execute will be implemented in R6.
-        ModelStrategy::PlanThenExecute => config.current_model.clone(),
+        ModelStrategy::PlanThenExecute => select_plan_then_execute(config),
     }
 }
 
@@ -134,6 +133,21 @@ fn select_escalate(config: &mut Config) -> String {
     }
 
     level_to_model(config.escalation_level)
+}
+
+/// Plan-then-execute strategy: use opus for iteration 1 (planning),
+/// sonnet for iterations 2+ (execution).
+///
+/// The idea is that the first iteration is the most important — Claude
+/// needs to understand the full task and form a plan. Subsequent iterations
+/// execute the plan and can use a cheaper model. Claude hints can override
+/// either phase (e.g. `haiku` for simple cleanup, `opus` for a hard sub-task).
+fn select_plan_then_execute(config: &Config) -> String {
+    if config.iteration <= 1 {
+        "opus".to_string()
+    } else {
+        "sonnet".to_string()
+    }
 }
 
 /// Assess what escalation level the progress file content warrants.
@@ -454,5 +468,103 @@ mod tests {
         // Advance iteration, level persists via clone
         let next_config = config.next_iteration();
         assert_eq!(next_config.escalation_level, 2);
+    }
+
+    // --- plan-then-execute strategy tests ---
+
+    /// Helper to build a Config with plan-then-execute strategy.
+    fn plan_then_execute_config() -> Config {
+        let args = Args {
+            prompt_file: None,
+            once: false,
+            no_sandbox: false,
+            progress_file: None,
+            specs_dir: None,
+            limit: None,
+            allowed_tools: None,
+            allow: vec![],
+            model_strategy: Some("plan-then-execute".to_string()),
+            model: None,
+        };
+        Config::from_args(args).unwrap()
+    }
+
+    #[test]
+    fn plan_then_execute_iteration_1_returns_opus() {
+        let mut config = plan_then_execute_config();
+        assert_eq!(config.iteration, 1);
+        assert_eq!(select_model(&mut config, None), "opus");
+    }
+
+    #[test]
+    fn plan_then_execute_iteration_2_returns_sonnet() {
+        let mut config = plan_then_execute_config();
+        config = config.next_iteration(); // iteration 2
+        assert_eq!(config.iteration, 2);
+        assert_eq!(select_model(&mut config, None), "sonnet");
+    }
+
+    #[test]
+    fn plan_then_execute_iteration_5_returns_sonnet() {
+        let mut config = plan_then_execute_config();
+        for _ in 1..5 {
+            config = config.next_iteration();
+        }
+        assert_eq!(config.iteration, 5);
+        assert_eq!(select_model(&mut config, None), "sonnet");
+    }
+
+    #[test]
+    fn plan_then_execute_hint_overrides_to_haiku() {
+        let mut config = plan_then_execute_config();
+        config = config.next_iteration(); // iteration 2
+        // Hint to haiku for simple cleanup
+        assert_eq!(select_model(&mut config, Some("haiku")), "haiku");
+    }
+
+    #[test]
+    fn plan_then_execute_hint_overrides_to_opus() {
+        let mut config = plan_then_execute_config();
+        config = config.next_iteration(); // iteration 2
+        config = config.next_iteration(); // iteration 3
+        // Hint to opus for a hard sub-task
+        assert_eq!(select_model(&mut config, Some("opus")), "opus");
+    }
+
+    #[test]
+    fn plan_then_execute_hint_overrides_iteration_1() {
+        let mut config = plan_then_execute_config();
+        assert_eq!(config.iteration, 1);
+        // Even on iteration 1, hint can override to a different model
+        assert_eq!(select_model(&mut config, Some("haiku")), "haiku");
+    }
+
+    #[test]
+    fn plan_then_execute_config_starts_at_opus() {
+        let config = plan_then_execute_config();
+        assert_eq!(config.current_model, "opus");
+        assert_eq!(config.model_strategy, ModelStrategy::PlanThenExecute);
+    }
+
+    #[test]
+    fn plan_then_execute_direct_function_iteration_1() {
+        let config = plan_then_execute_config();
+        assert_eq!(select_plan_then_execute(&config), "opus");
+    }
+
+    #[test]
+    fn plan_then_execute_direct_function_iteration_2_plus() {
+        let config_iter2 = plan_then_execute_config().next_iteration();
+        assert_eq!(select_plan_then_execute(&config_iter2), "sonnet");
+
+        let config_iter10 = {
+            let mut c = plan_then_execute_config();
+            for _ in 1..10 {
+                c = c.next_iteration();
+            }
+            c
+        };
+        assert_eq!(config_iter10.iteration, 10);
+        assert_eq!(select_plan_then_execute(&config_iter10), "sonnet");
     }
 }
