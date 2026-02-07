@@ -1,6 +1,7 @@
 //! Main iteration loop.
 
 use anyhow::{Context, Result};
+use colored::*;
 
 use crate::claude;
 use crate::config::Config;
@@ -66,10 +67,12 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         dag::claim_task(&db, &task_id, &config.agent_id)
             .context("Failed to claim task")?;
 
-        // Print iteration info
+        // Print iteration info with colors (task ID in cyan)
         println!(
             "[iter {}] Working on: {} -- {}",
-            config.iteration, task_id, task.title
+            config.iteration,
+            task_id.cyan(),
+            task.title
         );
 
         // Set up logging
@@ -106,7 +109,12 @@ pub fn run(mut config: Config) -> Result<Outcome> {
                 if done_id == &task_id {
                     dag::complete_task(&db, &task_id)
                         .context("Failed to complete task")?;
-                    println!("[iter {}] Done: {}", config.iteration, task_id);
+                    println!(
+                        "[iter {}] {}: {}",
+                        config.iteration,
+                        "Done".green(),
+                        task_id.cyan()
+                    );
                 } else {
                     eprintln!("Warning: task-done sigil ID {} does not match assigned task {}", done_id, task_id);
                 }
@@ -114,7 +122,12 @@ pub fn run(mut config: Config) -> Result<Outcome> {
                 if failed_id == &task_id {
                     dag::fail_task(&db, &task_id, "Task marked failed by Claude")
                         .context("Failed to fail task")?;
-                    println!("[iter {}] Failed: {}", config.iteration, task_id);
+                    println!(
+                        "[iter {}] {}: {}",
+                        config.iteration,
+                        "Failed".red(),
+                        task_id.cyan()
+                    );
                 } else {
                     eprintln!("Warning: task-failed sigil ID {} does not match assigned task {}", failed_id, task_id);
                 }
@@ -122,7 +135,11 @@ pub fn run(mut config: Config) -> Result<Outcome> {
                 // No sigil - release the claim and treat as incomplete
                 dag::release_claim(&db, &task_id)
                     .context("Failed to release task claim")?;
-                println!("[iter {}] Incomplete (no sigil): {}", config.iteration, task_id);
+                println!(
+                    "[iter {}] Incomplete (no sigil): {}",
+                    config.iteration,
+                    task_id.cyan()
+                );
             }
         }
 
