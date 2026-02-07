@@ -3,10 +3,12 @@
 //! Manages task dependencies and execution state using SQLite backend.
 
 mod db;
+mod ids;
 
 use anyhow::Result;
 
 pub use db::{init_db, Db};
+pub use ids::{generate_task_id, generate_and_insert_task_id};
 
 /// A task in the DAG.
 #[derive(Debug, Clone)]
