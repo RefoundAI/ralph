@@ -2,6 +2,7 @@
 //!
 //! Manages task dependencies and execution state using SQLite backend.
 
+mod crud;
 mod db;
 mod dependencies;
 mod ids;
@@ -9,8 +10,8 @@ mod tasks;
 mod transitions;
 
 use anyhow::Result;
-use rusqlite::OptionalExtension;
 
+pub use crud::{add_log, create_task, delete_task, get_task, get_task_tree, update_task, TaskUpdate};
 pub use db::{init_db, Db};
 pub use dependencies::{add_dependency, remove_dependency};
 pub use ids::{generate_task_id, generate_and_insert_task_id};
