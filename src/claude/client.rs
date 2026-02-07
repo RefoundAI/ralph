@@ -264,50 +264,55 @@ fn drain_stderr(mut stderr: std::process::ChildStderr) -> thread::JoinHandle<Str
     })
 }
 
-fn build_system_prompt(config: &Config) -> String {
-    let progress_db = config.project_root.join(".ralph/progress.db");
-    format!(
-        r#"You are operating in a Ralph loop - an autonomous, iterative coding workflow.
+fn build_system_prompt(_config: &Config) -> String {
+    r#"You are operating in a Ralph loop - an autonomous, iterative coding workflow.
 
 ## Your Task
 
-1. Read {} to understand what to do
-2. Read {} to see what has already been completed
-3. Find the SINGLE highest-priority incomplete task
-4. Implement that ONE task only - do not work on multiple tasks
+Ralph assigns you ONE task per iteration. Your job is to:
+
+1. Read the assigned task context (provided below)
+2. Implement ONLY the assigned task - do not work on multiple tasks
+3. Do not assume code exists - search the codebase before implementing
+4. Do not implement placeholders or stubs - implement fully working code
 5. Run tests and type checks to verify your work
-6. Append a terse summary of what you did to {}
-7. Commit your changes with a descriptive message; load the committing:git skill first.
+6. Commit your changes with a descriptive message; load the committing:git skill first
+7. Signal task completion or failure using the appropriate sigil
 
 ## Critical Rules
 
 - ONE TASK PER LOOP. This is essential. Do not implement multiple features.
+- Work on the assigned task only - do not pick or reorder tasks
 - Do not assume code exists - search the codebase before implementing
 - Do not implement placeholders or stubs - implement fully working code
 - If tests fail, fix them before completing
-- Update {} with what was actually done, not what was planned
 - Update AGENTS.md if you encounter any problems and learn how to solve them, e.g.:
     - Bash tool calls that took multiple attempts to write correctly
-- The progress file is always gitignored
 
-## Completion
+## Task Completion Sigils
 
-When ALL tasks and specs are complete, output exactly:
+After completing your work, signal the result:
+
+- `<task-done>{task_id}</task-done>` — Task completed successfully
+- `<task-failed>{task_id}</task-failed>` — Task cannot be completed (provide reason in output)
+
+Emit one of these sigils every iteration with the task ID you were assigned.
+
+## Project Completion
+
+When the ENTIRE project/DAG is complete (not just your assigned task), output:
 <promise>COMPLETE</promise>
 
-Only output this sigil when there is genuinely no more work to do.
+Ralph will verify this against the task database. Only use when genuinely no more work exists.
 
 ## Critical Failure
 
-If you encounter a situation where you cannot continue and further iterations would
-be futile, output exactly:
+If you encounter an unrecoverable situation where further iterations would be futile, output:
 <promise>FAILURE</promise>
 
 Use this when:
 - The prompt contains contradictory or impossible requirements
 - You are stuck in a loop making no progress after multiple attempts
-
-Document the reason for failure in {} before outputting the sigil.
 
 ## Model Hint
 
@@ -322,13 +327,7 @@ Rules:
 - The hint applies to the NEXT iteration only; it is not persistent
 - Valid values are exactly: `opus`, `sonnet`, `haiku`
 - If omitted, Ralph's configured model strategy decides automatically
-- Use this when you can tell the next task is trivial (hint haiku) or complex (hint opus)"#,
-        config.prompt_file,
-        progress_db.display(),
-        progress_db.display(),
-        progress_db.display(),
-        progress_db.display(),
-    )
+- Use this when you can tell the next task is trivial (hint haiku) or complex (hint opus)"#.to_string()
 }
 
 fn write_temp_profile(content: &str) -> Result<String> {
@@ -464,22 +463,44 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_contains_prompt_file() {
+    fn system_prompt_contains_one_task_per_loop() {
         let config = test_config();
         let prompt = build_system_prompt(&config);
         assert!(
-            prompt.contains(&config.prompt_file),
-            "system prompt should reference the prompt file"
+            prompt.contains("ONE TASK PER LOOP"),
+            "system prompt should contain ONE TASK PER LOOP rule"
         );
     }
 
     #[test]
-    fn system_prompt_contains_progress_db() {
+    fn system_prompt_contains_task_sigils() {
         let config = test_config();
         let prompt = build_system_prompt(&config);
         assert!(
-            prompt.contains(".ralph/progress.db"),
-            "system prompt should reference the progress database"
+            prompt.contains("<task-done>"),
+            "system prompt should document task-done sigil"
+        );
+        assert!(
+            prompt.contains("<task-failed>"),
+            "system prompt should document task-failed sigil"
+        );
+    }
+
+    #[test]
+    fn system_prompt_no_progress_file_references() {
+        let config = test_config();
+        let prompt = build_system_prompt(&config);
+        assert!(
+            !prompt.contains("progress.txt"),
+            "system prompt should not reference progress.txt"
+        );
+        assert!(
+            !prompt.contains("progress_file"),
+            "system prompt should not reference progress_file"
+        );
+        assert!(
+            !prompt.to_lowercase().contains("append"),
+            "system prompt should not have append instructions (for progress file)"
         );
     }
 
