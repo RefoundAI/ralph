@@ -6,8 +6,10 @@ mod db;
 mod dependencies;
 mod ids;
 mod tasks;
+mod transitions;
 
 use anyhow::Result;
+use rusqlite::OptionalExtension;
 
 pub use db::{init_db, Db};
 pub use dependencies::{add_dependency, remove_dependency};
@@ -90,38 +92,101 @@ pub fn get_ready_tasks(db: &Db) -> Result<Vec<Task>> {
 
 /// Get task counts (total, ready, done, blocked).
 pub fn get_task_counts(db: &Db) -> Result<TaskCounts> {
-    let _ = db;
-    todo!("get_task_counts: count tasks by status")
+    let total: usize = db
+        .conn()
+        .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
+
+    let ready = get_ready_tasks(db)?.len();
+
+    let done: usize = db.conn().query_row(
+        "SELECT COUNT(*) FROM tasks WHERE status = 'done'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    let blocked: usize = db.conn().query_row(
+        "SELECT COUNT(*) FROM tasks WHERE status = 'blocked'",
+        [],
+        |row| row.get(0),
+    )?;
+
+    Ok(TaskCounts {
+        total,
+        ready,
+        done,
+        blocked,
+    })
 }
 
 /// Claim a task for execution by an agent.
 pub fn claim_task(db: &Db, task_id: &str, agent_id: &str) -> Result<()> {
-    let _ = (db, task_id, agent_id);
-    todo!("claim_task: set task to in_progress and record agent_id")
+    // Transition to in_progress and set claimed_by atomically
+    transitions::set_task_status(db.conn(), task_id, "in_progress")?;
+    db.conn().execute(
+        "UPDATE tasks SET claimed_by = ? WHERE id = ?",
+        rusqlite::params![agent_id, task_id],
+    )?;
+    Ok(())
 }
 
 /// Mark a task as completed.
 pub fn complete_task(db: &Db, task_id: &str) -> Result<()> {
-    let _ = (db, task_id);
-    todo!("complete_task: set task to done and run auto-transitions")
+    // Transition to done (auto-transitions handled in set_task_status)
+    transitions::set_task_status(db.conn(), task_id, "done")?;
+    // Clear claimed_by
+    db.conn().execute(
+        "UPDATE tasks SET claimed_by = NULL WHERE id = ?",
+        [task_id],
+    )?;
+    Ok(())
 }
 
 /// Mark a task as failed.
 pub fn fail_task(db: &Db, task_id: &str, reason: &str) -> Result<()> {
-    let _ = (db, task_id, reason);
-    todo!("fail_task: set task to failed and run auto-transitions")
+    // Transition to failed (auto-transitions handled in set_task_status)
+    transitions::set_task_status(db.conn(), task_id, "failed")?;
+    // Clear claimed_by
+    db.conn().execute(
+        "UPDATE tasks SET claimed_by = NULL WHERE id = ?",
+        [task_id],
+    )?;
+    // Log the failure reason
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    db.conn().execute(
+        "INSERT INTO task_logs (task_id, message, timestamp) VALUES (?, ?, ?)",
+        rusqlite::params![task_id, reason, timestamp],
+    )?;
+    Ok(())
 }
 
 /// Check if all DAG tasks are resolved (done or failed).
 pub fn all_resolved(db: &Db) -> Result<bool> {
-    let _ = db;
-    todo!("all_resolved: return true if all tasks are done or failed")
+    let unresolved: i64 = db.conn().query_row(
+        "SELECT COUNT(*) FROM tasks WHERE status NOT IN ('done', 'failed')",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(unresolved == 0)
 }
 
 /// Release the claim on a task (set to pending if in_progress).
 pub fn release_claim(db: &Db, task_id: &str) -> Result<()> {
-    let _ = (db, task_id);
-    todo!("release_claim: revert task from in_progress to pending")
+    // Only release if currently in_progress
+    let status: String = db
+        .conn()
+        .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
+            row.get(0)
+        })?;
+
+    if status == "in_progress" {
+        transitions::set_task_status(db.conn(), task_id, "pending")?;
+        db.conn().execute(
+            "UPDATE tasks SET claimed_by = NULL WHERE id = ?",
+            [task_id],
+        )?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
