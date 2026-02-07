@@ -22,6 +22,33 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outcome_variants_exist() {
+        // Verify all Outcome variants are defined and accessible
+        let _complete = run_loop::Outcome::Complete;
+        let _failure = run_loop::Outcome::Failure;
+        let _limit = run_loop::Outcome::LimitReached;
+        let _blocked = run_loop::Outcome::Blocked;
+        let _noplan = run_loop::Outcome::NoPlan;
+    }
+
+    #[test]
+    fn outcome_complete_vs_failure() {
+        // Complete and Failure should be different
+        assert_ne!(run_loop::Outcome::Complete, run_loop::Outcome::Failure);
+    }
+
+    #[test]
+    fn outcome_blocked_vs_noplan() {
+        // Blocked and NoPlan should be different
+        assert_ne!(run_loop::Outcome::Blocked, run_loop::Outcome::NoPlan);
+    }
+}
+
 fn run() -> Result<ExitCode> {
     let args = cli::Args::parse_args();
 
@@ -50,6 +77,14 @@ fn run() -> Result<ExitCode> {
         run_loop::Outcome::LimitReached => {
             output::formatter::print_limit_reached();
             Ok(ExitCode::SUCCESS)
+        }
+        run_loop::Outcome::Blocked => {
+            eprintln!("Loop blocked: no ready tasks, but incomplete tasks remain");
+            Ok(ExitCode::from(2))
+        }
+        run_loop::Outcome::NoPlan => {
+            eprintln!("No plan: DAG is empty. Run 'ralph plan' to create tasks");
+            Ok(ExitCode::from(3))
         }
     }
 }

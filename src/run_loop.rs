@@ -12,9 +12,16 @@ use crate::strategy;
 /// Outcome of the loop execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
+    /// All DAG tasks done
     Complete,
+    /// <promise>FAILURE</promise> emitted
     Failure,
+    /// Iteration limit hit
     LimitReached,
+    /// No ready tasks, but incomplete tasks exist
+    Blocked,
+    /// DAG is empty, user must run `ralph plan`
+    NoPlan,
 }
 
 /// Run the main loop until completion, failure, or limit.
