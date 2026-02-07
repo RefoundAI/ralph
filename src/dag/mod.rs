@@ -39,8 +39,53 @@ pub fn open_db(path: &str) -> Result<Db> {
 
 /// Get all tasks that are ready to execute.
 pub fn get_ready_tasks(db: &Db) -> Result<Vec<Task>> {
-    let _ = db;
-    todo!("get_ready_tasks: query tasks with pending status, satisfied blockers, and non-failed parent")
+    // A task is ready when:
+    // 1. Status is 'pending'
+    // 2. All blockers have status 'done'
+    // 3. Parent (if any) is not 'failed'
+    // 4. Task is a leaf node (no children)
+    //
+    // Ordered by: priority ASC, created_at ASC
+    let mut stmt = db.conn().prepare(
+        r#"
+        SELECT DISTINCT t.id, t.title, t.description, t.parent_id
+        FROM tasks t
+        WHERE t.status = 'pending'
+          -- Must be a leaf node (no children)
+          AND NOT EXISTS (
+              SELECT 1 FROM tasks c WHERE c.parent_id = t.id
+          )
+          -- Parent (if exists) must not be failed
+          AND (
+              t.parent_id IS NULL
+              OR NOT EXISTS (
+                  SELECT 1 FROM tasks p WHERE p.id = t.parent_id AND p.status = 'failed'
+              )
+          )
+          -- All blockers must be done (or no blockers)
+          AND NOT EXISTS (
+              SELECT 1
+              FROM dependencies d
+              JOIN tasks b ON d.blocker_id = b.id
+              WHERE d.blocked_id = t.id
+                AND b.status != 'done'
+          )
+        ORDER BY t.priority ASC, t.created_at ASC
+        "#,
+    )?;
+
+    let tasks = stmt
+        .query_map([], |row| {
+            Ok(Task {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                description: row.get(2)?,
+                parent_id: row.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(tasks)
 }
 
 /// Get task counts (total, ready, done, blocked).
@@ -108,5 +153,139 @@ mod tests {
         assert_eq!(counts.ready, 3);
         assert_eq!(counts.done, 2);
         assert_eq!(counts.blocked, 1);
+    }
+
+    // R5: Ready query tests
+
+    fn create_task(db: &Db, id: &str, title: &str, parent_id: Option<&str>, priority: i32) {
+        db.conn()
+            .execute(
+                "INSERT INTO tasks (id, title, description, parent_id, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![id, title, "", parent_id, priority, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+            )
+            .unwrap();
+    }
+
+    fn set_task_status(db: &Db, id: &str, status: &str) {
+        db.conn()
+            .execute("UPDATE tasks SET status = ? WHERE id = ?", rusqlite::params![status, id])
+            .unwrap();
+    }
+
+    #[test]
+    fn test_ready_task_with_no_deps_no_parent() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = init_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        create_task(&db, "t-task1", "Task 1", None, 0);
+
+        let ready = get_ready_tasks(&db).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "t-task1");
+    }
+
+    #[test]
+    fn test_task_with_pending_blocker_not_ready() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = init_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        create_task(&db, "t-blocker", "Blocker", None, 0);
+        create_task(&db, "t-blocked", "Blocked", None, 0);
+        add_dependency(&db, "t-blocker", "t-blocked").unwrap();
+
+        let ready = get_ready_tasks(&db).unwrap();
+        // Only t-blocker should be ready
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "t-blocker");
+    }
+
+    #[test]
+    fn test_task_with_all_blockers_done_is_ready() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = init_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        create_task(&db, "t-blocker", "Blocker", None, 0);
+        create_task(&db, "t-blocked", "Blocked", None, 0);
+        add_dependency(&db, "t-blocker", "t-blocked").unwrap();
+
+        // Mark blocker as done
+        set_task_status(&db, "t-blocker", "done");
+
+        let ready = get_ready_tasks(&db).unwrap();
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "t-blocked");
+    }
+
+    #[test]
+    fn test_task_with_failed_parent_not_ready() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = init_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        create_task(&db, "t-parent", "Parent", None, 0);
+        create_task(&db, "t-child", "Child", Some("t-parent"), 0);
+
+        // Mark parent as failed
+        set_task_status(&db, "t-parent", "failed");
+
+        let ready = get_ready_tasks(&db).unwrap();
+        assert_eq!(ready.len(), 0);
+    }
+
+    #[test]
+    fn test_non_leaf_task_not_ready() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = init_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        create_task(&db, "t-parent", "Parent", None, 0);
+        create_task(&db, "t-child", "Child", Some("t-parent"), 0);
+
+        let ready = get_ready_tasks(&db).unwrap();
+        // Only child (leaf) should be ready
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].id, "t-child");
+    }
+
+    #[test]
+    fn test_ready_tasks_ordering() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = init_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        // Create tasks with different priorities
+        create_task(&db, "t-p1", "Priority 1", None, 1);
+        create_task(&db, "t-p0", "Priority 0", None, 0);
+        create_task(&db, "t-p2", "Priority 2", None, 2);
+
+        let ready = get_ready_tasks(&db).unwrap();
+        assert_eq!(ready.len(), 3);
+        // Should be ordered by priority ASC
+        assert_eq!(ready[0].id, "t-p0");
+        assert_eq!(ready[1].id, "t-p1");
+        assert_eq!(ready[2].id, "t-p2");
+    }
+
+    #[test]
+    fn test_ready_tasks_ordering_same_priority() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = init_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        // Create tasks with same priority but different created_at
+        db.conn()
+            .execute(
+                "INSERT INTO tasks (id, title, description, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                rusqlite::params!["t-newer", "Newer", "", 0, "2024-01-02T00:00:00Z", "2024-01-02T00:00:00Z"],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO tasks (id, title, description, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                rusqlite::params!["t-older", "Older", "", 0, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+            )
+            .unwrap();
+
+        let ready = get_ready_tasks(&db).unwrap();
+        assert_eq!(ready.len(), 2);
+        // Should be ordered by created_at ASC (older first)
+        assert_eq!(ready[0].id, "t-older");
+        assert_eq!(ready[1].id, "t-newer");
     }
 }

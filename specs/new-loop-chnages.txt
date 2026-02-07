@@ -3,3 +3,5 @@ R2: Implemented task ID generation (t-XXXXXX format) using SHA-256 hash of times
 R3: Implemented task hierarchy with derived parent status. Created src/dag/tasks.rs with compute_parent_status() and get_task_status() functions. Parent status computed recursively from children: failed > done > in_progress > pending. All unit tests passing (143 total).
 [model-override] iteration=4 strategy_choice=opus hint=sonnet
 R4: Implemented dependency management with cycle detection. Created src/dag/dependencies.rs with add_dependency() and remove_dependency(). BFS-based cycle detection rejects direct, transitive, and longer cycles. All 8 unit tests passing (151 total).
+[model-override] iteration=5 strategy_choice=opus hint=sonnet
+R5: Implemented ready query in get_ready_tasks(). Returns pending leaf tasks where all blockers are done and parent is not failed. Ordered by priority ASC, created_at ASC. All 7 unit tests passing (158 total).
