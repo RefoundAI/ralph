@@ -125,8 +125,25 @@ fn run() -> Result<ExitCode> {
             }
         }
         Some(cli::Command::Specs) => {
-            eprintln!("ralph specs: not yet implemented");
-            Ok(ExitCode::FAILURE)
+            let project = project::discover()?;
+            let specs_dirs = &project.config.specs.dirs;
+
+            // Resolve specs directories relative to project root and ensure they exist
+            for specs_dir in specs_dirs {
+                let resolved_dir = project.root.join(specs_dir);
+                std::fs::create_dir_all(&resolved_dir)
+                    .map_err(|e| anyhow::anyhow!("Failed to create specs directory '{}': {}", specs_dir, e))?;
+            }
+
+            // Build system prompt with all configured specs directories
+            let resolved_dirs: Vec<String> = specs_dirs
+                .iter()
+                .map(|d| project.root.join(d).to_string_lossy().to_string())
+                .collect();
+            let system_prompt = claude::interactive::build_specs_system_prompt(&resolved_dirs);
+            claude::interactive::run_interactive(&system_prompt)?;
+
+            Ok(ExitCode::SUCCESS)
         }
         Some(cli::Command::Plan { prompt_file: _ }) => {
             eprintln!("ralph plan: not yet implemented");
