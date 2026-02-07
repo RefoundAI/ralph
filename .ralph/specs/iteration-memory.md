@@ -1391,26 +1391,379 @@ Read all files in: .ralph/specs
 
 ## Lifecycle
 
+This section describes how iteration memory data is created, grows, evolves, and is eventually cleaned up during and across Ralph runs. Memory is not append-only — it must be actively managed to prevent unbounded growth and to keep the most relevant insights accessible.
+
 ### Memory Growth
 
-<!-- How data accumulates during a run: capture triggers, storage timing -->
+Memory data accumulates continuously during a Ralph run. Each iteration adds new rows to the memory tables:
+
+**Capture triggers:**
+
+1. **Iteration start:** When `run_loop::run()` claims a task and starts an iteration, a row is inserted into `strategy_metrics` if it doesn't exist yet (or updated if it does). This happens immediately after `claim_task()` succeeds.
+
+2. **Iteration completion:** After Claude finishes (regardless of outcome) and sigils are parsed, `run_loop::run()` invokes three memory capture functions sequentially:
+
+   ```rust
+   // After sigil processing (line ~143 in run_loop.rs)
+   memory::record_iteration_metrics(&db, task_id, model, outcome, duration, tokens)?;
+
+   if outcome == Outcome::Failed || outcome == Outcome::NoSigil {
+       memory::capture_failure(&db, task_id, &result_event)?;
+   }
+
+   memory::capture_learnings(&db, task_id, &result_event)?;
+   ```
+
+3. **Sigil presence:** Learnings and failure reports are only captured if the corresponding sigils are present in Claude's output. If Claude emits no `<learning>` sigils, no learnings are stored. If no `<failure-report>` sigil is present, a minimal auto-generated report is stored for failed tasks.
+
+**Storage timing:**
+
+All memory writes happen synchronously at iteration completion, using the same SQLite connection (`&Db`) that the run loop uses for task state. This ensures atomicity: if the iteration commit fails, memory data is rolled back too. WAL mode (already enabled for `progress.db`) ensures concurrent readers don't block writes.
+
+**Growth rate estimate:**
+
+For a typical Ralph run completing 20 tasks with an 80% success rate:
+
+- **`iteration_outcomes`:** 20 rows × 200 bytes = ~4 KB
+- **`failure_reports`:** 4 failures × 1 KB = ~4 KB (includes stack traces)
+- **`learnings`:** ~10 learnings × 500 bytes = ~5 KB (assumes ~1 learning per 2 successful tasks)
+- **`strategy_metrics`:** 20 rows × 150 bytes = ~3 KB
+
+**Total per run: ~16 KB**. Even with 1000 iterations, the database remains under 1 MB, well within SQLite's performance sweet spot.
+
+**No background processes:** All capture is synchronous; there are no async writers or background aggregation jobs. This aligns with Ralph's synchronous architecture.
 
 ### Summarization
 
-<!-- When learnings exceed threshold: summarization triggers, merge strategy -->
+Learnings can accumulate over time, especially in long-running multi-day projects where hundreds of tasks are completed. To keep learnings actionable and prevent the `learnings` table from growing unbounded, Ralph employs an optional summarization system that merges similar learnings and removes redundant ones.
+
+**Trigger: Learning count threshold**
+
+Summarization is triggered when the number of active learnings (WHERE `pruned_at IS NULL`) exceeds a threshold, default **200 learnings**. This is checked at the end of each iteration after `capture_learnings()`:
+
+```rust
+let active_count = db.query_row("SELECT COUNT(*) FROM learnings WHERE pruned_at IS NULL", [])?;
+
+if active_count > SUMMARIZATION_THRESHOLD {
+    memory::summarize_learnings(&db)?;
+}
+```
+
+**Merge strategy:**
+
+The summarization algorithm groups learnings by category, then by tag overlap, and merges clusters of similar learnings:
+
+1. **Categorize:** Group learnings by `category` (`success_pattern`, `pitfall`, etc.)
+2. **Cluster by similarity:** Within each category, identify learnings with high tag overlap (≥50% shared tags). These are candidates for merging.
+3. **Merge cluster:** For each cluster of N similar learnings:
+   - Generate a merged learning that generalizes the content (using a simple template: "Common pattern: {recurring theme}. Examples: {bulleted list}")
+   - Create a new learning row with merged content and the union of all tags
+   - Mark all cluster members as `pruned_at = NOW()` and set their `superseded_by` to the new learning ID
+4. **Preserve recency:** The newest learning in each cluster is preserved as-is (not pruned), even if it matches a cluster. This ensures fresh learnings remain visible immediately.
+
+**Example merge:**
+
+Before summarization:
+
+```
+l-abc123 | success_pattern | tags: ["Rust", "SQLite", "foreign keys"]
+  "Enable PRAGMA foreign_keys = ON when creating tables with FKs."
+
+l-def456 | success_pattern | tags: ["Rust", "SQLite", "CASCADE"]
+  "Use ON DELETE CASCADE to maintain referential integrity."
+
+l-ghi789 | success_pattern | tags: ["SQLite", "foreign keys", "migration"]
+  "Check foreign key constraints after schema migrations with PRAGMA foreign_key_check."
+```
+
+After summarization:
+
+```
+l-jkl012 | success_pattern | tags: ["Rust", "SQLite", "foreign keys", "CASCADE", "migration"]
+  "SQLite foreign key best practices: enable PRAGMA foreign_keys = ON, use ON DELETE CASCADE, and validate with PRAGMA foreign_key_check after migrations."
+
+l-abc123 | (pruned_at = 2026-02-08T12:00:00Z, superseded_by = l-jkl012)
+l-def456 | (pruned_at = 2026-02-08T12:00:00Z, superseded_by = l-jkl012)
+l-ghi789 | (pruned_at = 2026-02-08T12:00:00Z, superseded_by = l-jkl012)
+```
+
+**Content generation:**
+
+The merged content is generated using a simple template system in Rust, not LLM-based summarization (keeping Ralph dependency-free). The template identifies common keywords in the cluster and constructs a sentence. This is imperfect but avoids the cost and latency of invoking Claude for summarization.
+
+**Fallback:** If the merge algorithm produces nonsensical output (detected by length heuristics or empty content), the merge is skipped and the learnings are left as-is. Summarization is best-effort, not critical path.
+
+**Frequency:** Summarization runs at most once per 10 iterations to avoid overhead. A `last_summarized_at` timestamp is tracked in-memory (not persisted) to rate-limit the operation.
 
 ### Pruning
 
-<!-- Superseded learnings, archived failure reports, aggregated metrics -->
+Pruning complements summarization by removing memory data that is no longer relevant. Unlike summarization (which merges similar learnings), pruning deletes or archives data based on age, task status, and usefulness.
+
+**Pruning triggers:**
+
+1. **Task completion:** When a task reaches `done` or `failed` status permanently (not just temporarily during a retry), its failure reports and iteration outcomes can be pruned after a grace period. Default grace period: **7 days** after task completion.
+
+2. **Old learnings:** Learnings older than **90 days** that have never been matched in a relevance query (indicating they are too specific or obsolete) are soft-deleted by setting `pruned_at`.
+
+3. **Manual pruning:** A future `ralph prune` subcommand could allow users to manually trigger pruning (not in v1 scope).
+
+**Pruning logic:**
+
+Pruning runs at the end of each Ralph run (after all tasks are resolved or the iteration limit is hit), not during the run. This avoids I/O overhead during iterations.
+
+```rust
+// At the end of run_loop::run(), before returning outcome
+memory::prune_old_data(&db)?;
+```
+
+**What gets pruned:**
+
+| Data | Condition | Action |
+|------|-----------|--------|
+| `failure_reports` | Task is `done` and >7 days old | DELETE (hard delete) |
+| `iteration_outcomes` | Task is `done` and >7 days old | DELETE |
+| `strategy_metrics` | Task is `done` and >30 days old | DELETE |
+| `learnings` | Age >90 days AND never matched | Set `pruned_at` (soft delete) |
+| `learnings` | `superseded_by` is set AND >30 days old | Set `pruned_at` |
+
+**Rationale:**
+
+- **Short grace period for failure data:** Once a task succeeds, its failure history is no longer needed. Keeping it for 7 days allows post-mortem analysis but avoids clutter.
+- **Long grace period for learnings:** Learnings are cross-task, so they remain valuable long after the origin task completes. A 90-day window ensures learnings are available across multi-month projects.
+- **Soft delete for learnings:** Setting `pruned_at` rather than hard-deleting allows "undo" functionality in the future (e.g., `ralph restore-learning l-abc123`) and forensic analysis.
+
+**Query-based staleness detection:**
+
+To identify "never matched" learnings, the pruning system checks if a learning's ID has appeared in any query results since the last pruning run. This is tracked via a simple heuristic: if a learning was created >90 days ago and has never been returned by `get_relevant_learnings()` in the current run, it's a candidate for pruning. In v1, this is approximated by pruning learnings whose `created_at` is >90 days old and whose `task_id` is NULL or references a completed task (indicating it hasn't been reinforced by recent usage).
+
+**Avoiding over-pruning:**
+
+Learnings with high match scores in recent relevance queries are marked as "recently used" by updating a new `last_used_at` column (added to `learnings` table in the schema). This column is updated by `get_relevant_learnings()` when a learning is included in context injection. Pruning skips learnings with `last_used_at` within the last 30 days, even if they are >90 days old.
+
+**Compaction:**
+
+After pruning, SQLite's auto-vacuum feature (enabled in `db.rs` via `PRAGMA auto_vacuum = FULL`) reclaims disk space from deleted rows. No manual `VACUUM` command is needed.
 
 ### Cross-Run Persistence
 
-<!-- How learnings carry forward across separate ralph run invocations, staleness checks -->
+The `.ralph/progress.db` database persists across separate `ralph run` invocations. This means learnings, strategy metrics, and failure reports from one run are available to subsequent runs **on the same codebase**.
+
+**Key design principle:** Memory is **project-scoped**, not global. Each `.ralph/progress.db` file is tied to a specific project (the directory containing `.ralph.toml`). Learnings from one project do not leak into another.
+
+**How learnings carry forward:**
+
+1. **Initial run:** User runs `ralph run` on a fresh project. The `.ralph/progress.db` file is created (or schema-migrated if it exists from a pre-memory version of Ralph). During the run, learnings are captured and stored.
+
+2. **Subsequent run:** User runs `ralph run` again days or weeks later. The existing `progress.db` is opened, and all active learnings (`WHERE pruned_at IS NULL`) are available for relevance matching in the new run. If the new tasks involve similar file paths or error types, the old learnings are injected into context.
+
+3. **Staleness check:** To prevent stale learnings from accumulating indefinitely, the pruning system (see above) soft-deletes learnings that haven't been matched in recent runs. This is a passive staleness check — no explicit "last used" tracking across runs in v1 (deferred to future iteration).
+
+**Scenario: Codebase changes between runs**
+
+When the codebase structure changes significantly (e.g., a file is moved from `src/foo.rs` to `src/bar.rs`), learnings tagged with the old file path become less relevant. This is handled gracefully:
+
+- **Exact path matches fail silently:** If a learning is tagged with `src/foo.rs` but that file no longer exists, the relevance matching system simply doesn't match it (substring match fails).
+- **Partial path matches still work:** Learnings tagged with higher-level paths like `src/` or keywords like `Rust` or `SQLite` remain relevant even as file structure changes.
+- **Pruning removes irrelevant learnings over time:** If a file-specific learning never matches in 90 days, it's pruned.
+
+**Scenario: Long gap between runs (months or years)**
+
+If a user runs `ralph run`, then returns to the project 6 months later:
+
+- **Old learnings persist** but are likely pruned due to age (90-day threshold)
+- **Old failure reports are deleted** if their tasks were completed (7-day grace period)
+- **Strategy metrics persist indefinitely** unless the task is completed and then pruned (30-day grace period)
+
+This is intentional: long-dormant projects start "fresh" without carrying stale context forward, but recently completed projects retain full memory.
+
+**Manual reset:**
+
+If a user wants to clear all memory and start fresh, they can delete the `.ralph/progress.db` file entirely. Ralph will recreate it on the next `ralph run`. This is documented in the CLI help but not exposed as a dedicated subcommand (users can `rm .ralph/progress.db` manually).
+
+**No global learning database:**
+
+Unlike some agent systems that maintain a shared knowledge base across all projects, Ralph's memory is deliberately project-local. This avoids cross-contamination between unrelated codebases and keeps memory queries fast (no need to filter by "project ID").
 
 ### Failure Escalation Lifecycle
 
-<!-- First failure -> report, second -> model escalation, third -> decomposition suggestion, Nth -> human review -->
-<!-- State diagram for retry escalation path -->
+When a task fails repeatedly, Ralph's memory system triggers escalating interventions: first it captures detailed context, then it escalates the model, then it suggests decomposition, and finally it flags the task for human review. This escalation path is automatic and data-driven.
+
+**State transitions on failure:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Task Failure Lifecycle                      │
+└─────────────────────────────────────────────────────────────────────┘
+
+  Attempt 1                      Attempt 2                     Attempt 3
+     │                              │                              │
+     ▼                              ▼                              ▼
+  ┌────────┐                    ┌────────┐                    ┌────────┐
+  │ Claim  │                    │ Claim  │                    │ Claim  │
+  │ Task   │                    │ Task   │                    │ Task   │
+  └───┬────┘                    └───┬────┘                    └───┬────┘
+      │                             │                             │
+      │ (model: sonnet)             │ (model: sonnet)             │ (model: opus)
+      │                             │                             │
+      ▼                             ▼                             ▼
+  ┌─────────┐                   ┌─────────┐                   ┌─────────┐
+  │ Claude  │                   │ Claude  │                   │ Claude  │
+  │ Invoke  │                   │ Invoke  │                   │ Invoke  │
+  └───┬─────┘                   └───┬─────┘                   └───┬─────┘
+      │                             │                             │
+      │ <task-failed>               │ <task-failed>               │ <task-failed>
+      │                             │                             │
+      ▼                             ▼                             ▼
+  ┌──────────────────┐         ┌──────────────────┐         ┌──────────────────┐
+  │ Capture failure  │         │ Capture failure  │         │ Capture failure  │
+  │ report           │         │ report           │         │ report           │
+  └────┬─────────────┘         └────┬─────────────┘         └────┬─────────────┘
+       │                            │                            │
+       │ consecutive_failures = 1   │ consecutive_failures = 2   │ consecutive_failures = 3
+       │                            │                            │
+       ▼                            ▼                            ▼
+  ┌──────────────────┐         ┌──────────────────┐         ┌──────────────────┐
+  │ Update strategy_ │         │ Update strategy_ │         │ Update strategy_ │
+  │ metrics          │         │ metrics          │         │ metrics          │
+  │                  │         │ + escalate model │         │ + set stuck_flag │
+  └────┬─────────────┘         └────┬─────────────┘         └────┬─────────────┘
+       │                            │                            │
+       │ No escalation              │ Model: sonnet → opus       │ Stuck warning
+       │                            │                            │
+       ▼                            ▼                            ▼
+  ┌──────────────────┐         ┌──────────────────┐         ┌──────────────────┐
+  │ release_claim()  │         │ release_claim()  │         │ release_claim()  │
+  │ (retry eligible) │         │ (retry eligible) │         │ (retry eligible) │
+  └──────────────────┘         └──────────────────┘         └──────────────────┘
+       │                            │                            │
+       │ Loop continues             │ Loop continues             │ Loop continues
+       │                            │                            │
+       └───────────> Retry ─────────┴───────────> Retry ─────────┴───────────> Retry
+
+
+  Attempt 4+
+     │
+     ▼
+  ┌────────┐
+  │ Claim  │
+  │ Task   │
+  └───┬────┘
+      │ (model: opus)
+      │
+      ▼
+  ┌─────────┐
+  │ Claude  │
+  │ sees:   │
+  │ "⚠️ Stuck│
+  │  loop   │
+  │  detected│
+  │  ..."   │
+  └───┬─────┘
+      │
+      │ (Claude decides to decompose or emit detailed <task-failed>)
+      │
+      ▼
+  ┌──────────────────┐
+  │ Either:          │
+  │ 1. Task succeeds │
+  │ 2. Task fails    │
+  │    with detailed │
+  │    explanation   │
+  │ 3. Task decom-   │
+  │    posed into    │
+  │    subtasks      │
+  └──────────────────┘
+```
+
+**Escalation stages:**
+
+| Stage | Trigger | Action | Effect |
+|-------|---------|--------|--------|
+| **1. Capture** | First failure (`consecutive_failures = 1`) | Store failure report and retry suggestion | Next iteration sees Previous Attempts section |
+| **2. Escalate Model** | Second consecutive failure (`consecutive_failures = 2`) | `strategy::select_model()` escalates to next tier (haiku→sonnet, sonnet→opus) | More capable model attempts the task |
+| **3. Stuck Warning** | Third consecutive failure (`consecutive_failures = 3`) | Set `stuck_flag = 1`, inject stuck warning in Loop Status | Claude sees explicit warning to try a different approach |
+| **4. Human Escalation** | Fourth+ consecutive failure | No automatic action; stuck warning persists | User should manually intervene (abort run, decompose task, or fix code manually) |
+
+**Implementation in `strategy.rs`:**
+
+The model selection logic reads `consecutive_failures` from `strategy_metrics` and escalates accordingly:
+
+```rust
+pub fn select_model(
+    db: &Db,
+    task_id: &str,
+    strategy: ModelStrategy,
+    hint: Option<&str>,
+) -> (String, String) {
+    // Check for Claude's hint first (highest priority)
+    if let Some(model) = hint {
+        return (model.to_string(), "hinted by previous iteration".to_string());
+    }
+
+    // Query strategy_metrics for this task
+    let metrics = db.query_row(
+        "SELECT consecutive_failures, difficulty_estimate FROM strategy_metrics WHERE task_id = ?",
+        [task_id],
+    ).ok();
+
+    match strategy {
+        ModelStrategy::CostOptimized => {
+            if let Some((failures, _)) = metrics {
+                if failures >= 2 {
+                    return ("opus".to_string(), format!("escalated after {} consecutive failures", failures));
+                }
+            }
+            ("sonnet".to_string(), "default (cost-optimized strategy)".to_string())
+        }
+        ModelStrategy::Escalate => {
+            if let Some((failures, _)) = metrics {
+                match failures {
+                    0 => ("haiku".to_string(), "default (escalate strategy)".to_string()),
+                    1 => ("sonnet".to_string(), "escalated after 1 failure".to_string()),
+                    _ => ("opus".to_string(), format!("escalated after {} failures", failures)),
+                }
+            } else {
+                ("haiku".to_string(), "default (escalate strategy)".to_string())
+            }
+        }
+        // ... other strategies
+    }
+}
+```
+
+**Stuck flag injection:**
+
+When `stuck_flag = 1`, the `render_loop_status()` function (in `memory::context`) appends the stuck warning to the Loop Status section. This warning is always visible when the stuck condition is active, regardless of context budget (it has highest priority within the Loop Status section).
+
+**Decomposition suggestion:**
+
+The stuck warning message explicitly suggests "decomposing the task" as one option. Ralph does not auto-decompose tasks (that would require invoking Claude in a side-channel, breaking the synchronous loop model). Instead, Claude is prompted to either:
+
+1. **Succeed** by trying a fundamentally different approach
+2. **Fail with explanation** using `<task-failed>` and a detailed `<failure-report>` so a human can understand why the task is blocked
+3. **Manually decompose** by suggesting in the output text (not a sigil) that the task should be split, which the human can act on by editing the task DAG or creating new tasks
+
+**Clearing the stuck flag:**
+
+When a task succeeds (outcome = `done`), `consecutive_failures` is reset to 0 and `stuck_flag` is set to 0. This happens in `memory::record_iteration_metrics()`:
+
+```rust
+if outcome == Outcome::Done {
+    db.execute(
+        "UPDATE strategy_metrics
+         SET consecutive_failures = 0,
+             stuck_flag = 0,
+             last_success_at = ?,
+             suggested_model = ?
+         WHERE task_id = ?",
+        [timestamp, model, task_id],
+    )?;
+}
+```
+
+**No infinite retries:**
+
+The escalation system does not prevent infinite retries. If Ralph's `--limit` is set high enough (or 0 = unlimited), a stuck task will retry indefinitely. This is intentional: the user controls the iteration limit, and the stuck warning gives Claude (and the user monitoring the run) enough context to decide when to give up. In a future iteration, a hard retry limit per task (e.g., max 5 attempts) could be added as a safety mechanism.
 
 ## Migration Path
 
