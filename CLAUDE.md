@@ -34,6 +34,7 @@ SQLite-based task management with WAL mode and foreign keys:
 
 ### Claude Integration (`src/claude/`)
 - **client.rs**: Spawns `claude` CLI with `--output-format stream-json` and `--model <model>`, handles both direct and sandboxed execution. Builds the system prompt with DAG task assignment instructions. Also defines `TaskInfo`, `ParentContext`, `BlockerContext` structs and `build_task_context()` for rendering task assignment markdown.
+- **interactive.rs**: Implements `prompt`, `specs`, and `plan` subcommands. `run_interactive()` spawns Claude with inherited stdio for interactive sessions. `run_streaming()` spawns Claude in print mode with NDJSON streaming and no tools for plan decomposition. Also contains `extract_plan_json()` for parsing plan output, `PlanOutput`/`PlanTask` structs, and system prompt builders for all three subcommands.
 - **events.rs**: Typed event structs for NDJSON parsing. Parses sigils from result text: `<task-done>`, `<task-failed>`, `<next-model>`, `<promise>COMPLETE/FAILURE</promise>`
 - **parser.rs**: Deserializes raw JSON into typed events
 
@@ -86,9 +87,10 @@ ralph run [PROMPT_FILE]       # Run agent loop (default prompt: "prompt")
   --model-strategy=STRAT      # fixed, cost-optimized, escalate, plan-then-execute
   --no-sandbox                # Disable macOS sandbox
   --allow=RULE                # Enable sandbox rule (e.g., aws)
-ralph plan [PROMPT_FILE]      # Decompose prompt into task DAG (not yet implemented)
-ralph specs                   # Author specification documents (not yet implemented)
-ralph prompt                  # Create a new prompt file (not yet implemented)
+ralph plan [PROMPT_FILE]      # Decompose prompt into task DAG
+  --model=MODEL               # Model for planning (default: opus)
+ralph specs                   # Author specification documents (interactive)
+ralph prompt                  # Create a new prompt file (interactive)
 ```
 
 Environment variables: `RALPH_FILE`, `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RALPH_ITERATION`, `RALPH_TOTAL`.
