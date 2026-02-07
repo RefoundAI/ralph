@@ -447,22 +447,395 @@ Bump `SCHEMA_VERSION` to `2`. Existing databases auto-migrate on next `init_db()
 
 ## Sigil Design
 
+Ralph uses XML-style sigils embedded in Claude's output text to signal structured information. Sigils are parsed from the `ResultEvent.result` field after Claude completes. This section defines four new sigils for iteration memory, following the existing patterns established in `src/claude/events.rs`.
+
+**Design principles:**
+
+1. **XML-style tags:** All sigils use `<tag>content</tag>` format for easy regex parsing
+2. **Whitespace tolerance:** Content is trimmed; leading/trailing whitespace is ignored
+3. **First occurrence wins:** If multiple identical sigils appear, the first valid one is used
+4. **Fail-safe parsing:** Malformed sigils (missing closing tag, empty content) return `None`; parsing never errors
+5. **Optional by default:** All new sigils are optional; their absence changes nothing about execution
+6. **Backward compatible:** Existing Ralph installations ignore unknown sigils; new sigils add capability without breaking existing workflows
+
 ### Error Recovery Memory
 
-<!-- <failure-report> sigil: format, regex, examples, backward compatibility -->
+#### `<failure-report>` Sigil
+
+**Purpose:** Capture structured failure information when a task fails, so retries have full context about what went wrong and what was already tried.
+
+**Format:**
+
+```
+<failure-report>
+what_tried: Brief description of approach taken (1-2 sentences)
+why_failed: Root cause analysis (1-2 sentences)
+error_category: test_failure | build_error | missing_file | logic_error | type_error | dependency_error | timeout | unknown
+relevant_files: src/path/to/file.rs, src/another/file.rs
+stack_trace: First 3-5 lines of error output or stack trace
+</failure-report>
+```
+
+**Schema:** The sigil content is a key-value format with one field per line. Field order is not significant. All fields are optional except `what_tried` and `why_failed`.
+
+**Field definitions:**
+
+- `what_tried`: Human-readable summary of the approach Claude took (e.g., "Modified the claim_task function to check for stuck flags before claiming")
+- `why_failed`: Root cause of the failure (e.g., "Foreign key constraint violation because strategy_metrics row doesn't exist yet")
+- `error_category`: Machine-readable error type from a predefined enum. Used for pattern matching and relevance scoring. If omitted, defaults to `unknown`.
+- `relevant_files`: Comma-separated list of file paths mentioned in the error or modified during the attempt. Used for file-based relevance matching.
+- `stack_trace`: First few lines of the error output. Truncated to 500 characters at storage time.
+
+**Parsing logic:**
+
+```rust
+/// Parse the `<failure-report>` sigil from result text.
+///
+/// Returns a `FailureReport` struct if found, `None` if absent or malformed.
+pub fn parse_failure_report(text: &str) -> Option<FailureReport> {
+    let start_tag = "<failure-report>";
+    let end_tag = "</failure-report>";
+
+    let start_idx = text.find(start_tag)?;
+    let content_start = start_idx + start_tag.len();
+    let end_idx = text[content_start..].find(end_tag)?;
+    let content = text[content_start..content_start + end_idx].trim();
+
+    if content.is_empty() {
+        return None;
+    }
+
+    // Parse key-value pairs line by line
+    let mut what_tried = None;
+    let mut why_failed = None;
+    let mut error_category = None;
+    let mut relevant_files = Vec::new();
+    let mut stack_trace = None;
+
+    for line in content.lines() {
+        if let Some((key, value)) = line.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
+            match key {
+                "what_tried" => what_tried = Some(value.to_string()),
+                "why_failed" => why_failed = Some(value.to_string()),
+                "error_category" => error_category = Some(value.to_string()),
+                "relevant_files" => {
+                    relevant_files = value.split(',').map(|s| s.trim().to_string()).collect()
+                }
+                "stack_trace" => stack_trace = Some(value.to_string()),
+                _ => {} // Ignore unknown fields (forward compatibility)
+            }
+        }
+    }
+
+    // Require at minimum what_tried and why_failed
+    Some(FailureReport {
+        what_tried: what_tried?,
+        why_failed: why_failed?,
+        error_category: error_category.unwrap_or_else(|| "unknown".to_string()),
+        relevant_files,
+        stack_trace,
+    })
+}
+```
+
+**Storage:** Parsed fields are inserted into the `failure_reports` table. The `relevant_files` Vec is serialized to JSON.
+
+**Example usage:**
+
+```
+I attempted to fix the foreign key constraint issue but encountered an error.
+
+<failure-report>
+what_tried: Modified claim_task() to initialize strategy_metrics row before claiming
+why_failed: SQLite foreign key constraint failed because the task doesn't exist in tasks table yet
+error_category: dependency_error
+relevant_files: src/dag/tasks.rs, src/memory/metrics.rs
+stack_trace: FOREIGN KEY constraint failed (code 787)
+    at Connection::execute (src/dag/db.rs:45)
+</failure-report>
+
+<task-failed>t-0dfebf</task-failed>
+```
+
+**Edge cases:**
+
+- **Empty sigil:** `<failure-report></failure-report>` → returns `None`
+- **Missing required fields:** If `what_tried` or `why_failed` are missing → returns `None`
+- **Extra fields:** Unknown fields are silently ignored (forward compatibility for future additions)
+- **Multiline values:** Not supported in v1; values must fit on one line. Use `\n` escape or truncate.
+- **No sigil present:** If Claude doesn't emit a `<failure-report>`, a minimal failure report is auto-generated from the `ResultEvent.result` text (truncated to 200 chars) with `error_category: unknown` and empty `what_tried`/`why_failed`.
 
 ### Self-Improvement / Learning Extraction
 
-<!-- <learning> sigil: format, regex, examples, backward compatibility -->
+#### `<learning>` Sigil
+
+**Purpose:** Capture reusable insights—both from successful iterations ("this approach worked") and failures ("this dependency is tricky")—to improve future task success rates.
+
+**Format:**
+
+```
+<learning category="success_pattern" tags="Rust, SQLite, foreign keys">
+When adding new tables that reference existing tables, always check that foreign key constraints are enabled (PRAGMA foreign_keys = ON) and that referenced rows exist before inserting.
+</learning>
+```
+
+**Schema:** XML tag with two attributes (`category` and `tags`) and text content.
+
+**Field definitions:**
+
+- `category` (required): Coarse-grained classification. Valid values:
+  - `success_pattern`: An approach that worked well
+  - `pitfall`: A gotcha or mistake to avoid
+  - `tool_usage`: Best practice for using a tool (git, cargo, sqlite3, etc.)
+  - `code_structure`: Architectural insight about the codebase
+  - `testing_strategy`: How to test a particular type of change
+  - `debugging_technique`: Diagnostic approach that helped
+  - `other`: Catch-all for miscellaneous learnings
+- `tags` (required): Comma-separated keywords for relevance matching. Should include: file paths, programming languages, error types, tool names, domain concepts.
+- **Content** (required): 1-3 sentence description of the learning. Should be actionable and concise.
+
+**Parsing logic:**
+
+```rust
+/// Parse `<learning>` sigils from result text.
+///
+/// Returns a Vec of `Learning` structs (may be empty). Multiple learnings in one result are allowed.
+pub fn parse_learnings(text: &str) -> Vec<Learning> {
+    let mut learnings = Vec::new();
+    let mut search_offset = 0;
+
+    while let Some(start_idx) = text[search_offset..].find("<learning") {
+        let abs_start = search_offset + start_idx;
+
+        // Find the end of the opening tag
+        if let Some(tag_end) = text[abs_start..].find('>') {
+            let opening_tag = &text[abs_start..abs_start + tag_end + 1];
+
+            // Extract attributes using regex or simple parsing
+            let category = extract_attribute(opening_tag, "category");
+            let tags_str = extract_attribute(opening_tag, "tags");
+
+            // Find closing tag
+            if let Some(close_idx) = text[abs_start + tag_end..].find("</learning>") {
+                let content_start = abs_start + tag_end + 1;
+                let content_end = abs_start + tag_end + close_idx;
+                let content = text[content_start..content_end].trim();
+
+                if let (Some(cat), Some(tags), false) = (category, tags_str, content.is_empty()) {
+                    learnings.push(Learning {
+                        category: cat,
+                        tags: tags.split(',').map(|s| s.trim().to_string()).collect(),
+                        content: content.to_string(),
+                    });
+                }
+
+                search_offset = content_end + "</learning>".len();
+                continue;
+            }
+        }
+
+        // Failed to parse this occurrence, skip it
+        search_offset = abs_start + 1;
+    }
+
+    learnings
+}
+```
+
+**Storage:** Each parsed learning gets a unique ID (`l-{6 hex}`) and is inserted into the `learnings` table. The `tags` Vec is serialized to JSON in the `relevance_tags` column.
+
+**Example usage:**
+
+```
+I successfully added the failure_reports table and wired up the foreign key constraints.
+
+<learning category="success_pattern" tags="Rust, SQLite, foreign keys, migration">
+When adding new tables with foreign keys in SQLite, enable PRAGMA foreign_keys = ON at connection time and use ON DELETE CASCADE to maintain referential integrity across table deletions.
+</learning>
+
+<learning category="tool_usage" tags="cargo, testing, integration tests">
+Use `cargo test --test integration_test_name` to run a specific integration test file without running the entire suite, saving time during iteration.
+</learning>
+
+<task-done>t-abc123</task-done>
+```
+
+**Multiple learnings:** Claude can emit multiple `<learning>` sigils in a single result. All are captured and stored separately.
+
+**Edge cases:**
+
+- **Missing attributes:** If `category` or `tags` are missing → skip this learning
+- **Empty content:** `<learning category="..." tags="..."></learning>` → skip this learning
+- **Malformed XML:** No closing tag, invalid attribute syntax → skip this learning
+- **No sigil present:** If Claude doesn't emit any `<learning>` sigils, no learnings are captured (this is the common case; learnings are opt-in)
 
 ### Strategic Intelligence
 
-<!-- <difficulty-estimate> sigil: format, regex, examples -->
-<!-- <retry-suggestion> sigil: format, regex, examples -->
+#### `<difficulty-estimate>` Sigil
+
+**Purpose:** Let Claude assess task complexity after working on it, informing future model selection and effort estimation.
+
+**Format:**
+
+```
+<difficulty-estimate>hard</difficulty-estimate>
+```
+
+**Schema:** Simple string content with one of five predefined values.
+
+**Valid values:**
+
+- `trivial`: Single-file, few-line change; no research needed; obvious solution
+- `easy`: Straightforward implementation; standard patterns; minimal cross-file coordination
+- `moderate`: Requires understanding multiple modules; some design decisions; typical feature work
+- `hard`: Complex cross-module changes; subtle bugs; performance optimization; architectural decisions
+- `blocked`: Cannot proceed without external input (missing requirements, upstream bugs, human decision needed)
+
+**Parsing logic:**
+
+```rust
+const VALID_DIFFICULTIES: &[&str] = &["trivial", "easy", "moderate", "hard", "blocked"];
+
+/// Parse the `<difficulty-estimate>...</difficulty-estimate>` sigil from result text.
+///
+/// Returns `Some(difficulty)` if a valid difficulty level is found, `None` otherwise.
+pub fn parse_difficulty_estimate(text: &str) -> Option<String> {
+    let start_tag = "<difficulty-estimate>";
+    let end_tag = "</difficulty-estimate>";
+
+    let start_idx = text.find(start_tag)?;
+    let content_start = start_idx + start_tag.len();
+    let end_idx = text[content_start..].find(end_tag)?;
+    let difficulty = text[content_start..content_start + end_idx].trim();
+
+    if VALID_DIFFICULTIES.contains(&difficulty) {
+        Some(difficulty.to_string())
+    } else {
+        None
+    }
+}
+```
+
+**Storage:** Stored in `strategy_metrics.difficulty_estimate` column. Updated on each iteration; last estimate wins.
+
+**Example usage:**
+
+```
+I completed the task successfully after exploring the codebase.
+
+<difficulty-estimate>moderate</difficulty-estimate>
+<task-done>t-xyz789</task-done>
+```
+
+**Use in model selection:** When selecting a model for a new task, if a similar task (by file paths or keywords) was previously completed at difficulty `hard` by `sonnet`, Ralph can infer that `sonnet` is sufficient. If a `hard` task failed with `haiku`, Ralph escalates to `sonnet` or `opus`.
+
+**Edge cases:**
+
+- **Invalid value:** `<difficulty-estimate>super-hard</difficulty-estimate>` → returns `None`, no difficulty recorded
+- **Empty:** `<difficulty-estimate></difficulty-estimate>` → returns `None`
+- **Multiple estimates:** First valid one wins (consistent with other sigils)
+- **No sigil:** If absent, `difficulty_estimate` remains NULL in `strategy_metrics`
+
+#### `<retry-suggestion>` Sigil
+
+**Purpose:** When a task fails, Claude can suggest a different approach for the retry, giving the next iteration a head start.
+
+**Format:**
+
+```
+<retry-suggestion>
+Try breaking this into two subtasks: first add the DB schema migration, then add the parsing logic. The all-at-once approach caused too many merge conflicts.
+</retry-suggestion>
+```
+
+**Schema:** Free-form text content (1-3 sentences). No structured fields—this is Claude talking to its future self.
+
+**Parsing logic:**
+
+```rust
+/// Parse the `<retry-suggestion>...</retry-suggestion>` sigil from result text.
+///
+/// Returns `Some(suggestion)` if found, `None` if absent or empty.
+pub fn parse_retry_suggestion(text: &str) -> Option<String> {
+    let start_tag = "<retry-suggestion>";
+    let end_tag = "</retry-suggestion>";
+
+    let start_idx = text.find(start_tag)?;
+    let content_start = start_idx + start_tag.len();
+    let end_idx = text[content_start..].find(end_tag)?;
+    let suggestion = text[content_start..content_start + end_idx].trim();
+
+    if suggestion.is_empty() {
+        None
+    } else {
+        Some(suggestion.to_string())
+    }
+}
+```
+
+**Storage:** Stored in `failure_reports` table (new column: `retry_suggestion TEXT`). This is part of the failure report for a specific attempt.
+
+**Example usage:**
+
+```
+I tried to add all the memory tables in one migration but hit a foreign key cycle.
+
+<failure-report>
+what_tried: Created all four tables (iteration_outcomes, failure_reports, learnings, strategy_metrics) in a single CREATE TABLE batch
+why_failed: SQLite rejected the foreign key from failure_reports to iteration_outcomes because the composite key wasn't created yet
+error_category: dependency_error
+relevant_files: src/dag/db.rs
+stack_trace: FOREIGN KEY constraint failed
+</failure-report>
+
+<retry-suggestion>
+Split the migration into two steps: first create tables with no foreign keys, then add foreign keys with ALTER TABLE. Or reorder the CREATE TABLE statements so iteration_outcomes comes before failure_reports.
+</retry-suggestion>
+
+<task-failed>t-def456</task-failed>
+```
+
+**Injection on retry:** When retrying a failed task, the `### Previous Attempts` section includes the `retry_suggestion` from the most recent failure, giving Claude a concrete starting point.
+
+**Edge cases:**
+
+- **No suggestion:** If absent, the retry proceeds with only the failure report context (no suggestion)
+- **Multiple suggestions:** First one wins
+- **Empty:** `<retry-suggestion></retry-suggestion>` → returns `None`
 
 ### Backward Compatibility
 
-<!-- All new sigils are optional; their absence changes nothing -->
+**All new sigils are optional.** Ralph continues to function exactly as before if Claude does not emit any of these sigils:
+
+- **No `<failure-report>`:** A minimal failure report is auto-generated from `ResultEvent.result` (first 200 chars), with empty `what_tried`, `why_failed: "Task failed (no structured report)"`, and `error_category: unknown`.
+- **No `<learning>`:** No learnings are captured. This is the common case; learnings are opt-in for when Claude discovers a reusable insight.
+- **No `<difficulty-estimate>`:** The `difficulty_estimate` column remains NULL. Model selection proceeds without difficulty data.
+- **No `<retry-suggestion>`:** The retry proceeds with failure report context only.
+
+**Graceful degradation:** If a sigil is malformed (missing closing tag, invalid values, empty content), parsing returns `None` and execution continues. Ralph never errors due to sigil parsing failures.
+
+**Forward compatibility:** Unknown fields in `<failure-report>` are silently ignored. Unknown categories in `<learning>` are accepted (stored as-is). This allows future extensions without breaking old Ralph versions.
+
+**Versioning:** The sigil format is not versioned explicitly. Changes to sigil structure (new fields, new categories) are additive and backward-compatible by design. If a breaking change is ever needed, a new sigil name would be introduced (e.g., `<failure-report-v2>`).
+
+**Documentation in system prompt:** When the memory system is active, Ralph's system prompt (built in `claude::client::build_system_prompt()`) will document these sigils in a new section, similar to how the existing task sigils are currently documented. Example:
+
+```markdown
+## Memory Sigils (Optional)
+
+You can optionally emit these sigils to improve cross-iteration learning:
+
+- `<failure-report>...</failure-report>` — Structured failure details (see format below)
+- `<learning category="..." tags="...">...</learning>` — Capture a reusable insight
+- `<difficulty-estimate>trivial|easy|moderate|hard|blocked</difficulty-estimate>` — Task complexity assessment
+- `<retry-suggestion>...</retry-suggestion>` — Advice for the next attempt
+
+These are optional. Omitting them has no negative effect; they purely add capability.
+```
+
+**Migration path:** Existing `.ralph/progress.db` files from pre-memory Ralph installations will auto-migrate on first run (v1 → v2 schema upgrade adds the new tables). Old prompts and tasks continue to work unchanged. No user action required.
 
 ## Context Injection
 
