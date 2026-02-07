@@ -100,7 +100,8 @@ fn select_fixed(config: &Config) -> String {
 /// Cost-optimized strategy: read the progress file and pick the cheapest
 /// model that can handle the current iteration.
 fn select_cost_optimized(config: &Config) -> String {
-    let content = fs::read_to_string(&config.progress_file).unwrap_or_default();
+    let progress_db = config.project_root.join(".ralph/progress.db");
+    let content = fs::read_to_string(progress_db).unwrap_or_default();
     analyze_progress(&content, config.iteration)
 }
 
@@ -179,7 +180,8 @@ fn level_to_model(level: u8) -> String {
 /// Escalation is monotonic upward (haiku → sonnet → opus) unless a Claude
 /// hint explicitly requests a lower model (handled in `select_model`).
 fn select_escalate(config: &mut Config) -> String {
-    let content = fs::read_to_string(&config.progress_file).unwrap_or_default();
+    let progress_db = config.project_root.join(".ralph/progress.db");
+    let content = fs::read_to_string(progress_db).unwrap_or_default();
     let needed_level = assess_escalation_need(&content);
 
     // Only escalate: take the max of current level and assessed need
@@ -247,6 +249,8 @@ mod tests {
     use super::*;
     use crate::cli::Args;
     use crate::config::Config;
+    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig, PromptsConfig};
+    use std::path::PathBuf;
 
     /// Helper to build a Config with fixed strategy.
     fn fixed_config(model: &str) -> Config {
@@ -255,15 +259,20 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],
             model_strategy: Some("fixed".to_string()),
             model: Some(model.to_string()),
         };
-        Config::from_args(args).unwrap()
+        let project = ProjectConfig {
+            root: PathBuf::from("/test"),
+            config: RalphConfig {
+                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
+                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+            },
+        };
+        Config::from_args(args, project).unwrap()
     }
 
     #[test]
@@ -394,15 +403,20 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],
             model_strategy: Some("cost-optimized".to_string()),
             model: None,
         };
-        let mut config = Config::from_args(args).unwrap();
+        let project = ProjectConfig {
+            root: PathBuf::from("/test"),
+            config: RalphConfig {
+                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
+                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+            },
+        };
+        let mut config = Config::from_args(args, project).unwrap();
         assert_eq!(select_model(&mut config, Some("haiku")).model, "haiku");
     }
 
@@ -415,15 +429,20 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],
             model_strategy: Some("escalate".to_string()),
             model: None,
         };
-        Config::from_args(args).unwrap()
+        let project = ProjectConfig {
+            root: PathBuf::from("/test"),
+            config: RalphConfig {
+                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
+                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+            },
+        };
+        Config::from_args(args, project).unwrap()
     }
 
     #[test]
@@ -541,15 +560,20 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],
             model_strategy: Some("plan-then-execute".to_string()),
             model: None,
         };
-        Config::from_args(args).unwrap()
+        let project = ProjectConfig {
+            root: PathBuf::from("/test"),
+            config: RalphConfig {
+                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
+                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+            },
+        };
+        Config::from_args(args, project).unwrap()
     }
 
     #[test]

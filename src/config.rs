@@ -3,8 +3,10 @@
 use anyhow::{bail, Result};
 use std::env;
 use std::fmt;
+use std::path::PathBuf;
 
 use crate::cli::Args;
+use crate::project::{ProjectConfig, RalphConfig};
 
 /// Default allowed tools when not using sandbox.
 const DEFAULT_ALLOWED_TOOLS: &[&str] = &[
@@ -52,8 +54,6 @@ impl ModelStrategy {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub prompt_file: String,
-    pub progress_file: String,
-    pub specs_dir: String,
     pub limit: u32,
     pub iteration: u32,
     pub total: u32,
@@ -69,11 +69,15 @@ pub struct Config {
     /// Escalation level for the `Escalate` strategy (0=haiku, 1=sonnet, 2=opus).
     /// Tracks the minimum model tier; the strategy never auto-de-escalates below this.
     pub escalation_level: u8,
+    /// Project root directory (directory containing .ralph.toml).
+    pub project_root: PathBuf,
+    /// Parsed project configuration.
+    pub ralph_config: RalphConfig,
 }
 
 impl Config {
-    /// Build config from CLI args.
-    pub fn from_args(args: Args) -> Result<Self> {
+    /// Build config from CLI args and project config.
+    pub fn from_args(args: Args, project: ProjectConfig) -> Result<Self> {
         // Check for mutually exclusive flags
         if args.once && args.limit.is_some() && args.limit.unwrap() > 0 {
             bail!("--once and --limit are mutually exclusive");
@@ -103,14 +107,6 @@ impl Config {
             .prompt_file
             .unwrap_or_else(|| "prompt".to_string());
 
-        let progress_file = args
-            .progress_file
-            .unwrap_or_else(|| "progress.txt".to_string());
-
-        let specs_dir = args
-            .specs_dir
-            .unwrap_or_else(|| "specs".to_string());
-
         let limit = if args.once {
             1
         } else {
@@ -137,8 +133,6 @@ impl Config {
 
         Ok(Config {
             prompt_file,
-            progress_file,
-            specs_dir,
             limit,
             iteration,
             total,
@@ -149,6 +143,8 @@ impl Config {
             model,
             current_model,
             escalation_level: 0,
+            project_root: project.root,
+            ralph_config: project.config,
         })
     }
 
@@ -170,6 +166,7 @@ impl Config {
 mod tests {
     use super::*;
     use crate::cli::Args;
+    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig, PromptsConfig};
 
     /// Helper to build Args with model fields set.
     fn args_with_model(model: Option<&str>, strategy: Option<&str>) -> Args {
@@ -178,8 +175,6 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],
@@ -188,10 +183,21 @@ mod tests {
         }
     }
 
+    /// Helper to build a test ProjectConfig.
+    fn test_project() -> ProjectConfig {
+        ProjectConfig {
+            root: PathBuf::from("/test"),
+            config: RalphConfig {
+                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
+                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+            },
+        }
+    }
+
     #[test]
     fn config_default_strategy_is_cost_optimized() {
         let args = args_with_model(None, None);
-        let config = Config::from_args(args).unwrap();
+        let config = Config::from_args(args, test_project()).unwrap();
         assert_eq!(config.model_strategy, ModelStrategy::CostOptimized);
         assert_eq!(config.model, None);
         assert_eq!(config.current_model, "sonnet");
@@ -200,14 +206,14 @@ mod tests {
     #[test]
     fn config_fixed_strategy_requires_model() {
         let args = args_with_model(None, Some("fixed"));
-        let result = Config::from_args(args);
+        let result = Config::from_args(args, test_project());
         assert!(result.is_err());
     }
 
     #[test]
     fn config_fixed_strategy_with_model() {
         let args = args_with_model(Some("opus"), Some("fixed"));
-        let config = Config::from_args(args).unwrap();
+        let config = Config::from_args(args, test_project()).unwrap();
         assert_eq!(config.model_strategy, ModelStrategy::Fixed);
         assert_eq!(config.model, Some("opus".to_string()));
         assert_eq!(config.current_model, "opus");
@@ -216,7 +222,7 @@ mod tests {
     #[test]
     fn config_model_alone_implies_fixed() {
         let args = args_with_model(Some("haiku"), None);
-        let config = Config::from_args(args).unwrap();
+        let config = Config::from_args(args, test_project()).unwrap();
         assert_eq!(config.model_strategy, ModelStrategy::Fixed);
         assert_eq!(config.current_model, "haiku");
     }
@@ -224,7 +230,7 @@ mod tests {
     #[test]
     fn config_escalate_starts_at_haiku() {
         let args = args_with_model(None, Some("escalate"));
-        let config = Config::from_args(args).unwrap();
+        let config = Config::from_args(args, test_project()).unwrap();
         assert_eq!(config.model_strategy, ModelStrategy::Escalate);
         assert_eq!(config.current_model, "haiku");
     }
@@ -232,7 +238,7 @@ mod tests {
     #[test]
     fn config_plan_then_execute_starts_at_opus() {
         let args = args_with_model(None, Some("plan-then-execute"));
-        let config = Config::from_args(args).unwrap();
+        let config = Config::from_args(args, test_project()).unwrap();
         assert_eq!(config.model_strategy, ModelStrategy::PlanThenExecute);
         assert_eq!(config.current_model, "opus");
     }
@@ -240,7 +246,7 @@ mod tests {
     #[test]
     fn config_next_iteration_preserves_strategy() {
         let args = args_with_model(Some("sonnet"), Some("fixed"));
-        let config = Config::from_args(args).unwrap();
+        let config = Config::from_args(args, test_project()).unwrap();
         let next = config.next_iteration();
         assert_eq!(next.model_strategy, ModelStrategy::Fixed);
         assert_eq!(next.model, Some("sonnet".to_string()));

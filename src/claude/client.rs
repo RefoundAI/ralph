@@ -29,7 +29,6 @@ fn build_claude_args(config: &Config) -> Vec<String> {
         "--system-prompt".to_string(),
         system_prompt,
         format!("@{}", config.prompt_file),
-        format!("@{}", config.progress_file),
     ];
 
     // Add tool args based on sandbox mode
@@ -199,6 +198,7 @@ fn drain_stderr(mut stderr: std::process::ChildStderr) -> thread::JoinHandle<Str
 }
 
 fn build_system_prompt(config: &Config) -> String {
+    let progress_db = config.project_root.join(".ralph/progress.db");
     format!(
         r#"You are operating in a Ralph loop - an autonomous, iterative coding workflow.
 
@@ -257,10 +257,10 @@ Rules:
 - If omitted, Ralph's configured model strategy decides automatically
 - Use this when you can tell the next task is trivial (hint haiku) or complex (hint opus)"#,
         config.prompt_file,
-        config.progress_file,
-        config.progress_file,
-        config.progress_file,
-        config.progress_file,
+        progress_db.display(),
+        progress_db.display(),
+        progress_db.display(),
+        progress_db.display(),
     )
 }
 
@@ -304,6 +304,8 @@ fn detect_git_dir() -> String {
 mod tests {
     use super::*;
     use crate::cli::Args;
+    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig, PromptsConfig};
+    use std::path::PathBuf;
 
     fn test_config() -> Config {
         let args = Args {
@@ -311,15 +313,20 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],
             model_strategy: Some("cost-optimized".to_string()),
             model: None,
         };
-        Config::from_args(args).unwrap()
+        let project = ProjectConfig {
+            root: PathBuf::from("/test"),
+            config: RalphConfig {
+                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
+                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+            },
+        };
+        Config::from_args(args, project).unwrap()
     }
 
     #[test]
@@ -402,12 +409,12 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_contains_progress_file() {
+    fn system_prompt_contains_progress_db() {
         let config = test_config();
         let prompt = build_system_prompt(&config);
         assert!(
-            prompt.contains(&config.progress_file),
-            "system prompt should reference the progress file"
+            prompt.contains(".ralph/progress.db"),
+            "system prompt should reference the progress database"
         );
     }
 
@@ -439,15 +446,20 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],
             model_strategy: Some("fixed".to_string()),
             model: Some("opus".to_string()),
         };
-        let config = Config::from_args(args).unwrap();
+        let project = ProjectConfig {
+            root: PathBuf::from("/test"),
+            config: RalphConfig {
+                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
+                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+            },
+        };
+        let config = Config::from_args(args, project).unwrap();
         let cli_args = build_claude_args(&config);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
@@ -463,15 +475,20 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],
             model_strategy: Some("escalate".to_string()),
             model: None,
         };
-        let config = Config::from_args(args).unwrap();
+        let project = ProjectConfig {
+            root: PathBuf::from("/test"),
+            config: RalphConfig {
+                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
+                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+            },
+        };
+        let config = Config::from_args(args, project).unwrap();
         let cli_args = build_claude_args(&config);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
@@ -487,15 +504,20 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],
             model_strategy: Some("plan-then-execute".to_string()),
             model: None,
         };
-        let config = Config::from_args(args).unwrap();
+        let project = ProjectConfig {
+            root: PathBuf::from("/test"),
+            config: RalphConfig {
+                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
+                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+            },
+        };
+        let config = Config::from_args(args, project).unwrap();
         let cli_args = build_claude_args(&config);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(

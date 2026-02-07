@@ -31,7 +31,10 @@ fn run() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let config = config::Config::from_args(args)?;
+    // Discover project config (walk up directory tree to find .ralph.toml)
+    let project = project::discover()?;
+
+    let config = config::Config::from_args(args, project)?;
 
     output::formatter::print_iteration_info(&config);
 

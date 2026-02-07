@@ -27,14 +27,6 @@ pub struct Args {
     #[arg(long)]
     pub no_sandbox: bool,
 
-    /// Path to progress tracking file
-    #[arg(long, value_name = "PATH", env = "RALPH_PROGRESS_FILE")]
-    pub progress_file: Option<String>,
-
-    /// Path to specs directory
-    #[arg(long, value_name = "PATH", env = "RALPH_SPECS_DIR")]
-    pub specs_dir: Option<String>,
-
     /// Maximum iterations; 0 = forever
     #[arg(long, value_name = "N", env = "RALPH_LIMIT")]
     pub limit: Option<u32>,
@@ -124,8 +116,6 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],
@@ -224,8 +214,6 @@ mod tests {
             prompt_file: None,
             once: false,
             no_sandbox: false,
-            progress_file: None,
-            specs_dir: None,
             limit: None,
             allowed_tools: None,
             allow: vec![],

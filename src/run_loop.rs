@@ -19,15 +19,11 @@ pub enum Outcome {
 
 /// Run the main loop until completion, failure, or limit.
 pub fn run(mut config: Config) -> Result<Outcome> {
-    // Ensure prompt and progress files exist
+    // Ensure prompt file exists
     touch_file(&config.prompt_file)?;
-    touch_file(&config.progress_file)?;
 
-    // Check if specs exist; if not, run interactive mode
-    if !has_specs(&config.specs_dir) {
-        fs::create_dir_all(&config.specs_dir).ok();
-        run_interactive_specs()?;
-    }
+    // Progress file is always .ralph/progress.db, created by ralph init
+    // No need to touch it here
 
     loop {
         // Set up logging
@@ -76,9 +72,10 @@ pub fn run(mut config: Config) -> Result<Outcome> {
             strategy::select_model(&mut config, next_model_hint.as_deref());
 
         // Log override events when hint disagrees with strategy
+        let progress_db = config.project_root.join(".ralph/progress.db");
         if selection.was_overridden {
             strategy::log_model_override(
-                &config.progress_file,
+                progress_db.to_str().unwrap(),
                 config.iteration,
                 &selection,
             );
@@ -95,45 +92,4 @@ fn touch_file(path: &str) -> Result<()> {
         fs::write(path, "").context("Failed to create file")?;
     }
     Ok(())
-}
-
-fn has_specs(dir: &str) -> bool {
-    let path = Path::new(dir);
-    if !path.is_dir() {
-        return false;
-    }
-
-    fs::read_dir(path)
-        .map(|entries| {
-            entries.filter_map(|e| e.ok()).any(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .chars()
-                    .next()
-                    .map(|c| c != '.')
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
-}
-
-fn run_interactive_specs() -> Result<()> {
-    use std::process::Command;
-
-    let status = Command::new("claude")
-        .args([
-            "--system-prompt",
-            r#"You are in interactive specs mode. The user needs help defining specifications
-for their project. Ask questions one at a time to understand what they want to build.
-Write specification files to the specs/ directory."#,
-        ])
-        .status()
-        .context("Failed to run interactive specs")?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("Interactive specs exited with code: {}", status);
-    }
 }
