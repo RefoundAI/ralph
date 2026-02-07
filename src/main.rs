@@ -5,6 +5,7 @@ mod config;
 mod claude;
 mod sandbox;
 mod output;
+mod project;
 mod run_loop;
 mod strategy;
 
