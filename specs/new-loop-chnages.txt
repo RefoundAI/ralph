@@ -17,3 +17,5 @@ Recommend starting with system-prompt.md R1-R5 as it's more critical for DAG int
 ---
 
 **R4 (this iteration)**: Implemented build_task_context function with comprehensive tests. All 195 tests pass.
+
+**R2 (this iteration)**: Rewrote build_system_prompt to remove all progress file references and add DAG task assignment instructions. Added <task-done> and <task-failed> sigil documentation. All 196 tests pass.
