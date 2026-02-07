@@ -14,6 +14,29 @@ use crate::sandbox;
 use super::events::{Event, ResultEvent};
 use super::parser;
 
+/// Information about a task assigned to Claude for the current iteration.
+pub struct TaskInfo {
+    pub task_id: String,
+    pub title: String,
+    pub description: String,
+    pub parent: Option<ParentContext>,
+    pub completed_blockers: Vec<BlockerContext>,
+    pub specs_dirs: Vec<String>,
+}
+
+/// Context about a task's parent task.
+pub struct ParentContext {
+    pub title: String,
+    pub description: String,
+}
+
+/// Context about a completed blocker (prerequisite) task.
+pub struct BlockerContext {
+    pub task_id: String,
+    pub title: String,
+    pub summary: String,
+}
+
 /// Build the CLI args vec for invoking the `claude` command.
 fn build_claude_args(config: &Config) -> Vec<String> {
     let system_prompt = build_system_prompt(config);
