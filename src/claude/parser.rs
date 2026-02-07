@@ -79,6 +79,23 @@ fn parse_event(raw: RawEvent) -> Event {
                 task_failed: final_task_failed,
             })
         }
+        Some("stream_event") => {
+            if let Some(event) = raw.event {
+                if event.event_type.as_deref() == Some("content_block_delta") {
+                    if let Some(delta) = event.delta {
+                        let delta_type = delta.delta_type.unwrap_or_default();
+                        let text = match delta_type.as_str() {
+                            "thinking_delta" => delta.thinking.unwrap_or_default(),
+                            _ => delta.text.unwrap_or_default(),
+                        };
+                        if !text.is_empty() {
+                            return Event::StreamDelta(StreamDelta { delta_type, text });
+                        }
+                    }
+                }
+            }
+            Event::Unknown
+        }
         _ => Event::Unknown,
     }
 }

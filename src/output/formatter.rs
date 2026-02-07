@@ -16,16 +16,40 @@ pub struct ToolCallInfo {
 
 /// Format and print an event to the terminal.
 pub fn format_event(event: &Event, tool_calls: &mut HashMap<String, ToolCallInfo>) {
+    format_event_inner(event, tool_calls, false);
+}
+
+/// Format and print an event, suppressing text content blocks.
+///
+/// Shows thinking and result events but hides text output.
+/// Used by the plan command where the text IS the JSON blob.
+pub fn format_event_no_text(event: &Event, tool_calls: &mut HashMap<String, ToolCallInfo>) {
+    format_event_inner(event, tool_calls, true);
+}
+
+fn format_event_inner(
+    event: &Event,
+    tool_calls: &mut HashMap<String, ToolCallInfo>,
+    suppress_text: bool,
+) {
     match event {
         Event::Assistant(assistant) => {
-            let has_text = assistant.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
-            if has_text {
-                if let Some(model) = &assistant.model {
-                    println!("{}", format!("→ {}", model).purple());
+            if !suppress_text {
+                let has_text = assistant
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, ContentBlock::Text { .. }));
+                if has_text {
+                    if let Some(model) = &assistant.model {
+                        println!("{}", format!("→ {}", model).purple());
+                    }
                 }
             }
             for block in &assistant.content {
-                format_content_block(block, tool_calls);
+                match block {
+                    ContentBlock::Text { .. } if suppress_text => {}
+                    _ => format_content_block(block, tool_calls),
+                }
             }
         }
         Event::ToolErrors(errors) => {
@@ -52,6 +76,22 @@ pub fn format_event(event: &Event, tool_calls: &mut HashMap<String, ToolCallInfo
                 }
             }
         }
+        Event::StreamDelta(delta) => {
+            // Stream deltas are always shown (real-time feedback).
+            // suppress_text only applies to the final complete assistant message.
+            use std::io::Write;
+            match delta.delta_type.as_str() {
+                "thinking_delta" => {
+                    print!("{}", delta.text.bright_black());
+                    std::io::stdout().flush().ok();
+                }
+                "text_delta" => {
+                    print!("{}", delta.text.bright_white());
+                    std::io::stdout().flush().ok();
+                }
+                _ => {}
+            }
+        }
         Event::Result(result) => {
             let duration_s = result.duration_ms / 1000;
             let cost = format!("{:.2}", result.total_cost_usd);
@@ -75,7 +115,7 @@ fn format_content_block(block: &ContentBlock, tool_calls: &mut HashMap<String, T
         }
         ContentBlock::Thinking { thinking } => {
             for line in thinking.lines() {
-                println!("{} {}", "┊".black(), line.black());
+                println!("{} {}", "┊".bright_black(), line.bright_black());
             }
         }
         ContentBlock::ToolUse { id, name, input } => {

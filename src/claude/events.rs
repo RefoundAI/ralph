@@ -14,7 +14,17 @@ pub enum Event {
     Assistant(Assistant),
     ToolErrors(Vec<ToolResult>),
     Result(ResultEvent),
+    /// Streaming delta from --include-partial-messages.
+    StreamDelta(StreamDelta),
     Unknown,
+}
+
+/// A streaming text/thinking delta from --include-partial-messages.
+#[derive(Debug)]
+pub struct StreamDelta {
+    /// "text_delta" or "thinking_delta"
+    pub delta_type: String,
+    pub text: String,
 }
 
 /// Assistant message with content blocks.
@@ -144,9 +154,27 @@ pub(crate) struct RawEvent {
     #[serde(rename = "type")]
     pub event_type: Option<String>,
     pub message: Option<RawMessage>,
+    pub event: Option<RawStreamEvent>,
     pub result: Option<String>,
     pub duration_ms: Option<u64>,
     pub total_cost_usd: Option<f64>,
+}
+
+/// Raw stream event from --include-partial-messages.
+#[derive(Deserialize)]
+pub(crate) struct RawStreamEvent {
+    #[serde(rename = "type")]
+    pub event_type: Option<String>,
+    pub delta: Option<RawDelta>,
+}
+
+/// Delta payload inside a stream event.
+#[derive(Deserialize)]
+pub(crate) struct RawDelta {
+    #[serde(rename = "type")]
+    pub delta_type: Option<String>,
+    pub text: Option<String>,
+    pub thinking: Option<String>,
 }
 
 #[derive(Deserialize)]

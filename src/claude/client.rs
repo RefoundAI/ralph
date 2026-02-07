@@ -136,7 +136,7 @@ fn run_direct(args: &[String], log_file: Option<&str>) -> Result<Option<ResultEv
     let stderr = child.stderr.take().context("Failed to capture stderr")?;
     let stderr_thread = drain_stderr(stderr);
 
-    let result = stream_output(stdout, log_file)?;
+    let result = stream_output(stdout, log_file, false)?;
 
     let status = child.wait().context("Failed to wait for claude process")?;
     let stderr_output = stderr_thread.join().unwrap_or_default();
@@ -189,7 +189,7 @@ fn run_sandboxed(args: &[String], log_file: Option<&str>, config: &Config) -> Re
     let stderr = child.stderr.take().context("Failed to capture stderr")?;
     let stderr_thread = drain_stderr(stderr);
 
-    let result = stream_output(stdout, log_file);
+    let result = stream_output(stdout, log_file, false);
 
     // Clean up temp profile
     let _ = std::fs::remove_file(&profile_path);
@@ -210,9 +210,10 @@ fn run_sandboxed(args: &[String], log_file: Option<&str>, config: &Config) -> Re
     result
 }
 
-fn stream_output<R: std::io::Read>(
+pub(crate) fn stream_output<R: std::io::Read>(
     reader: R,
     log_file: Option<&str>,
+    suppress_text: bool,
 ) -> Result<Option<ResultEvent>> {
     let mut log_handle = log_file
         .map(File::create)
@@ -244,7 +245,11 @@ fn stream_output<R: std::io::Read>(
                         task_failed: result.task_failed.clone(),
                     });
                 }
-                formatter::format_event(&event, &mut tool_calls);
+                if suppress_text {
+                    formatter::format_event_no_text(&event, &mut tool_calls);
+                } else {
+                    formatter::format_event(&event, &mut tool_calls);
+                }
             }
             Ok(None) => {}
             Err(_) => {
@@ -257,7 +262,7 @@ fn stream_output<R: std::io::Read>(
 }
 
 /// Drain stderr on a background thread to prevent pipe buffer deadlocks.
-fn drain_stderr(mut stderr: std::process::ChildStderr) -> thread::JoinHandle<String> {
+pub(crate) fn drain_stderr(mut stderr: std::process::ChildStderr) -> thread::JoinHandle<String> {
     thread::spawn(move || {
         let mut buf = String::new();
         let _ = stderr.read_to_string(&mut buf);
