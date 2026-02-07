@@ -1,0 +1,19 @@
+### Completed in This Loop:
+- loop-changes.md R4: DAG-driven loop implementation (open DB, claim tasks, handle sigils)
+- loop-changes.md R5: Cleanup old progress file logic
+- loop-changes.md R6: Colored iteration display (cyan task IDs, green/red status)
+
+ALL of loop-changes.md (R1-R7) is now COMPLETE.
+dag-tracker.md (R1-R8) appears COMPLETE based on code structure and tests.
+
+### Next Steps:
+The next iteration should focus on ONE of these:
+1. **system-prompt.md R1-R5** - System prompt restructuring for DAG support (R6 already done as part of earlier work)
+2. **cli-restructure.md R1** - Start CLI subcommand restructuring (Subcommand enum + R1 implementation)
+3. OR verify/document dag-tracker.md completion status
+
+Recommend starting with system-prompt.md R1-R5 as it's more critical for DAG integration than CLI restructuring.
+
+---
+
+**R4 (this iteration)**: Implemented build_task_context function with comprehensive tests. All 195 tests pass.

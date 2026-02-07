@@ -37,6 +37,48 @@ pub struct BlockerContext {
     pub summary: String,
 }
 
+/// Build a task context block for the assigned task.
+///
+/// Returns a formatted markdown block with task details, parent context,
+/// completed prerequisites, and specs directory references.
+pub fn build_task_context(task: &TaskInfo) -> String {
+    let mut output = String::new();
+
+    output.push_str("## Assigned Task\n\n");
+    output.push_str(&format!("**ID:** {}\n", task.task_id));
+    output.push_str(&format!("**Title:** {}\n", task.title));
+    output.push_str("\n### Description\n");
+    output.push_str(&task.description);
+    output.push_str("\n");
+
+    // Add parent context if present
+    if let Some(ref parent) = task.parent {
+        output.push_str("\n### Parent Context\n");
+        output.push_str(&format!("**Parent:** {}\n", parent.title));
+        output.push_str(&parent.description);
+        output.push_str("\n");
+    }
+
+    // Add completed blockers if present
+    if !task.completed_blockers.is_empty() {
+        output.push_str("\n### Completed Prerequisites\n");
+        for blocker in &task.completed_blockers {
+            output.push_str(&format!(
+                "- [{}] {}: {}\n",
+                blocker.task_id, blocker.title, blocker.summary
+            ));
+        }
+    }
+
+    // Add specs directory references
+    if !task.specs_dirs.is_empty() {
+        output.push_str("\n### Reference Specs\n");
+        output.push_str(&format!("Read all files in: {}\n", task.specs_dirs.join(", ")));
+    }
+
+    output
+}
+
 /// Build the CLI args vec for invoking the `claude` command.
 fn build_claude_args(config: &Config) -> Vec<String> {
     let system_prompt = build_system_prompt(config);
@@ -544,5 +586,138 @@ mod tests {
             cli_args[model_idx + 1], "opus",
             "plan-then-execute strategy should initially pass opus to claude CLI"
         );
+    }
+
+    // --- build_task_context tests ---
+
+    #[test]
+    fn task_context_with_all_fields() {
+        let task = TaskInfo {
+            task_id: "t-abc123".to_string(),
+            title: "Implement feature X".to_string(),
+            description: "Add the new feature X to the codebase.".to_string(),
+            parent: Some(ParentContext {
+                title: "Epic Y".to_string(),
+                description: "The larger epic Y that encompasses this task.".to_string(),
+            }),
+            completed_blockers: vec![
+                BlockerContext {
+                    task_id: "t-prereq1".to_string(),
+                    title: "Setup foundation".to_string(),
+                    summary: "Created the base structure".to_string(),
+                },
+                BlockerContext {
+                    task_id: "t-prereq2".to_string(),
+                    title: "Add dependencies".to_string(),
+                    summary: "Installed required packages".to_string(),
+                },
+            ],
+            specs_dirs: vec!["specs/api".to_string(), "specs/infra".to_string()],
+        };
+
+        let output = build_task_context(&task);
+
+        assert!(output.contains("## Assigned Task"));
+        assert!(output.contains("**ID:** t-abc123"));
+        assert!(output.contains("**Title:** Implement feature X"));
+        assert!(output.contains("### Description"));
+        assert!(output.contains("Add the new feature X to the codebase."));
+        assert!(output.contains("### Parent Context"));
+        assert!(output.contains("**Parent:** Epic Y"));
+        assert!(output.contains("The larger epic Y that encompasses this task."));
+        assert!(output.contains("### Completed Prerequisites"));
+        assert!(output.contains("- [t-prereq1] Setup foundation: Created the base structure"));
+        assert!(output.contains("- [t-prereq2] Add dependencies: Installed required packages"));
+        assert!(output.contains("### Reference Specs"));
+        assert!(output.contains("Read all files in: specs/api, specs/infra"));
+    }
+
+    #[test]
+    fn task_context_no_parent_omits_parent_section() {
+        let task = TaskInfo {
+            task_id: "t-xyz789".to_string(),
+            title: "Standalone task".to_string(),
+            description: "A task with no parent.".to_string(),
+            parent: None,
+            completed_blockers: vec![],
+            specs_dirs: vec![".ralph/specs".to_string()],
+        };
+
+        let output = build_task_context(&task);
+
+        assert!(output.contains("## Assigned Task"));
+        assert!(output.contains("**ID:** t-xyz789"));
+        assert!(output.contains("**Title:** Standalone task"));
+        assert!(!output.contains("### Parent Context"), "Should not contain parent section");
+        assert!(!output.contains("**Parent:**"), "Should not contain parent field");
+    }
+
+    #[test]
+    fn task_context_no_blockers_omits_prerequisites_section() {
+        let task = TaskInfo {
+            task_id: "t-def456".to_string(),
+            title: "Initial task".to_string(),
+            description: "A task with no prerequisites.".to_string(),
+            parent: Some(ParentContext {
+                title: "Parent task".to_string(),
+                description: "Parent description.".to_string(),
+            }),
+            completed_blockers: vec![],
+            specs_dirs: vec![".ralph/specs".to_string()],
+        };
+
+        let output = build_task_context(&task);
+
+        assert!(output.contains("## Assigned Task"));
+        assert!(output.contains("**ID:** t-def456"));
+        assert!(output.contains("### Parent Context"));
+        assert!(!output.contains("### Completed Prerequisites"), "Should not contain prerequisites section");
+    }
+
+    #[test]
+    fn task_context_with_two_blockers() {
+        let task = TaskInfo {
+            task_id: "t-multi".to_string(),
+            title: "Task with multiple blockers".to_string(),
+            description: "Depends on two tasks.".to_string(),
+            parent: None,
+            completed_blockers: vec![
+                BlockerContext {
+                    task_id: "t-blocker1".to_string(),
+                    title: "First blocker".to_string(),
+                    summary: "Completed first".to_string(),
+                },
+                BlockerContext {
+                    task_id: "t-blocker2".to_string(),
+                    title: "Second blocker".to_string(),
+                    summary: "Completed second".to_string(),
+                },
+            ],
+            specs_dirs: vec![],
+        };
+
+        let output = build_task_context(&task);
+
+        assert!(output.contains("### Completed Prerequisites"));
+        assert!(output.contains("- [t-blocker1] First blocker: Completed first"));
+        assert!(output.contains("- [t-blocker2] Second blocker: Completed second"));
+    }
+
+    #[test]
+    fn task_context_verbatim_fields() {
+        let task = TaskInfo {
+            task_id: "t-verbatim-123".to_string(),
+            title: "Special chars: <>&\"'".to_string(),
+            description: "Description with\nnewlines and\ttabs.".to_string(),
+            parent: None,
+            completed_blockers: vec![],
+            specs_dirs: vec![],
+        };
+
+        let output = build_task_context(&task);
+
+        assert!(output.contains("**ID:** t-verbatim-123"));
+        assert!(output.contains("**Title:** Special chars: <>&\"'"));
+        assert!(output.contains("Description with\nnewlines and\ttabs."));
     }
 }
