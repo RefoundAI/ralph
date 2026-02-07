@@ -1,7 +1,6 @@
 //! Main iteration loop.
 
 use anyhow::{Context, Result};
-use std::path::Path;
 
 use crate::claude;
 use crate::config::Config;
@@ -26,11 +25,6 @@ pub enum Outcome {
 
 /// Run the main loop until completion, failure, or limit.
 pub fn run(mut config: Config) -> Result<Outcome> {
-    // Ensure prompt file exists
-    if !Path::new(&config.prompt_file).exists() {
-        std::fs::write(&config.prompt_file, "").context("Failed to create prompt file")?;
-    }
-
     // Open the DAG database
     let progress_db = config.project_root.join(".ralph/progress.db");
     let db = dag::open_db(

@@ -1,0 +1,5 @@
+### Next Steps:
+The next iteration should focus on:
+1. **dag-tracker.md** - Actual SQLite DAG implementation (schema, CRUD operations)
+2. **cli-restructure.md** - CLI subcommand restructuring
+3. **loop-changes.md R4-R6** - Complete the DAG-driven loop implementation
