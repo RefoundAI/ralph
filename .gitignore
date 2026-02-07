@@ -21,3 +21,4 @@ result-*
 # OS
 .DS_Store
 Thumbs.db
+.ralph/progress.db
