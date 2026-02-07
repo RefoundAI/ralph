@@ -1,3 +1,5 @@
 Model strategy system (model-strategy.md) - COMPLETE. All R1-R11 tasks implemented and passing tests. CLI flags, Config fields, all four strategies (fixed, cost-optimized, escalate, plan-then-execute), Claude hint parsing, system prompt documentation, override logging, and --model flag integration all working.
 
 Config.md R1-R3 DONE: Added src/project.rs with ProjectConfig discovery, RalphConfig/SpecsConfig/PromptsConfig structs with serde, defaults (.ralph/specs, .ralph/prompts), toml parsing with forward-compat. All 9 tests passing.
+
+Config.md R4 DONE: Implemented `ralph init` subcommand. Creates .ralph.toml (commented defaults), .ralph/ directory structure (prompts/, specs/, progress.db), and .gitignore entry. Idempotent: skips existing .ralph.toml, appends to .gitignore without duplicates. Added Command subcommand enum to CLI, wired into main.rs. All 103 tests passing.
