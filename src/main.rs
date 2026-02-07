@@ -60,8 +60,21 @@ fn run() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(cli::Command::Prompt) => {
-            eprintln!("ralph prompt: not yet implemented");
-            Ok(ExitCode::FAILURE)
+            let project = project::discover()?;
+            let prompts_dir = project.config.prompts.dir.clone();
+
+            // Resolve prompts directory relative to project root
+            let resolved_dir = project.root.join(&prompts_dir);
+            let prompts_dir_display = resolved_dir.to_string_lossy().to_string();
+
+            // Ensure prompts directory exists
+            std::fs::create_dir_all(&resolved_dir)
+                .map_err(|e| anyhow::anyhow!("Failed to create prompts directory: {}", e))?;
+
+            let system_prompt = claude::interactive::build_prompt_system_prompt(&prompts_dir_display);
+            claude::interactive::run_interactive(&system_prompt)?;
+
+            Ok(ExitCode::SUCCESS)
         }
         Some(cli::Command::Run {
             prompt_file,

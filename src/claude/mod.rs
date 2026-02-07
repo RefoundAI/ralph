@@ -2,4 +2,5 @@
 
 pub mod client;
 pub mod events;
+pub mod interactive;
 pub mod parser;
