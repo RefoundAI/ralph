@@ -839,25 +839,555 @@ These are optional. Omitting them has no negative effect; they purely add capabi
 
 ## Context Injection
 
+Context injection is the consumer side of iteration memory: it takes stored data (failure reports, learnings, metrics) and renders it into the system prompt that Claude sees each iteration. All injection happens in `claude::client::build_task_context()`, which already builds the "Assigned Task" section with task details, parent context, and completed prerequisites. Memory context is appended after the existing sections, gated by data availability — if no memory data exists for a task, no memory sections appear and the prompt is identical to today's.
+
+**Injection point in `build_task_context()`:**
+
+```rust
+pub fn build_task_context(task: &TaskInfo, memory: Option<&MemoryContext>) -> String {
+    let mut output = String::new();
+
+    // ... existing sections (Assigned Task, Parent Context, Completed Prerequisites, Reference Specs) ...
+
+    // Memory context injection (new)
+    if let Some(mem) = memory {
+        output.push_str(&render_memory_context(mem));
+    }
+
+    output
+}
+```
+
+The `MemoryContext` struct is populated by the run loop before calling `build_task_context()`:
+
+```rust
+/// Aggregated memory context for injection into a task's system prompt.
+pub struct MemoryContext {
+    /// Previous failed attempts on this specific task (from failure_reports + iteration_outcomes)
+    pub previous_attempts: Vec<AttemptContext>,
+    /// Relevant learnings matched against this task's keywords (from learnings table)
+    pub relevant_learnings: Vec<LearningContext>,
+    /// Loop-level status information (from strategy_metrics + iteration_outcomes)
+    pub loop_status: LoopStatus,
+    /// Total character budget for all memory sections combined
+    pub budget_chars: usize,
+}
+```
+
 ### Error Recovery Memory
 
-<!-- How failure history is rendered when retrying a task: Markdown template, attempt history, error details -->
+When a task is being retried (it has previous entries in `iteration_outcomes`), the `### Previous Attempts` section is injected. This is the highest-priority memory section because it directly prevents the most common failure mode: repeating the same broken approach.
+
+**Query (run in `memory::get_failure_context()`):**
+
+```sql
+SELECT
+    io.attempt_number,
+    io.model,
+    io.outcome,
+    io.duration_ms,
+    fr.what_was_tried,
+    fr.why_it_failed,
+    fr.error_category,
+    fr.relevant_files,
+    fr.stack_trace_snippet,
+    fr.retry_suggestion
+FROM iteration_outcomes io
+LEFT JOIN failure_reports fr
+    ON io.task_id = fr.task_id AND io.attempt_number = fr.attempt_number
+WHERE io.task_id = ?
+ORDER BY io.attempt_number ASC;
+```
+
+The LEFT JOIN ensures we get a row even for attempts that lack a structured `<failure-report>` sigil (those rows will have NULL failure report columns, and the renderer falls back to showing just the outcome and model).
+
+**Rendering logic:**
+
+```rust
+fn render_previous_attempts(attempts: &[AttemptContext], budget: &mut CharBudget) -> String {
+    if attempts.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::from("\n### Previous Attempts\n\n");
+    output.push_str(&format!(
+        "This task has been attempted {} time(s) before. **Do not repeat these approaches.**\n\n",
+        attempts.len()
+    ));
+
+    for attempt in attempts {
+        let section = render_single_attempt(attempt);
+        if !budget.can_fit(section.len()) {
+            output.push_str("_(Earlier attempts truncated due to context budget)_\n");
+            break;
+        }
+        budget.consume(section.len());
+        output.push_str(&section);
+    }
+
+    // If the most recent attempt has a retry suggestion, highlight it
+    if let Some(last) = attempts.last() {
+        if let Some(ref suggestion) = last.retry_suggestion {
+            output.push_str("\n**Suggested approach for this retry:**\n");
+            output.push_str(suggestion);
+            output.push('\n');
+        }
+    }
+
+    output
+}
+```
+
+**Rendered Markdown template (per attempt):**
+
+```markdown
+#### Attempt {N} ({model}, {outcome})
+
+- **Approach:** {what_was_tried}
+- **Why it failed:** {why_it_failed}
+- **Error type:** {error_category}
+- **Files involved:** {relevant_files as comma-separated list}
+- **Error output:**
+  ```
+  {stack_trace_snippet, truncated to 500 chars}
+  ```
+```
+
+When the `<failure-report>` sigil was not provided (auto-generated minimal report), the template degrades gracefully:
+
+```markdown
+#### Attempt {N} ({model}, {outcome})
+
+- **Outcome:** {outcome} after {duration_ms}ms
+- **No structured failure report was provided.**
+```
+
+**Attempt ordering:** Attempts are rendered in chronological order (oldest first) so Claude can see the progression of approaches. However, when budget is limited, the most recent attempt is always included (it has the freshest context) — the truncation logic removes older attempts first.
+
+**Retry suggestion prominence:** The `retry_suggestion` from the most recent failure is rendered separately at the end of the Previous Attempts section, outside the per-attempt blocks, with bold formatting. This ensures Claude sees the suggestion even if it skims the attempt history.
 
 ### Self-Improvement / Learning Extraction
 
-<!-- How relevant learnings are selected and injected: relevance matching, budget system, truncation -->
+When relevant learnings exist in the `learnings` table, the `### Learnings from Previous Iterations` section is injected. This provides cross-task knowledge transfer — insights from one task that help with a different task.
+
+**Relevance matching (run in `memory::get_relevant_learnings()`):**
+
+The matching algorithm extracts keywords from the current task and finds learnings whose `relevance_tags` overlap:
+
+1. **Keyword extraction from current task:**
+   - Split task `title` and `description` into words
+   - Extract file paths (strings matching `src/...`, `*.rs`, etc.) via regex
+   - Extract error categories if retrying a failed task (from `failure_reports.error_category`)
+   - Deduplicate and lowercase all keywords
+
+2. **Query using SQLite `json_each()`:**
+
+```sql
+SELECT
+    l.id,
+    l.category,
+    l.content,
+    l.relevance_tags,
+    l.created_at,
+    COUNT(DISTINCT matched_tag.value) AS match_score
+FROM learnings l,
+     json_each(l.relevance_tags) AS tag
+LEFT JOIN json_each(?) AS matched_tag     -- ? = JSON array of current task keywords
+    ON LOWER(tag.value) = LOWER(matched_tag.value)
+WHERE l.pruned_at IS NULL                  -- Only active learnings
+  AND matched_tag.value IS NOT NULL        -- At least one tag match
+GROUP BY l.id
+ORDER BY
+    match_score DESC,                      -- Most relevant first
+    l.created_at DESC                      -- Break ties by recency
+LIMIT ?;                                   -- ? = max learnings count (default 5)
+```
+
+3. **Scoring:** Each learning is scored by the number of tag matches (primary) and recency (secondary). A learning with 3 matching tags ranks higher than one with 1 matching tag, regardless of recency. Among equal-match learnings, newer ones win.
+
+4. **Minimum threshold:** Learnings with only 1 tag match are included but deprioritized. This allows broad learnings ("Rust", "SQLite") to surface when nothing more specific matches, while keeping precision high when specific tags match ("src/dag/tasks.rs", "foreign key constraint").
+
+**Budget limiting:** The top-N learnings (default N=5) are returned, but the character budget may further reduce this. Learnings are rendered in score order, and rendering stops when the budget is exhausted.
+
+**Rendering logic:**
+
+```rust
+fn render_learnings(learnings: &[LearningContext], budget: &mut CharBudget) -> String {
+    if learnings.is_empty() {
+        return String::new();
+    }
+
+    let mut output = String::from("\n### Learnings from Previous Iterations\n\n");
+
+    for learning in learnings {
+        let entry = format!(
+            "- **[{}]** {}\n",
+            learning.category, learning.content
+        );
+        if !budget.can_fit(entry.len()) {
+            break;
+        }
+        budget.consume(entry.len());
+        output.push_str(&entry);
+    }
+
+    output
+}
+```
+
+**Rendered Markdown template:**
+
+```markdown
+### Learnings from Previous Iterations
+
+- **[success_pattern]** When adding new tables with foreign keys in SQLite, enable PRAGMA foreign_keys = ON at connection time and use ON DELETE CASCADE to maintain referential integrity.
+- **[pitfall]** The `sandbox-exec` profile must be written to a temp file before invocation; passing it via stdin causes a race condition on macOS.
+- **[tool_usage]** Use `cargo test --test integration_test_name` to run a specific integration test file without running the entire suite.
+```
+
+**Deduplication:** If multiple learnings have near-identical content (same category and >80% word overlap), only the most recent one is shown. This is implemented as a post-query filter in Rust rather than in SQL, since fuzzy matching in SQL is impractical.
 
 ### Strategic Intelligence
 
-<!-- Loop status section: iteration count, success rate, recent failures, model rationale -->
+The `### Loop Status` section provides Claude with meta-awareness of the overall run: how many iterations have passed, how this task has performed, and why the current model was selected. This influences Claude's approach — for example, knowing it's on the 3rd retry with an escalated model might prompt a fundamentally different strategy.
+
+**Query (run in `memory::get_loop_status()`):**
+
+```sql
+-- Task-specific metrics
+SELECT total_attempts, consecutive_failures, difficulty_estimate, stuck_flag
+FROM strategy_metrics
+WHERE task_id = ?;
+
+-- Run-wide metrics (last N iterations across all tasks)
+SELECT
+    COUNT(*) AS total_iterations,
+    SUM(CASE WHEN outcome = 'done' THEN 1 ELSE 0 END) AS successes,
+    SUM(CASE WHEN outcome IN ('failed','no_sigil','error') THEN 1 ELSE 0 END) AS failures
+FROM iteration_outcomes
+WHERE started_at >= datetime('now', '-2 hours');  -- Scope to current run (heuristic)
+```
+
+The "current run" is approximated by a 2-hour window from the most recent iteration. This heuristic works because Ralph runs are typically continuous; if there's a long gap, the stale metrics add harmless noise rather than causing incorrect behavior.
+
+**Rendering logic:**
+
+```rust
+fn render_loop_status(status: &LoopStatus, budget: &mut CharBudget) -> String {
+    let mut output = String::from("\n### Loop Status\n\n");
+
+    let body = format!(
+        "- **Iteration:** {} of {}\n\
+         - **This task:** attempt #{}, {} consecutive failure(s)\n\
+         - **Run success rate:** {}/{} iterations succeeded ({:.0}%)\n\
+         - **Current model:** {} ({})\n",
+        status.current_iteration,
+        if status.iteration_limit > 0 {
+            status.iteration_limit.to_string()
+        } else {
+            "unlimited".to_string()
+        },
+        status.task_attempts,
+        status.consecutive_failures,
+        status.run_successes,
+        status.run_total,
+        status.success_rate_pct(),
+        status.current_model,
+        status.model_rationale,
+    );
+
+    if !budget.can_fit(body.len()) {
+        return String::new(); // Skip entirely if over budget
+    }
+    budget.consume(body.len());
+    output.push_str(&body);
+
+    // Stuck loop warning (high priority — always fits if loop status fits)
+    if status.stuck_flag {
+        output.push_str("\n> ⚠️ **Stuck loop detected.** This task has failed 3+ times consecutively.\n");
+        output.push_str("> Consider: decomposing the task, trying a fundamentally different approach,\n");
+        output.push_str("> or signaling `<task-failed>` with a clear explanation.\n");
+    }
+
+    output
+}
+```
+
+**Rendered Markdown template:**
+
+```markdown
+### Loop Status
+
+- **Iteration:** 7 of 20
+- **This task:** attempt #3, 2 consecutive failure(s)
+- **Run success rate:** 4/6 iterations succeeded (67%)
+- **Current model:** opus (escalated after 2 consecutive failures)
+```
+
+When the stuck flag is set:
+
+```markdown
+### Loop Status
+
+- **Iteration:** 9 of 20
+- **This task:** attempt #4, 3 consecutive failure(s)
+- **Run success rate:** 4/8 iterations succeeded (50%)
+- **Current model:** opus (escalated after 3 consecutive failures)
+
+> ⚠️ **Stuck loop detected.** This task has failed 3+ times consecutively.
+> Consider: decomposing the task, trying a fundamentally different approach,
+> or signaling `<task-failed>` with a clear explanation.
+```
+
+**Model rationale string:** The `model_rationale` field is generated by `strategy::select_model()` as a human-readable explanation:
+- `"default (cost-optimized strategy)"` — no special reason
+- `"escalated after N consecutive failures"` — failure-triggered escalation
+- `"hinted by previous iteration"` — Claude's `<next-model>` sigil was used
+- `"plan-then-execute: execution phase"` — strategy-dictated
 
 ### Context Budget Management
 
-<!-- Total memory injection budget, priority ranking, truncation strategy -->
+Memory context competes with the task description and system prompt for Claude's attention window. An uncapped memory section could overwhelm the actual task instructions, so a budget system limits total memory injection.
+
+**Budget allocation:**
+
+| Priority | Section | Default Budget | Min Budget |
+|----------|---------|---------------|------------|
+| 1 (highest) | Previous Attempts | 3000 chars | 500 chars |
+| 2 | Relevant Learnings | 1500 chars | 300 chars |
+| 3 (lowest) | Loop Status | 500 chars | 200 chars |
+
+**Total default budget: 5000 characters** (~1250 tokens at 4 chars/token). This is approximately 2-3% of Claude's context window, leaving ample room for the task description, system prompt, and Claude's own working space.
+
+**Budget allocation algorithm:**
+
+```rust
+/// Character budget tracker for memory context injection.
+struct CharBudget {
+    remaining: usize,
+}
+
+impl CharBudget {
+    fn new(total: usize) -> Self {
+        Self { remaining: total }
+    }
+
+    fn can_fit(&self, chars: usize) -> bool {
+        chars <= self.remaining
+    }
+
+    fn consume(&mut self, chars: usize) {
+        self.remaining = self.remaining.saturating_sub(chars);
+    }
+}
+
+fn render_memory_context(mem: &MemoryContext) -> String {
+    let mut budget = CharBudget::new(mem.budget_chars);
+    let mut output = String::new();
+
+    // Priority 1: Previous attempts (most critical for retry success)
+    output.push_str(&render_previous_attempts(&mem.previous_attempts, &mut budget));
+
+    // Priority 2: Relevant learnings (cross-task knowledge transfer)
+    output.push_str(&render_learnings(&mem.relevant_learnings, &mut budget));
+
+    // Priority 3: Loop status (situational awareness)
+    output.push_str(&render_loop_status(&mem.loop_status, &mut budget));
+
+    output
+}
+```
+
+**Priority rationale:**
+
+1. **Previous Attempts first** because preventing repeated failures has the highest ROI. A retry without failure context has near-100% chance of repeating the same mistake.
+2. **Learnings second** because cross-task knowledge improves success probability, but is less critical than task-specific failure history.
+3. **Loop Status last** because it's situational awareness that influences Claude's strategy but doesn't directly prevent specific errors.
+
+**Truncation strategy:**
+
+Each section renders items in priority order (most relevant first) and stops when its budget slice is exhausted. Within a section:
+
+- **Previous Attempts:** Most recent attempt is always included first (highest value). If budget remains, older attempts are added in reverse chronological order. Stack traces are truncated to 500 chars. If even the most recent attempt exceeds budget, it is hard-truncated with `_(truncated)_`.
+- **Learnings:** Highest-scoring learnings first. Each learning is a single bullet point (typically 100-200 chars). Rendering stops mid-list if budget is exhausted. No partial learnings — a learning either fits entirely or is omitted.
+- **Loop Status:** Rendered as a single block (~300-400 chars). Either the entire block fits or it's omitted. No partial rendering.
+
+**Budget overflow:** If the Previous Attempts section consumes the entire budget, the Learnings and Loop Status sections are silently omitted. This is intentional — when a task has extensive failure history, that history is the most valuable context.
+
+**Configurable budget:** The total budget is configurable via the `MemoryContext.budget_chars` field, which defaults to 5000 but could be adjusted based on task complexity or model context window size. In the initial implementation, it is a compile-time constant; future iterations could make it a `[memory]` section in `.ralph.toml`.
 
 ### Prompt Template Examples
 
-<!-- Concrete examples of what Claude would actually see with memory context injected -->
+The following examples show the complete task context as Claude would see it, with memory sections injected. These examples demonstrate how the three memory systems work together in realistic scenarios.
+
+**Example 1: First attempt (no memory context)**
+
+When a task is attempted for the first time and no relevant learnings exist, the prompt is identical to today's format:
+
+```markdown
+## Assigned Task
+
+**ID:** t-f13cf2
+**Title:** Design and write the Context Injection section
+
+### Description
+Fill in the Context Injection section of `.ralph/specs/iteration-memory.md`. Study `src/claude/client.rs`, especially `build_task_context()` and the system prompt construction.
+
+### Parent Context
+**Parent:** Create iteration memory spec skeleton
+The iteration memory specification document.
+
+### Completed Prerequisites
+- [t-0eb603] Design and write the Data Model section: Defined all new SQLite tables
+- [t-0dfebf] Design and write the Sigil Design section: Specified all new sigil formats
+
+### Reference Specs
+Read all files in: .ralph/specs
+```
+
+**Example 2: Second attempt after failure (error recovery + loop status)**
+
+The task failed once. The previous attempt's failure report and loop status are injected:
+
+```markdown
+## Assigned Task
+
+**ID:** t-76ba69
+**Title:** Design and write the Migration Path section
+
+### Description
+Write the phased migration plan for adding iteration memory to Ralph.
+
+### Completed Prerequisites
+- [t-f13cf2] Design and write the Context Injection section: Specified injection logic and budget system
+
+### Reference Specs
+Read all files in: .ralph/specs
+
+### Previous Attempts
+
+This task has been attempted 1 time(s) before. **Do not repeat these approaches.**
+
+#### Attempt 1 (sonnet, failed)
+
+- **Approach:** Tried to write all four migration phases at once, covering DB schema, sigil parsing, context injection, and strategy replacement
+- **Why it failed:** Exceeded the iteration's time/token budget; only completed Phase 1 and Phase 2 before running out of output tokens
+- **Error type:** timeout
+- **Files involved:** .ralph/specs/iteration-memory.md
+- **Error output:**
+  ```
+  Output truncated at 25000 tokens
+  ```
+
+**Suggested approach for this retry:**
+Focus on Phase 1 and Phase 2 first, then signal task-done. The remaining phases can be covered in a follow-up task or a second pass.
+
+### Loop Status
+
+- **Iteration:** 6 of 20
+- **This task:** attempt #2, 1 consecutive failure(s)
+- **Run success rate:** 4/5 iterations succeeded (80%)
+- **Current model:** sonnet (default, cost-optimized strategy)
+```
+
+**Example 3: Third attempt with learnings and stuck warning (all three systems active)**
+
+The task has failed twice. Relevant learnings from other tasks are available. The stuck flag is set:
+
+```markdown
+## Assigned Task
+
+**ID:** t-84be01
+**Title:** Final review and polish of iteration-memory spec
+
+### Description
+Review the complete iteration-memory.md for consistency, fix any gaps, ensure all sections are complete.
+
+### Reference Specs
+Read all files in: .ralph/specs
+
+### Previous Attempts
+
+This task has been attempted 3 time(s) before. **Do not repeat these approaches.**
+
+#### Attempt 1 (sonnet, failed)
+
+- **Approach:** Attempted full review and polish in a single pass
+- **Why it failed:** Made edits that introduced inconsistencies with the Data Model section
+- **Error type:** logic_error
+- **Files involved:** .ralph/specs/iteration-memory.md
+
+#### Attempt 2 (sonnet, failed)
+
+- **Approach:** Read the entire spec first, then made targeted fixes
+- **Why it failed:** Missed the cross-references between Sigil Design and Context Injection sections
+- **Error type:** logic_error
+- **Files involved:** .ralph/specs/iteration-memory.md
+
+#### Attempt 3 (opus, failed)
+
+- **Approach:** Section-by-section review with cross-reference checking
+- **Why it failed:** Tests failed because the example code snippets had syntax errors
+- **Error type:** test_failure
+- **Files involved:** .ralph/specs/iteration-memory.md
+- **Error output:**
+  ```
+  cargo test -- --test spec_validation
+  test spec_validation::code_blocks_are_valid ... FAILED
+  ```
+
+**Suggested approach for this retry:**
+Focus exclusively on validating the code examples. The prose is fine; the issue is in the Rust code snippets in the Sigil Design section. Run `cargo check` on extracted code blocks.
+
+### Learnings from Previous Iterations
+
+- **[success_pattern]** When adding new tables with foreign keys in SQLite, enable PRAGMA foreign_keys = ON at connection time and use ON DELETE CASCADE to maintain referential integrity.
+- **[pitfall]** Code examples in spec documents must use valid Rust syntax even if they are illustrative — the spec validation test extracts and compiles them.
+- **[testing_strategy]** Run `cargo test` after every spec edit, not just at the end. Catches syntax issues in code blocks early.
+
+### Loop Status
+
+- **Iteration:** 12 of 20
+- **This task:** attempt #4, 3 consecutive failure(s)
+- **Run success rate:** 6/11 iterations succeeded (55%)
+- **Current model:** opus (escalated after 3 consecutive failures)
+
+> ⚠️ **Stuck loop detected.** This task has failed 3+ times consecutively.
+> Consider: decomposing the task, trying a fundamentally different approach,
+> or signaling `<task-failed>` with a clear explanation.
+```
+
+**Example 4: Successful task with learnings only (no failures)**
+
+A first-attempt task where relevant learnings from prior tasks exist:
+
+```markdown
+## Assigned Task
+
+**ID:** t-71b433
+**Title:** Design and write the Lifecycle section
+
+### Description
+Write the Memory Growth, Summarization, Pruning, Cross-Run Persistence, and Failure Escalation Lifecycle subsections.
+
+### Completed Prerequisites
+- [t-f13cf2] Design and write the Context Injection section: Specified injection logic and budget system
+
+### Reference Specs
+Read all files in: .ralph/specs
+
+### Learnings from Previous Iterations
+
+- **[code_structure]** The iteration-memory spec follows a pattern: each section starts with a high-level description, then hook points, data flow diagram, and concrete code examples.
+- **[tool_usage]** Use `cargo test --test integration_test_name` to run a specific integration test file without running the entire suite.
+
+### Loop Status
+
+- **Iteration:** 8 of 20
+- **This task:** attempt #1, 0 consecutive failure(s)
+- **Run success rate:** 6/7 iterations succeeded (86%)
+- **Current model:** sonnet (default, cost-optimized strategy)
+```
 
 ## Lifecycle
 
