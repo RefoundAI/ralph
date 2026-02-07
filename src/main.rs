@@ -3,6 +3,7 @@
 mod cli;
 mod config;
 mod claude;
+mod dag;
 mod sandbox;
 mod output;
 mod project;
