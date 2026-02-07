@@ -4,7 +4,7 @@
 //! This module handles walking up the directory tree to find the config,
 //! parsing it, and providing access to project settings.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
@@ -112,6 +112,100 @@ fn load_config(path: &Path) -> Result<RalphConfig> {
     Ok(config)
 }
 
+/// Initialize a new Ralph project in the current directory.
+///
+/// Creates:
+/// - `.ralph.toml` with commented defaults (if it doesn't exist)
+/// - `.ralph/` directory
+/// - `.ralph/prompts/` directory
+/// - `.ralph/specs/` directory
+/// - `.ralph/progress.db` file (empty)
+/// - `.gitignore` entry for `.ralph/progress.db`
+///
+/// This function is idempotent: running it multiple times won't overwrite
+/// existing files or produce errors.
+pub fn init() -> Result<()> {
+    let cwd = env::current_dir()?;
+    init_in_dir(&cwd)
+}
+
+/// Internal implementation of init that accepts a target directory.
+/// This allows for testing without changing the current directory.
+fn init_in_dir(cwd: &Path) -> Result<()> {
+
+    // 1. Check if .ralph.toml exists
+    let config_path = cwd.join(".ralph.toml");
+    if config_path.exists() {
+        println!(".ralph.toml already exists, skipping.");
+    } else {
+        // 2. Create .ralph.toml with commented defaults
+        let default_config = r#"[specs]
+# dirs = [".ralph/specs"]
+
+[prompts]
+# dir = ".ralph/prompts"
+"#;
+        fs::write(&config_path, default_config)
+            .context("Failed to create .ralph.toml")?;
+        println!("Created .ralph.toml");
+    }
+
+    // 3. Create directories
+    let ralph_dir = cwd.join(".ralph");
+    let prompts_dir = ralph_dir.join("prompts");
+    let specs_dir = ralph_dir.join("specs");
+
+    fs::create_dir_all(&ralph_dir)
+        .context("Failed to create .ralph/ directory")?;
+    fs::create_dir_all(&prompts_dir)
+        .context("Failed to create .ralph/prompts/ directory")?;
+    fs::create_dir_all(&specs_dir)
+        .context("Failed to create .ralph/specs/ directory")?;
+
+    println!("Created .ralph/ directory structure");
+
+    // 4. Create .ralph/progress.db (empty file)
+    let progress_db = ralph_dir.join("progress.db");
+    if !progress_db.exists() {
+        fs::write(&progress_db, "")
+            .context("Failed to create .ralph/progress.db")?;
+        println!("Created .ralph/progress.db");
+    }
+
+    // 5. Update .gitignore
+    let gitignore_path = cwd.join(".gitignore");
+    let gitignore_entry = ".ralph/progress.db\n";
+
+    if gitignore_path.exists() {
+        let content = fs::read_to_string(&gitignore_path)
+            .context("Failed to read .gitignore")?;
+
+        // Check if entry already exists
+        if !content.lines().any(|line| line.trim() == ".ralph/progress.db") {
+            let mut new_content = content;
+            if !new_content.ends_with('\n') {
+                new_content.push('\n');
+            }
+            new_content.push_str(gitignore_entry);
+
+            fs::write(&gitignore_path, new_content)
+                .context("Failed to update .gitignore")?;
+            println!("Added .ralph/progress.db to .gitignore");
+        }
+    } else {
+        fs::write(&gitignore_path, gitignore_entry)
+            .context("Failed to create .gitignore")?;
+        println!("Created .gitignore with .ralph/progress.db");
+    }
+
+    println!("\nRalph project initialized successfully!");
+    println!("Next steps:");
+    println!("  - Run 'ralph' to start the agent loop");
+    println!("  - Or create specs in .ralph/specs/");
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,5 +296,75 @@ mod tests {
         let config = RalphConfig::default();
         assert_eq!(config.specs.dirs, vec![".ralph/specs"]);
         assert_eq!(config.prompts.dir, ".ralph/prompts");
+    }
+
+    #[test]
+    fn init_creates_all_files_and_directories() {
+        let tmp = TempDir::new().unwrap();
+
+        // Run init in temp directory
+        super::init_in_dir(tmp.path()).unwrap();
+
+        // Verify all files/directories created
+        assert!(tmp.path().join(".ralph.toml").exists());
+        assert!(tmp.path().join(".ralph").is_dir());
+        assert!(tmp.path().join(".ralph/prompts").is_dir());
+        assert!(tmp.path().join(".ralph/specs").is_dir());
+        assert!(tmp.path().join(".ralph/progress.db").exists());
+        assert!(tmp.path().join(".gitignore").exists());
+
+        // Verify .gitignore contains progress.db
+        let gitignore = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(gitignore.contains(".ralph/progress.db"));
+
+        // Verify .ralph.toml has valid content
+        let config_content = fs::read_to_string(tmp.path().join(".ralph.toml")).unwrap();
+        assert!(config_content.contains("[specs]"));
+        assert!(config_content.contains("[prompts]"));
+    }
+
+    #[test]
+    fn init_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+
+        // First run
+        super::init_in_dir(tmp.path()).unwrap();
+        let first_config = fs::read_to_string(tmp.path().join(".ralph.toml")).unwrap();
+
+        // Second run
+        super::init_in_dir(tmp.path()).unwrap();
+        let second_config = fs::read_to_string(tmp.path().join(".ralph.toml")).unwrap();
+
+        // .ralph.toml should be unchanged
+        assert_eq!(first_config, second_config);
+
+        // All files should still exist
+        assert!(tmp.path().join(".ralph.toml").exists());
+        assert!(tmp.path().join(".ralph/prompts").is_dir());
+        assert!(tmp.path().join(".ralph/specs").is_dir());
+        assert!(tmp.path().join(".ralph/progress.db").exists());
+    }
+
+    #[test]
+    fn init_appends_to_existing_gitignore() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create existing .gitignore with other content
+        fs::write(tmp.path().join(".gitignore"), "*.log\ntarget/\n").unwrap();
+
+        // Run init
+        super::init_in_dir(tmp.path()).unwrap();
+
+        // Verify .gitignore has both old and new content
+        let gitignore = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(gitignore.contains("*.log"));
+        assert!(gitignore.contains("target/"));
+        assert!(gitignore.contains(".ralph/progress.db"));
+
+        // Verify no duplicate entries if run again
+        super::init_in_dir(tmp.path()).unwrap();
+        let gitignore2 = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        let count = gitignore2.matches(".ralph/progress.db").count();
+        assert_eq!(count, 1, "Should not duplicate .ralph/progress.db entry");
     }
 }

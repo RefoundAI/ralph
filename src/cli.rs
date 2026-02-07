@@ -1,6 +1,6 @@
 //! CLI argument parsing using clap.
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// Looping harness for hands-off AI agent workflows.
 ///
@@ -12,7 +12,10 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(name = "ralph", version, about, long_about = None)]
 pub struct Args {
-    /// Path to prompt file
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    /// Path to prompt file (when no subcommand given)
     #[arg(value_name = "PROMPT_FILE", env = "RALPH_FILE")]
     pub prompt_file: Option<String>,
 
@@ -51,6 +54,13 @@ pub struct Args {
     /// Model for fixed strategy: opus, sonnet, haiku. Implies --model-strategy=fixed when used alone.
     #[arg(long, value_name = "MODEL", env = "RALPH_MODEL")]
     pub model: Option<String>,
+}
+
+/// Available subcommands.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Initialize a new Ralph project
+    Init,
 }
 
 /// Valid model names.
@@ -110,6 +120,7 @@ mod tests {
 
     fn args_with(model: Option<&str>, strategy: Option<&str>) -> Args {
         Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,
@@ -209,6 +220,7 @@ mod tests {
         // of source. This test ensures resolve_model_strategy works the same
         // way whether values come from CLI or env.
         let args = Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,

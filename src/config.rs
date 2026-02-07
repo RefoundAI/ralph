@@ -174,6 +174,7 @@ mod tests {
     /// Helper to build Args with model fields set.
     fn args_with_model(model: Option<&str>, strategy: Option<&str>) -> Args {
         Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,

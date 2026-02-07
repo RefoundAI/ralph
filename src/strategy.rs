@@ -251,6 +251,7 @@ mod tests {
     /// Helper to build a Config with fixed strategy.
     fn fixed_config(model: &str) -> Config {
         let args = Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,
@@ -389,6 +390,7 @@ mod tests {
         // Even though analyze_progress would return sonnet for empty content,
         // the hint should win
         let args = Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,
@@ -409,6 +411,7 @@ mod tests {
     /// Helper to build a Config with escalate strategy.
     fn escalate_config() -> Config {
         let args = Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,
@@ -534,6 +537,7 @@ mod tests {
     /// Helper to build a Config with plan-then-execute strategy.
     fn plan_then_execute_config() -> Config {
         let args = Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,

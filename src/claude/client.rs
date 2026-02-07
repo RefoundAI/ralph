@@ -307,6 +307,7 @@ mod tests {
 
     fn test_config() -> Config {
         let args = Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,
@@ -434,6 +435,7 @@ mod tests {
     #[test]
     fn claude_args_model_reflects_fixed_strategy() {
         let args = Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,
@@ -457,6 +459,7 @@ mod tests {
     #[test]
     fn claude_args_model_reflects_escalate_strategy() {
         let args = Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,
@@ -480,6 +483,7 @@ mod tests {
     #[test]
     fn claude_args_model_reflects_plan_then_execute_strategy() {
         let args = Args {
+            command: None,
             prompt_file: None,
             once: false,
             no_sandbox: false,
