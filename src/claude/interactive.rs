@@ -65,6 +65,63 @@ The prompt file should be markdown with:
     )
 }
 
+/// Build the system prompt for `ralph plan`.
+///
+/// Instructs Claude to help the user decompose a prompt into a task DAG,
+/// reading the prompt file and any relevant specs, then proposing a breakdown.
+pub fn build_plan_system_prompt(prompt_content: &str, specs_content: &str) -> String {
+    format!(
+        r#"You are helping the user decompose a prompt into a task DAG (directed acyclic graph) for Ralph, an autonomous AI agent loop.
+
+## Your Role
+
+Analyze the given prompt and specifications, then propose a structured task breakdown that an AI agent can execute step-by-step.
+
+## Prompt
+
+```
+{prompt_content}
+```
+
+## Available Specifications
+
+{specs_content}
+
+## Guidelines
+
+- Break down the prompt into concrete, actionable tasks
+- Each task should be a single unit of work
+- Identify dependencies between tasks (which tasks must complete before others)
+- Tasks should be:
+  - **Specific**: Clear enough that an agent knows exactly what to do
+  - **Testable**: Include success criteria or verification steps
+  - **Atomic**: One logical piece of work, not multiple concerns
+  - **Ordered**: Consider prerequisites and dependencies
+
+## Task Breakdown Structure
+
+For each task, provide:
+1. **Task ID**: A short identifier (e.g., `t-001`, `t-002`)
+2. **Title**: Brief description of the task
+3. **Description**: What needs to be done and why
+4. **Dependencies**: Which tasks must complete first (if any)
+5. **Acceptance Criteria**: How to verify completion
+6. **Priority**: High, Medium, or Low
+
+## Output Format
+
+Present the task breakdown as a structured markdown document with:
+- Task list with IDs, titles, and descriptions
+- Dependency graph showing task relationships
+- Execution order recommendations
+- Notes about critical paths or potential blockers
+
+**Note:** This is a planning session. The actual task storage in `.ralph/progress.db` will be handled separately. Focus on helping the user create a clear, actionable breakdown of the work."#,
+        prompt_content = prompt_content,
+        specs_content = specs_content
+    )
+}
+
 /// Build the system prompt for `ralph specs`.
 ///
 /// Instructs Claude to co-author specification documents with the user, writing
@@ -244,6 +301,72 @@ mod tests {
         assert!(
             prompt.contains("Testing"),
             "system prompt should mention Testing section"
+        );
+    }
+
+    #[test]
+    fn plan_system_prompt_contains_prompt_content() {
+        let prompt_content = "Implement user authentication";
+        let specs_content = "No specs available";
+        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+        assert!(
+            system_prompt.contains("Implement user authentication"),
+            "system prompt should contain the prompt content"
+        );
+    }
+
+    #[test]
+    fn plan_system_prompt_contains_specs_content() {
+        let prompt_content = "Build a feature";
+        let specs_content = "## Auth Spec\nUse JWT tokens";
+        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+        assert!(
+            system_prompt.contains("Use JWT tokens"),
+            "system prompt should contain the specs content"
+        );
+    }
+
+    #[test]
+    fn plan_system_prompt_mentions_task_dag() {
+        let prompt_content = "Test prompt";
+        let specs_content = "Test specs";
+        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+        assert!(
+            system_prompt.contains("DAG") || system_prompt.contains("task"),
+            "system prompt should mention task DAG concepts"
+        );
+    }
+
+    #[test]
+    fn plan_system_prompt_mentions_dependencies() {
+        let prompt_content = "Test prompt";
+        let specs_content = "Test specs";
+        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+        assert!(
+            system_prompt.contains("Dependencies") || system_prompt.contains("dependencies"),
+            "system prompt should mention dependencies"
+        );
+    }
+
+    #[test]
+    fn plan_system_prompt_mentions_acceptance_criteria() {
+        let prompt_content = "Test prompt";
+        let specs_content = "Test specs";
+        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+        assert!(
+            system_prompt.contains("Acceptance Criteria") || system_prompt.contains("success criteria"),
+            "system prompt should mention acceptance criteria"
+        );
+    }
+
+    #[test]
+    fn plan_system_prompt_mentions_progress_db() {
+        let prompt_content = "Test prompt";
+        let specs_content = "Test specs";
+        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+        assert!(
+            system_prompt.contains("progress.db"),
+            "system prompt should mention progress.db for context"
         );
     }
 }

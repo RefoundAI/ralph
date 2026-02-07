@@ -145,9 +145,48 @@ fn run() -> Result<ExitCode> {
 
             Ok(ExitCode::SUCCESS)
         }
-        Some(cli::Command::Plan { prompt_file: _ }) => {
-            eprintln!("ralph plan: not yet implemented");
-            Ok(ExitCode::FAILURE)
+        Some(cli::Command::Plan { prompt_file }) => {
+            let project = project::discover()?;
+
+            // Resolve prompt file (default to "prompt" if not specified)
+            let prompt_path = project
+                .root
+                .join(prompt_file.as_deref().unwrap_or("prompt"));
+
+            // Read prompt content
+            let prompt_content = std::fs::read_to_string(&prompt_path)
+                .map_err(|e| anyhow::anyhow!("Failed to read prompt file '{}': {}", prompt_path.display(), e))?;
+
+            // Read all specs from configured directories
+            let mut specs_content = String::new();
+            for specs_dir in &project.config.specs.dirs {
+                let resolved_dir = project.root.join(specs_dir);
+                if !resolved_dir.exists() {
+                    continue; // Skip if directory doesn't exist
+                }
+
+                // Read all .md files in the specs directory
+                if let Ok(entries) = std::fs::read_dir(&resolved_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().is_some_and(|ext| ext == "md") {
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                specs_content.push_str(&format!("\n## {}\n\n{}\n", path.file_name().unwrap().to_string_lossy(), content));
+                            }
+                        }
+                    }
+                }
+            }
+
+            if specs_content.is_empty() {
+                specs_content = "No specifications available.".to_string();
+            }
+
+            // Build system prompt and launch interactive Claude session
+            let system_prompt = claude::interactive::build_plan_system_prompt(&prompt_content, &specs_content);
+            claude::interactive::run_interactive(&system_prompt)?;
+
+            Ok(ExitCode::SUCCESS)
         }
         None => {
             // Bare `ralph` with no subcommand prints help
