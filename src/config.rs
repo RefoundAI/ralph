@@ -4,6 +4,9 @@ use anyhow::{bail, Result};
 use std::env;
 use std::fmt;
 use std::path::PathBuf;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli::Args;
 use crate::project::{ProjectConfig, RalphConfig};
@@ -51,6 +54,25 @@ impl ModelStrategy {
     }
 }
 
+/// Generate a unique agent ID: `agent-{8 hex chars}`.
+/// Uses a hash of timestamp and process ID.
+fn generate_agent_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+
+    let mut hasher = DefaultHasher::new();
+    timestamp.hash(&mut hasher);
+    pid.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    // Take the lower 32 bits and convert to 8 hex chars
+    let short_hash = (hash & 0xFFFFFFFF) as u32;
+    format!("agent-{:08x}", short_hash)
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub prompt_file: String,
@@ -73,6 +95,8 @@ pub struct Config {
     pub project_root: PathBuf,
     /// Parsed project configuration.
     pub ralph_config: RalphConfig,
+    /// Unique agent ID for this run (format: agent-{8 hex chars}).
+    pub agent_id: String,
 }
 
 impl Config {
@@ -145,6 +169,7 @@ impl Config {
             escalation_level: 0,
             project_root: project.root,
             ralph_config: project.config,
+            agent_id: generate_agent_id(),
         })
     }
 
@@ -273,5 +298,45 @@ mod tests {
     #[test]
     fn model_strategy_from_str_invalid() {
         assert!(ModelStrategy::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn config_has_agent_id() {
+        let args = args_with_model(None, None);
+        let config = Config::from_args(args, test_project()).unwrap();
+        assert!(!config.agent_id.is_empty());
+        assert!(config.agent_id.starts_with("agent-"));
+    }
+
+    #[test]
+    fn agent_id_matches_format() {
+        let args = args_with_model(None, None);
+        let config = Config::from_args(args, test_project()).unwrap();
+        // Format: agent-{8 hex chars}
+        assert_eq!(config.agent_id.len(), 14); // "agent-" (6) + 8 hex chars
+        assert!(config.agent_id.chars().skip(6).all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn agent_id_different_on_separate_invocations() {
+        let args1 = args_with_model(None, None);
+        let config1 = Config::from_args(args1, test_project()).unwrap();
+
+        let args2 = args_with_model(None, None);
+        let config2 = Config::from_args(args2, test_project()).unwrap();
+
+        // Two invocations should (very likely) produce different IDs
+        // Note: this is probabilistic, but collision chance is extremely low with 32-bit hash
+        assert_ne!(config1.agent_id, config2.agent_id);
+    }
+
+    #[test]
+    fn agent_id_preserved_across_iterations() {
+        let args = args_with_model(None, None);
+        let config = Config::from_args(args, test_project()).unwrap();
+        let agent_id_1 = config.agent_id.clone();
+
+        let next = config.next_iteration();
+        assert_eq!(next.agent_id, agent_id_1);
     }
 }
