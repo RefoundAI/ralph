@@ -49,6 +49,10 @@ pub struct ResultEvent {
     /// Model hint extracted from `<next-model>...</next-model>` sigil.
     /// Applies to the next iteration only; `None` if absent or malformed.
     pub next_model_hint: Option<String>,
+    /// Task ID from `<task-done>...</task-done>` sigil, if present.
+    pub task_done: Option<String>,
+    /// Task ID from `<task-failed>...</task-failed>` sigil, if present.
+    pub task_failed: Option<String>,
 }
 
 impl ResultEvent {
@@ -89,6 +93,46 @@ pub fn parse_next_model_hint(text: &str) -> Option<String> {
         Some(model.to_string())
     } else {
         None
+    }
+}
+
+/// Parse the `<task-done>...</task-done>` sigil from result text.
+///
+/// Returns `Some(task_id)` if a task ID is found between the tags,
+/// `None` if the sigil is absent or malformed. Whitespace is trimmed.
+pub fn parse_task_done(text: &str) -> Option<String> {
+    let start_tag = "<task-done>";
+    let end_tag = "</task-done>";
+
+    let start_idx = text.find(start_tag)?;
+    let content_start = start_idx + start_tag.len();
+    let end_idx = text[content_start..].find(end_tag)?;
+    let task_id = text[content_start..content_start + end_idx].trim();
+
+    if task_id.is_empty() {
+        None
+    } else {
+        Some(task_id.to_string())
+    }
+}
+
+/// Parse the `<task-failed>...</task-failed>` sigil from result text.
+///
+/// Returns `Some(task_id)` if a task ID is found between the tags,
+/// `None` if the sigil is absent or malformed. Whitespace is trimmed.
+pub fn parse_task_failed(text: &str) -> Option<String> {
+    let start_tag = "<task-failed>";
+    let end_tag = "</task-failed>";
+
+    let start_idx = text.find(start_tag)?;
+    let content_start = start_idx + start_tag.len();
+    let end_idx = text[content_start..].find(end_tag)?;
+    let task_id = text[content_start..content_start + end_idx].trim();
+
+    if task_id.is_empty() {
+        None
+    } else {
+        Some(task_id.to_string())
     }
 }
 
@@ -219,5 +263,97 @@ mod tests {
         assert_eq!(event.next_model_hint, Some("opus".to_string()));
         assert!(!event.is_complete());
         assert!(!event.is_failure());
+    }
+
+    // --- parse_task_done tests ---
+
+    #[test]
+    fn parse_task_done_basic() {
+        let text = "<task-done>t-abc123</task-done>";
+        assert_eq!(parse_task_done(text), Some("t-abc123".to_string()));
+    }
+
+    #[test]
+    fn parse_task_done_with_context() {
+        let text = "Task completed: <task-done>t-xyz789</task-done> successfully.";
+        assert_eq!(parse_task_done(text), Some("t-xyz789".to_string()));
+    }
+
+    #[test]
+    fn parse_task_done_with_whitespace_inside_tags() {
+        let text = "<task-done>  t-abc123  </task-done>";
+        assert_eq!(parse_task_done(text), Some("t-abc123".to_string()));
+    }
+
+    #[test]
+    fn parse_task_done_no_sigil() {
+        let text = "No task sigil here";
+        assert_eq!(parse_task_done(text), None);
+    }
+
+    #[test]
+    fn parse_task_done_malformed_no_closing_tag() {
+        let text = "<task-done>t-abc123";
+        assert_eq!(parse_task_done(text), None);
+    }
+
+    #[test]
+    fn parse_task_done_empty_content() {
+        let text = "<task-done></task-done>";
+        assert_eq!(parse_task_done(text), None);
+    }
+
+    // --- parse_task_failed tests ---
+
+    #[test]
+    fn parse_task_failed_basic() {
+        let text = "<task-failed>t-def456</task-failed>";
+        assert_eq!(parse_task_failed(text), Some("t-def456".to_string()));
+    }
+
+    #[test]
+    fn parse_task_failed_with_context() {
+        let text = "Task failed: <task-failed>t-ghi012</task-failed> with errors.";
+        assert_eq!(parse_task_failed(text), Some("t-ghi012".to_string()));
+    }
+
+    #[test]
+    fn parse_task_failed_with_whitespace_inside_tags() {
+        let text = "<task-failed>  t-def456  </task-failed>";
+        assert_eq!(parse_task_failed(text), Some("t-def456".to_string()));
+    }
+
+    #[test]
+    fn parse_task_failed_no_sigil() {
+        let text = "No task sigil here";
+        assert_eq!(parse_task_failed(text), None);
+    }
+
+    #[test]
+    fn parse_task_failed_malformed_no_closing_tag() {
+        let text = "<task-failed>t-def456";
+        assert_eq!(parse_task_failed(text), None);
+    }
+
+    #[test]
+    fn parse_task_failed_empty_content() {
+        let text = "<task-failed></task-failed>";
+        assert_eq!(parse_task_failed(text), None);
+    }
+
+    // --- Multiple sigil tests ---
+
+    #[test]
+    fn both_task_sigils_task_done_wins() {
+        let text = "<task-done>t-done</task-done> <task-failed>t-fail</task-failed>";
+        assert_eq!(parse_task_done(text), Some("t-done".to_string()));
+        assert_eq!(parse_task_failed(text), Some("t-fail".to_string()));
+    }
+
+    #[test]
+    fn task_sigil_with_model_hint() {
+        let text = "<task-done>t-task123</task-done>\n<next-model>opus</next-model>";
+        assert_eq!(parse_task_done(text), Some("t-task123".to_string()));
+        assert_eq!(parse_next_model_hint(text), Some("opus".to_string()));
     }
 }

@@ -49,11 +49,34 @@ fn parse_event(raw: RawEvent) -> Event {
                 .result
                 .as_deref()
                 .and_then(super::events::parse_next_model_hint);
+            let task_done = raw
+                .result
+                .as_deref()
+                .and_then(super::events::parse_task_done);
+            let task_failed = raw
+                .result
+                .as_deref()
+                .and_then(super::events::parse_task_failed);
+
+            // If both task_done and task_failed are present, task_done wins (optimistic)
+            let final_task_done = if task_done.is_some() {
+                task_done
+            } else {
+                None
+            };
+            let final_task_failed = if final_task_done.is_none() {
+                task_failed
+            } else {
+                None
+            };
+
             Event::Result(ResultEvent {
                 result: raw.result,
                 duration_ms: raw.duration_ms.unwrap_or(0),
                 total_cost_usd: raw.total_cost_usd.unwrap_or(0.0),
                 next_model_hint,
+                task_done: final_task_done,
+                task_failed: final_task_failed,
             })
         }
         _ => Event::Unknown,

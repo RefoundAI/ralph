@@ -172,6 +172,8 @@ fn stream_output<R: std::io::Read>(
                             duration_ms: result.duration_ms,
                             total_cost_usd: result.total_cost_usd,
                             next_model_hint: result.next_model_hint.clone(),
+                            task_done: result.task_done.clone(),
+                            task_failed: result.task_failed.clone(),
                         });
                     }
                     _ => {}
