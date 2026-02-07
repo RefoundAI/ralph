@@ -102,6 +102,7 @@ pub struct Config {
 
 impl Config {
     /// Build config from run command args and project config.
+    #[allow(clippy::too_many_arguments)]
     pub fn from_run_args(
         prompt_file: Option<String>,
         once: bool,

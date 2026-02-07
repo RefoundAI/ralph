@@ -53,14 +53,14 @@ pub fn build_task_context(task: &TaskInfo) -> String {
     output.push_str(&format!("**Title:** {}\n", task.title));
     output.push_str("\n### Description\n");
     output.push_str(&task.description);
-    output.push_str("\n");
+    output.push('\n');
 
     // Add parent context if present
     if let Some(ref parent) = task.parent {
         output.push_str("\n### Parent Context\n");
         output.push_str(&format!("**Parent:** {}\n", parent.title));
         output.push_str(&parent.description);
-        output.push_str("\n");
+        output.push('\n');
     }
 
     // Add completed blockers if present
@@ -215,7 +215,7 @@ fn stream_output<R: std::io::Read>(
     log_file: Option<&str>,
 ) -> Result<Option<ResultEvent>> {
     let mut log_handle = log_file
-        .map(|path| File::create(path))
+        .map(File::create)
         .transpose()
         .context("Failed to create log file")?;
 
@@ -234,18 +234,15 @@ fn stream_output<R: std::io::Read>(
         // Parse and format
         match parser::parse_line(&line) {
             Ok(Some(event)) => {
-                match &event {
-                    Event::Result(result) => {
-                        last_result = Some(ResultEvent {
-                            result: result.result.clone(),
-                            duration_ms: result.duration_ms,
-                            total_cost_usd: result.total_cost_usd,
-                            next_model_hint: result.next_model_hint.clone(),
-                            task_done: result.task_done.clone(),
-                            task_failed: result.task_failed.clone(),
-                        });
-                    }
-                    _ => {}
+                if let Event::Result(result) = &event {
+                    last_result = Some(ResultEvent {
+                        result: result.result.clone(),
+                        duration_ms: result.duration_ms,
+                        total_cost_usd: result.total_cost_usd,
+                        next_model_hint: result.next_model_hint.clone(),
+                        task_done: result.task_done.clone(),
+                        task_failed: result.task_failed.clone(),
+                    });
                 }
                 formatter::format_event(&event, &mut tool_calls);
             }

@@ -121,7 +121,7 @@ fn run() -> Result<ExitCode> {
         }
         None => {
             // Bare `ralph` with no subcommand prints help
-            cli::Args::parse_from(&["ralph", "--help"]);
+            cli::Args::parse_from(["ralph", "--help"]);
             Ok(ExitCode::SUCCESS)
         }
     }
