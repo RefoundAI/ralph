@@ -2,10 +2,11 @@
 //!
 //! Manages task dependencies and execution state using SQLite backend.
 
+mod db;
+
 use anyhow::Result;
 
-/// Database handle (stub - actual implementation to follow).
-pub struct Db;
+pub use db::{init_db, Db};
 
 /// A task in the DAG.
 #[derive(Debug, Clone)]
@@ -25,10 +26,9 @@ pub struct TaskCounts {
     pub blocked: usize,
 }
 
-/// Open or initialize the task database.
+/// Open or initialize the task database (alias for init_db).
 pub fn open_db(path: &str) -> Result<Db> {
-    let _ = path;
-    todo!("open_db: open SQLite database at path")
+    init_db(path)
 }
 
 /// Get all tasks that are ready to execute.

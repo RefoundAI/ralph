@@ -15,6 +15,7 @@ anyhow = "1"
 colored = "2"
 chrono = "0.4"
 toml = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"
