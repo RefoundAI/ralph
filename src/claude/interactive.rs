@@ -1,7 +1,8 @@
-//! Interactive Claude CLI invocation for prompt, specs, and plan subcommands.
+//! Claude CLI invocation for prompt, specs, and plan subcommands.
 
 use anyhow::{Context, Result};
-use std::process::Command;
+use serde::Deserialize;
+use std::process::{Command, Stdio};
 
 /// Launch Claude in interactive mode with a system prompt.
 ///
@@ -23,6 +24,118 @@ pub fn run_interactive(system_prompt: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Run Claude in print mode with streaming output and no tools.
+///
+/// Spawns `claude --print --output-format stream-json --tools ""` and streams
+/// NDJSON events to the terminal in real time (thinking, text).
+/// Tools are disabled so Claude outputs text only.
+/// Returns the final result text for further processing.
+pub fn run_streaming(system_prompt: &str, user_message: &str, model: &str) -> Result<String> {
+    let mut child = Command::new("claude")
+        .arg("--print")
+        .arg("--verbose")
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--include-partial-messages")
+        .arg("--model")
+        .arg(model)
+        .arg("--tools")
+        .arg("")
+        .arg("--system-prompt")
+        .arg(system_prompt)
+        .arg(user_message)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn claude process. Is `claude` installed and in PATH?")?;
+
+    let stdout = child.stdout.take().context("Failed to capture stdout")?;
+    let stderr = child.stderr.take().context("Failed to capture stderr")?;
+    let stderr_thread = super::client::drain_stderr(stderr);
+
+    let result = super::client::stream_output(stdout, None, true)?;
+
+    let status = child.wait().context("Failed to wait for claude process")?;
+    let stderr_output = stderr_thread.join().unwrap_or_default();
+
+    if !status.success() {
+        if stderr_output.is_empty() {
+            anyhow::bail!("claude exited with status: {}", status);
+        } else {
+            anyhow::bail!(
+                "claude exited with status: {}\nstderr: {}",
+                status,
+                stderr_output
+            );
+        }
+    } else if !stderr_output.is_empty() {
+        eprintln!("{}", stderr_output);
+    }
+
+    result
+        .and_then(|r| r.result)
+        .ok_or_else(|| anyhow::anyhow!("Claude did not return a result"))
+}
+
+/// Structured output from the plan command.
+#[derive(Debug, Deserialize)]
+pub struct PlanOutput {
+    pub tasks: Vec<PlanTask>,
+}
+
+/// A single task in the plan output.
+#[derive(Debug, Deserialize)]
+pub struct PlanTask {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub priority: i32,
+}
+
+/// Extract and parse JSON from Claude's plan output.
+///
+/// Handles JSON wrapped in ```json code blocks, plain ``` blocks,
+/// or raw JSON objects.
+pub fn extract_plan_json(output: &str) -> Result<PlanOutput> {
+    let json_str = if let Some(start) = output.find("```json") {
+        let content_start = start + "```json".len();
+        let end = output[content_start..]
+            .find("```")
+            .ok_or_else(|| anyhow::anyhow!("Found ```json block but no closing ```"))?;
+        &output[content_start..content_start + end]
+    } else if let Some(start_pos) = output.find('{') {
+        // Find the matching closing brace
+        let mut depth = 0i32;
+        let mut end = start_pos;
+        for (i, ch) in output[start_pos..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start_pos + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            anyhow::bail!("Unbalanced braces in Claude's output");
+        }
+        &output[start_pos..end]
+    } else {
+        anyhow::bail!("No JSON found in Claude's output. Raw output:\n{}", output);
+    };
+
+    serde_json::from_str(json_str.trim())
+        .with_context(|| format!("Failed to parse plan JSON:\n{}", json_str.trim()))
 }
 
 /// Build the system prompt for `ralph prompt`.
@@ -67,57 +180,65 @@ The prompt file should be markdown with:
 
 /// Build the system prompt for `ralph plan`.
 ///
-/// Instructs Claude to help the user decompose a prompt into a task DAG,
-/// reading the prompt file and any relevant specs, then proposing a breakdown.
-pub fn build_plan_system_prompt(prompt_content: &str, specs_content: &str) -> String {
+/// Instructs Claude to decompose a prompt into a task DAG and output
+/// structured JSON that can be parsed and inserted into the task database.
+pub fn build_plan_system_prompt(specs_content: &str) -> String {
     format!(
-        r#"You are helping the user decompose a prompt into a task DAG (directed acyclic graph) for Ralph, an autonomous AI agent loop.
+        r#"You are a planning agent for Ralph, an autonomous AI agent loop that drives Claude Code.
 
-## Your Role
+Decompose the user's prompt into a task DAG. Each task runs in a separate, isolated Claude Code session — one task per iteration. Sessions share the filesystem but not conversation history.
 
-Analyze the given prompt and specifications, then propose a structured task breakdown that an AI agent can execute step-by-step.
+## How Ralph Executes Tasks
 
-## Prompt
+- Picks ONE ready leaf task per iteration, assigns it to a fresh Claude Code session
+- The session gets: task title, description, parent context, completed prerequisite summaries
+- The session does NOT see other tasks, the full DAG, or output from non-prerequisite tasks
+- Only leaf tasks execute — parent tasks auto-complete when all children complete
 
-```
-{prompt_content}
-```
+## Decomposition Rules
+
+1. **Right-size tasks**: One coherent unit of work per task. Good tasks touch 1-3 files. Too small wastes iterations. Too large risks failure.
+
+2. **Concise but sufficient descriptions**: 3-8 sentences. The agent has full codebase access and can read any file, so point it to relevant files by path rather than inlining content. Focus on WHAT to do and WHERE, not exhaustive HOW. Include: what to change, which files to read/modify, key constraints, and how to verify.
+
+3. **Reference, don't inline**: Say "Read the schema in `src/dag/db.rs` and add a new `metrics` table following the same pattern" — NOT a paragraph reproducing the schema. The agent can read files. Point to them.
+
+4. **Parent tasks for grouping**: Parents are never executed — they organize related children. Use for logical epics.
+
+5. **depends_on for real data dependencies**: Only when task B needs artifacts from task A. Independent tasks should be parallelizable. Don't add ordering dependencies just for preference.
+
+6. **Spec/doc tasks**: Decompose by section. First task creates the file skeleton, subsequent tasks fill in one section each and depend on the skeleton task.
+
+7. **Foundation first**: Schemas and types before the code that uses them. Use depends_on to enforce.
 
 ## Available Specifications
 
 {specs_content}
 
-## Guidelines
-
-- Break down the prompt into concrete, actionable tasks
-- Each task should be a single unit of work
-- Identify dependencies between tasks (which tasks must complete before others)
-- Tasks should be:
-  - **Specific**: Clear enough that an agent knows exactly what to do
-  - **Testable**: Include success criteria or verification steps
-  - **Atomic**: One logical piece of work, not multiple concerns
-  - **Ordered**: Consider prerequisites and dependencies
-
-## Task Breakdown Structure
-
-For each task, provide:
-1. **Task ID**: A short identifier (e.g., `t-001`, `t-002`)
-2. **Title**: Brief description of the task
-3. **Description**: What needs to be done and why
-4. **Dependencies**: Which tasks must complete first (if any)
-5. **Acceptance Criteria**: How to verify completion
-6. **Priority**: High, Medium, or Low
-
 ## Output Format
 
-Present the task breakdown as a structured markdown document with:
-- Task list with IDs, titles, and descriptions
-- Dependency graph showing task relationships
-- Execution order recommendations
-- Notes about critical paths or potential blockers
+Output ONLY a JSON object. No prose, no markdown fences — just raw JSON:
 
-**Note:** This is a planning session. The actual task storage in `.ralph/progress.db` will be handled separately. Focus on helping the user create a clear, actionable breakdown of the work."#,
-        prompt_content = prompt_content,
+{{
+  "tasks": [
+    {{
+      "id": "1",
+      "title": "Short imperative title",
+      "description": "Concise description: what to do, which files, how to verify.",
+      "parent_id": null,
+      "depends_on": [],
+      "priority": 0
+    }}
+  ]
+}}
+
+Fields:
+- `id`: Sequential ("1", "2", ...) — replaced with real IDs on insert
+- `title`: Imperative, brief (e.g., "Add sessions table to db.rs")
+- `description`: 3-8 sentences. Reference files by path. What + where + verify.
+- `parent_id`: Parent task ID for grouping, or null
+- `depends_on`: Task IDs that must complete first (real dependencies only)
+- `priority`: 0 = highest, higher = lower"#,
         specs_content = specs_content
     )
 }
@@ -305,21 +426,9 @@ mod tests {
     }
 
     #[test]
-    fn plan_system_prompt_contains_prompt_content() {
-        let prompt_content = "Implement user authentication";
-        let specs_content = "No specs available";
-        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
-        assert!(
-            system_prompt.contains("Implement user authentication"),
-            "system prompt should contain the prompt content"
-        );
-    }
-
-    #[test]
     fn plan_system_prompt_contains_specs_content() {
-        let prompt_content = "Build a feature";
         let specs_content = "## Auth Spec\nUse JWT tokens";
-        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+        let system_prompt = build_plan_system_prompt(specs_content);
         assert!(
             system_prompt.contains("Use JWT tokens"),
             "system prompt should contain the specs content"
@@ -328,9 +437,7 @@ mod tests {
 
     #[test]
     fn plan_system_prompt_mentions_task_dag() {
-        let prompt_content = "Test prompt";
-        let specs_content = "Test specs";
-        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+        let system_prompt = build_plan_system_prompt("Test specs");
         assert!(
             system_prompt.contains("DAG") || system_prompt.contains("task"),
             "system prompt should mention task DAG concepts"
@@ -339,34 +446,79 @@ mod tests {
 
     #[test]
     fn plan_system_prompt_mentions_dependencies() {
-        let prompt_content = "Test prompt";
-        let specs_content = "Test specs";
-        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+        let system_prompt = build_plan_system_prompt("Test specs");
         assert!(
-            system_prompt.contains("Dependencies") || system_prompt.contains("dependencies"),
+            system_prompt.contains("depends_on"),
             "system prompt should mention dependencies"
         );
     }
 
     #[test]
-    fn plan_system_prompt_mentions_acceptance_criteria() {
-        let prompt_content = "Test prompt";
-        let specs_content = "Test specs";
-        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+    fn plan_system_prompt_requests_json() {
+        let system_prompt = build_plan_system_prompt("Test specs");
         assert!(
-            system_prompt.contains("Acceptance Criteria") || system_prompt.contains("success criteria"),
-            "system prompt should mention acceptance criteria"
+            system_prompt.contains("JSON"),
+            "system prompt should request JSON output"
         );
     }
 
     #[test]
-    fn plan_system_prompt_mentions_progress_db() {
-        let prompt_content = "Test prompt";
-        let specs_content = "Test specs";
-        let system_prompt = build_plan_system_prompt(prompt_content, specs_content);
+    fn plan_system_prompt_mentions_priority() {
+        let system_prompt = build_plan_system_prompt("Test specs");
         assert!(
-            system_prompt.contains("progress.db"),
-            "system prompt should mention progress.db for context"
+            system_prompt.contains("priority"),
+            "system prompt should mention priority"
         );
+    }
+
+    // --- extract_plan_json tests ---
+
+    #[test]
+    fn extract_json_raw() {
+        let output = r#"{"tasks": [{"id": "1", "title": "Test", "description": "Desc", "parent_id": null, "depends_on": [], "priority": 0}]}"#;
+        let plan = extract_plan_json(output).unwrap();
+        assert_eq!(plan.tasks.len(), 1);
+        assert_eq!(plan.tasks[0].title, "Test");
+    }
+
+    #[test]
+    fn extract_json_from_code_block() {
+        let output = "Here is the plan:\n```json\n{\"tasks\": [{\"id\": \"1\", \"title\": \"Test\", \"description\": \"Desc\", \"parent_id\": null}]}\n```\nDone.";
+        let plan = extract_plan_json(output).unwrap();
+        assert_eq!(plan.tasks.len(), 1);
+    }
+
+    #[test]
+    fn extract_json_with_prose_around_it() {
+        let output = "Let me think about this...\n{\"tasks\": [{\"id\": \"1\", \"title\": \"Do thing\", \"description\": \"Details\", \"parent_id\": null}]}\nHope that helps!";
+        let plan = extract_plan_json(output).unwrap();
+        assert_eq!(plan.tasks[0].title, "Do thing");
+    }
+
+    #[test]
+    fn extract_json_no_json_fails() {
+        let output = "This has no JSON at all.";
+        assert!(extract_plan_json(output).is_err());
+    }
+
+    #[test]
+    fn extract_json_with_dependencies() {
+        let output = r#"{"tasks": [
+            {"id": "1", "title": "First", "description": "D1", "parent_id": null},
+            {"id": "2", "title": "Second", "description": "D2", "parent_id": null, "depends_on": ["1"]}
+        ]}"#;
+        let plan = extract_plan_json(output).unwrap();
+        assert_eq!(plan.tasks.len(), 2);
+        assert_eq!(plan.tasks[1].depends_on, vec!["1"]);
+    }
+
+    #[test]
+    fn extract_json_with_parent_hierarchy() {
+        let output = r#"{"tasks": [
+            {"id": "1", "title": "Parent", "description": "P", "parent_id": null},
+            {"id": "2", "title": "Child", "description": "C", "parent_id": "1"}
+        ]}"#;
+        let plan = extract_plan_json(output).unwrap();
+        assert_eq!(plan.tasks[1].parent_id, Some("1".to_string()));
     }
 }

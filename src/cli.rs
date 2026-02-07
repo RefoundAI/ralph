@@ -60,6 +60,10 @@ pub enum Command {
         /// Path to prompt file (not a raw prompt string)
         #[arg(value_name = "PROMPT_FILE", env = "RALPH_FILE")]
         prompt_file: Option<String>,
+
+        /// Model to use for planning: opus (default), sonnet, haiku
+        #[arg(long, value_name = "MODEL", env = "RALPH_MODEL")]
+        model: Option<String>,
     },
 }
 

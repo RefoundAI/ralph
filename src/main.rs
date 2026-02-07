@@ -145,13 +145,73 @@ fn run() -> Result<ExitCode> {
 
             Ok(ExitCode::SUCCESS)
         }
-        Some(cli::Command::Plan { prompt_file }) => {
+        Some(cli::Command::Plan { prompt_file, model }) => {
             let project = project::discover()?;
+            let prompts_dir = project.root.join(&project.config.prompts.dir);
 
-            // Resolve prompt file (default to "prompt" if not specified)
-            let prompt_path = project
-                .root
-                .join(prompt_file.as_deref().unwrap_or("prompt"));
+            // Resolve prompt file path
+            let prompt_path = if let Some(ref file) = prompt_file {
+                // Explicit file: check prompts dir first, then as-is
+                let in_prompts_dir = prompts_dir.join(file);
+                if in_prompts_dir.exists() {
+                    in_prompts_dir
+                } else {
+                    let as_is = std::path::PathBuf::from(file);
+                    if as_is.exists() {
+                        as_is
+                    } else {
+                        anyhow::bail!(
+                            "Prompt file '{}' not found.\nLooked in: {}\n           {}",
+                            file,
+                            prompts_dir.display(),
+                            std::env::current_dir().unwrap_or_default().display()
+                        );
+                    }
+                }
+            } else {
+                // No file supplied: list prompts from the prompts directory
+                let mut prompts: Vec<std::path::PathBuf> = Vec::new();
+                if prompts_dir.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&prompts_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
+                                prompts.push(path);
+                            }
+                        }
+                    }
+                }
+                prompts.sort();
+
+                if prompts.is_empty() {
+                    eprintln!("No prompt files found in {}", prompts_dir.display());
+                    eprintln!("Run 'ralph prompt' to create one.");
+                    return Ok(ExitCode::FAILURE);
+                }
+
+                if prompts.len() == 1 {
+                    prompts.into_iter().next().unwrap()
+                } else {
+                    eprintln!("Available prompts:\n");
+                    for (i, p) in prompts.iter().enumerate() {
+                        eprintln!("  {}. {}", i + 1, p.file_name().unwrap().to_string_lossy());
+                    }
+                    eprint!("\nSelect a prompt [1-{}]: ", prompts.len());
+
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)
+                        .map_err(|e| anyhow::anyhow!("Failed to read input: {}", e))?;
+
+                    let choice: usize = input.trim().parse()
+                        .map_err(|_| anyhow::anyhow!("Invalid selection: '{}'", input.trim()))?;
+
+                    if choice < 1 || choice > prompts.len() {
+                        anyhow::bail!("Selection out of range: {}", choice);
+                    }
+
+                    prompts.into_iter().nth(choice - 1).unwrap()
+                }
+            };
 
             // Read prompt content
             let prompt_content = std::fs::read_to_string(&prompt_path)
@@ -162,13 +222,13 @@ fn run() -> Result<ExitCode> {
             for specs_dir in &project.config.specs.dirs {
                 let resolved_dir = project.root.join(specs_dir);
                 if !resolved_dir.exists() {
-                    continue; // Skip if directory doesn't exist
+                    continue;
                 }
 
-                // Read all .md files in the specs directory
                 if let Ok(entries) = std::fs::read_dir(&resolved_dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
+                    let mut spec_files: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+                    spec_files.sort();
+                    for path in spec_files {
                         if path.extension().is_some_and(|ext| ext == "md") {
                             if let Ok(content) = std::fs::read_to_string(&path) {
                                 specs_content.push_str(&format!("\n## {}\n\n{}\n", path.file_name().unwrap().to_string_lossy(), content));
@@ -182,9 +242,66 @@ fn run() -> Result<ExitCode> {
                 specs_content = "No specifications available.".to_string();
             }
 
-            // Build system prompt and launch interactive Claude session
-            let system_prompt = claude::interactive::build_plan_system_prompt(&prompt_content, &specs_content);
-            claude::interactive::run_interactive(&system_prompt)?;
+            // Open the task database
+            let db_path = project.root.join(".ralph/progress.db");
+            let db = dag::open_db(db_path.to_str().unwrap())?;
+
+            // Check for existing tasks
+            let counts = dag::get_task_counts(&db)?;
+            if counts.total > 0 {
+                anyhow::bail!(
+                    "progress.db already has {} tasks. Delete .ralph/progress.db to re-plan.",
+                    counts.total
+                );
+            }
+
+            let plan_model = model.as_deref().unwrap_or("opus");
+            eprintln!("Planning with {}...", plan_model);
+
+            // Run Claude with streaming output to get the task breakdown
+            let system_prompt = claude::interactive::build_plan_system_prompt(&specs_content);
+            let output = claude::interactive::run_streaming(&system_prompt, &prompt_content, plan_model)?;
+
+            // Parse the plan JSON
+            let plan = claude::interactive::extract_plan_json(&output)?;
+
+            if plan.tasks.is_empty() {
+                anyhow::bail!("Claude returned an empty task list");
+            }
+
+            // Insert tasks into the database
+            // First pass: create all tasks, mapping temp IDs to real IDs
+            let mut id_map = std::collections::HashMap::new();
+
+            for task in &plan.tasks {
+                let parent_real_id = task.parent_id.as_ref().and_then(|pid| id_map.get(pid)).cloned();
+                let created = dag::create_task(
+                    &db,
+                    &task.title,
+                    Some(&task.description),
+                    parent_real_id.as_deref(),
+                    task.priority,
+                )?;
+                eprintln!("  {} {}", created.id, task.title);
+                id_map.insert(task.id.clone(), created.id);
+            }
+
+            // Second pass: add dependencies
+            for task in &plan.tasks {
+                let real_id = id_map.get(&task.id).unwrap();
+                for dep_id in &task.depends_on {
+                    if let Some(real_dep_id) = id_map.get(dep_id) {
+                        dag::add_dependency(&db, real_dep_id, real_id)?;
+                    } else {
+                        eprintln!(
+                            "  Warning: task {} depends on unknown task {}, skipping",
+                            task.id, dep_id
+                        );
+                    }
+                }
+            }
+
+            eprintln!("\nCreated {} tasks in progress.db", plan.tasks.len());
 
             Ok(ExitCode::SUCCESS)
         }
