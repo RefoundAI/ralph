@@ -20,6 +20,7 @@ pub struct ProjectConfig {
 
 /// Contents of `.ralph.toml`.
 #[derive(Debug, Clone, Deserialize, Default)]
+#[allow(dead_code)]
 pub struct RalphConfig {
     #[serde(default)]
     pub specs: SpecsConfig,
@@ -29,6 +30,7 @@ pub struct RalphConfig {
 
 /// Specs configuration section.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct SpecsConfig {
     #[serde(default = "default_specs_dirs")]
     pub dirs: Vec<String>,
@@ -44,6 +46,7 @@ impl Default for SpecsConfig {
 
 /// Prompts configuration section.
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct PromptsConfig {
     #[serde(default = "default_prompts_dir")]
     pub dir: String,

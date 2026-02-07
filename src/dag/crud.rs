@@ -1,5 +1,7 @@
 //! CRUD operations for task management.
 
+#![allow(dead_code)]
+
 use anyhow::{anyhow, Context, Result};
 
 use crate::dag::{generate_and_insert_task_id, Db, Task};

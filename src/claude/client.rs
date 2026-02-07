@@ -15,6 +15,7 @@ use super::events::{Event, ResultEvent};
 use super::parser;
 
 /// Information about a task assigned to Claude for the current iteration.
+#[allow(dead_code)]
 pub struct TaskInfo {
     pub task_id: String,
     pub title: String,
@@ -25,12 +26,14 @@ pub struct TaskInfo {
 }
 
 /// Context about a task's parent task.
+#[allow(dead_code)]
 pub struct ParentContext {
     pub title: String,
     pub description: String,
 }
 
 /// Context about a completed blocker (prerequisite) task.
+#[allow(dead_code)]
 pub struct BlockerContext {
     pub task_id: String,
     pub title: String,
@@ -41,6 +44,7 @@ pub struct BlockerContext {
 ///
 /// Returns a formatted markdown block with task details, parent context,
 /// completed prerequisites, and specs directory references.
+#[allow(dead_code)]
 pub fn build_task_context(task: &TaskInfo) -> String {
     let mut output = String::new();
 

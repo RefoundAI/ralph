@@ -1,5 +1,7 @@
 //! Task hierarchy and status management.
 
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 

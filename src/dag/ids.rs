@@ -1,5 +1,7 @@
 //! Task ID generation.
 
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -94,6 +94,7 @@ pub struct Config {
     /// Project root directory (directory containing .ralph.toml).
     pub project_root: PathBuf,
     /// Parsed project configuration.
+    #[allow(dead_code)]
     pub ralph_config: RalphConfig,
     /// Unique agent ID for this run (format: agent-{8 hex chars}).
     pub agent_id: String,

@@ -1,5 +1,7 @@
 //! Dependency management with cycle detection.
 
+#![allow(dead_code)]
+
 use anyhow::{bail, Context, Result};
 use rusqlite::params;
 use std::collections::{HashSet, VecDeque};

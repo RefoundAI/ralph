@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 /// Sigils for completion detection.
+#[allow(dead_code)]
 pub const COMPLETE_SIGIL: &str = "<promise>COMPLETE</promise>";
 pub const FAILURE_SIGIL: &str = "<promise>FAILURE</promise>";
 
@@ -57,6 +58,7 @@ pub struct ResultEvent {
 
 impl ResultEvent {
     /// Check if result contains the COMPLETE sigil.
+    #[allow(dead_code)]
     pub fn is_complete(&self) -> bool {
         self.result
             .as_ref()

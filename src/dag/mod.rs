@@ -11,14 +11,19 @@ mod transitions;
 
 use anyhow::Result;
 
+#[allow(unused_imports)]
 pub use crud::{add_log, create_task, delete_task, get_task, get_task_tree, update_task, TaskUpdate};
 pub use db::{init_db, Db};
+#[allow(unused_imports)]
 pub use dependencies::{add_dependency, remove_dependency};
+#[allow(unused_imports)]
 pub use ids::{generate_task_id, generate_and_insert_task_id};
+#[allow(unused_imports)]
 pub use tasks::{compute_parent_status, get_task_status};
 
 /// A task in the DAG.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Task {
     pub id: String,
     pub title: String,
