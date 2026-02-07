@@ -1,2 +1,3 @@
 R1: Implemented SQLite schema with tasks, dependencies, and task_logs tables. WAL mode, foreign key constraints, and schema versioning via user_version pragma. All unit tests passing.
 R2: Implemented task ID generation (t-XXXXXX format) using SHA-256 hash of timestamp+counter. Collision retry logic with max 10 attempts. Added sha2 dependency to Cargo.toml. All unit tests passing (137 total).
+R3: Implemented task hierarchy with derived parent status. Created src/dag/tasks.rs with compute_parent_status() and get_task_status() functions. Parent status computed recursively from children: failed > done > in_progress > pending. All unit tests passing (143 total).

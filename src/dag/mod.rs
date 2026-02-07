@@ -4,11 +4,13 @@
 
 mod db;
 mod ids;
+mod tasks;
 
 use anyhow::Result;
 
 pub use db::{init_db, Db};
 pub use ids::{generate_task_id, generate_and_insert_task_id};
+pub use tasks::{compute_parent_status, get_task_status};
 
 /// A task in the DAG.
 #[derive(Debug, Clone)]
