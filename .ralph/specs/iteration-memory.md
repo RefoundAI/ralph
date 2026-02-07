@@ -189,21 +189,261 @@ src/
 
 ## Data Model
 
+All new tables share the same `progress.db` database file alongside the existing `tasks`, `dependencies`, and `task_logs` tables. They will be created in a v1→v2 schema migration in `src/dag/db.rs`.
+
 ### Error Recovery Memory
 
-<!-- iteration_outcomes table, failure_reports table: CREATE TABLE statements, column rationale, indexes -->
+#### `iteration_outcomes` table
+
+Tracks the outcome of each iteration attempt. One row per iteration, keyed by task_id + attempt_number. This provides a timeline of what happened across retries.
+
+```sql
+CREATE TABLE iteration_outcomes (
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    attempt_number INTEGER NOT NULL,
+    model TEXT NOT NULL,                    -- 'opus', 'sonnet', 'haiku'
+    started_at TEXT NOT NULL,               -- ISO 8601 timestamp
+    duration_ms INTEGER NOT NULL,           -- Wall-clock time for iteration
+    tokens_input INTEGER,                   -- Input tokens (from ResultEvent cost data)
+    tokens_output INTEGER,                  -- Output tokens
+    outcome TEXT NOT NULL                   -- 'done', 'failed', 'no_sigil', 'error'
+        CHECK (outcome IN ('done','failed','no_sigil','error')),
+    error_type TEXT,                        -- Optional classification: 'timeout', 'tool_error', 'assertion_failure', 'unknown'
+    PRIMARY KEY (task_id, attempt_number)
+);
+
+CREATE INDEX idx_iteration_outcomes_task_id ON iteration_outcomes(task_id);
+CREATE INDEX idx_iteration_outcomes_started_at ON iteration_outcomes(started_at);
+CREATE INDEX idx_iteration_outcomes_model_outcome ON iteration_outcomes(model, outcome);
+```
+
+**Column rationale:**
+
+- `task_id`, `attempt_number`: Composite key. `attempt_number` increments from 1 on first attempt. Allows tracking retry history.
+- `model`: Which model was used. Enables analysis of model performance across tasks.
+- `started_at`, `duration_ms`: Timing data. `started_at` provides chronological ordering across tasks; `duration_ms` enables timeout/performance analysis.
+- `tokens_input`, `tokens_output`: Cost tracking. Nullable because early iterations might not report token counts.
+- `outcome`: Enum of result types. 'no_sigil' = Claude finished without emitting task-done or task-failed; 'error' = runtime error (timeout, crash).
+- `error_type`: Optional classification for failures. Helps categorize recurring error patterns.
+
+**Indexing strategy:**
+
+- `task_id` index: Fast lookup of all attempts for a task (used when injecting previous-attempt context).
+- `started_at` index: Chronological queries for "recent N iterations" (used in loop status and stuck detection).
+- `model,outcome` composite index: Performance analysis queries like "success rate of sonnet in last 20 iterations."
+
+#### `failure_reports` table
+
+Structured failure details captured from `<failure-report>` sigils or auto-generated from result text. One row per failed attempt. Provides rich context for retries.
+
+```sql
+CREATE TABLE failure_reports (
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    attempt_number INTEGER NOT NULL,
+    what_was_tried TEXT NOT NULL,           -- Brief description of approach taken
+    why_it_failed TEXT NOT NULL,            -- Root cause analysis
+    error_category TEXT,                    -- 'test_failure', 'build_error', 'missing_file', 'logic_error', etc.
+    relevant_files TEXT,                    -- JSON array of file paths mentioned in error
+    stack_trace_snippet TEXT,               -- First N lines of stack trace or error output
+    created_at TEXT NOT NULL,               -- ISO 8601 timestamp
+    PRIMARY KEY (task_id, attempt_number),
+    FOREIGN KEY (task_id, attempt_number)
+        REFERENCES iteration_outcomes(task_id, attempt_number)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX idx_failure_reports_task_id ON failure_reports(task_id);
+CREATE INDEX idx_failure_reports_error_category ON failure_reports(error_category);
+```
+
+**Column rationale:**
+
+- `task_id`, `attempt_number`: Composite key matching `iteration_outcomes`. One failure report per failed attempt.
+- `what_was_tried`: Claude's own description of the approach (from sigil), or extracted from result text ("Attempted to fix by...").
+- `why_it_failed`: Root cause. Human/Claude-readable explanation.
+- `error_category`: Machine-readable error type. Used for relevance matching and pattern detection.
+- `relevant_files`: JSON array of strings like `["src/dag/tasks.rs", "src/run_loop.rs"]`. Enables file-based relevance matching for learnings.
+- `stack_trace_snippet`: Truncated stack trace (first 500 chars). Useful for diagnosing repeated errors.
+- `created_at`: When the failure was captured. Enables "freshest failure first" ordering.
+
+**Indexing strategy:**
+
+- `task_id` index: Retrieve all failure history for a task when building retry context.
+- `error_category` index: Find failures of the same type across tasks (e.g., "show me all test_failure errors").
 
 ### Self-Improvement / Learning Extraction
 
-<!-- learnings table: CREATE TABLE statements, column rationale, indexes, relevance tags design -->
+#### `learnings` table
+
+Reusable insights captured from `<learning>` sigils. Tagged for relevance matching. Can be pruned/merged over time.
+
+```sql
+CREATE TABLE learnings (
+    id TEXT PRIMARY KEY,                    -- 'l-{6 hex}' format, same as task IDs
+    task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,  -- Origin task (nullable for cross-task learnings)
+    category TEXT NOT NULL,                 -- 'success_pattern', 'pitfall', 'tool_usage', 'code_structure', 'testing_strategy', etc.
+    content TEXT NOT NULL,                  -- The learning itself (1-3 sentences)
+    relevance_tags TEXT NOT NULL,           -- JSON array of strings: file paths, keywords, error types
+    created_at TEXT NOT NULL,               -- ISO 8601 timestamp
+    pruned_at TEXT,                         -- NULL if active, timestamp if pruned
+    superseded_by TEXT REFERENCES learnings(id) ON DELETE SET NULL  -- Points to newer learning that replaces this one
+);
+
+CREATE INDEX idx_learnings_task_id ON learnings(task_id);
+CREATE INDEX idx_learnings_created_at ON learnings(created_at);
+CREATE INDEX idx_learnings_pruned_at ON learnings(pruned_at);
+CREATE INDEX idx_learnings_category ON learnings(category);
+```
+
+**Column rationale:**
+
+- `id`: Unique identifier for the learning. Uses same ID generation as tasks (`l-{6 hex}`).
+- `task_id`: Which task produced this learning. Nullable because learnings can be manually added or merged from multiple tasks. ON DELETE SET NULL preserves the learning even if the task is deleted.
+- `category`: Coarse-grained classification for learnings. Helps with organization and filtering.
+- `content`: The actual insight, stored as plain text. Should be concise and actionable.
+- `relevance_tags`: JSON array like `["src/dag/tasks.rs", "Rust borrow checker", "test_failure"]`. Used for matching against current task context.
+- `created_at`: When the learning was captured. Newer learnings prioritized when budget-limited.
+- `pruned_at`: NULL if learning is active. Non-NULL timestamp if it's been archived/removed from active use. Allows soft deletion.
+- `superseded_by`: Points to a newer learning that replaces/generalizes this one. Enables chaining/evolution of learnings over time.
+
+**Indexing strategy:**
+
+- `task_id` index: Find all learnings from a specific task.
+- `created_at` index: "Newest first" ordering for recency ranking.
+- `pruned_at` index: Fast filtering of active learnings (`WHERE pruned_at IS NULL`).
+- `category` index: Filter by learning type.
+
+**Relevance tags design:**
+
+Tags are stored as a JSON array for simplicity (no separate join table needed). Matching logic:
+
+1. Extract current task's file paths (from description), keywords (from title/description), and error category (if retrying a failed task).
+2. Query learnings where `relevance_tags` contains ANY of those keywords (using SQLite `json_each()` and `LIKE` or exact match).
+3. Score by number of tag matches + recency bias.
+4. Return top N learnings within context budget.
+
+Example tags: `["src/dag/tasks.rs", "Rust", "foreign key constraint", "test_failure", "SQLite"]`.
 
 ### Strategic Intelligence
 
-<!-- strategy_metrics table: CREATE TABLE statements, column rationale, indexes -->
+#### `strategy_metrics` table
+
+Aggregated iteration metrics for model selection and stuck-loop detection. Deliberately denormalized from `iteration_outcomes` for fast querying.
+
+```sql
+CREATE TABLE strategy_metrics (
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    total_attempts INTEGER NOT NULL DEFAULT 0,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,  -- Reset on success
+    last_attempt_at TEXT,                             -- ISO 8601 timestamp of most recent attempt
+    last_success_at TEXT,                             -- ISO 8601 timestamp of last successful completion
+    difficulty_estimate TEXT,                         -- 'trivial', 'easy', 'moderate', 'hard', 'blocked' (from <difficulty-estimate> sigil)
+    suggested_model TEXT,                             -- Model that successfully completed this task, or NULL
+    stuck_flag INTEGER NOT NULL DEFAULT 0,            -- 1 if flagged as stuck (3+ consecutive failures)
+    PRIMARY KEY (task_id)
+);
+
+CREATE INDEX idx_strategy_metrics_stuck_flag ON strategy_metrics(stuck_flag);
+CREATE INDEX idx_strategy_metrics_consecutive_failures ON strategy_metrics(consecutive_failures);
+```
+
+**Column rationale:**
+
+- `task_id`: One row per task. Updated after each iteration.
+- `total_attempts`: Lifetime attempt count for this task. Increments on every claim.
+- `consecutive_failures`: How many failures in a row since last success. Reset to 0 on `done`. Used for escalation logic.
+- `last_attempt_at`, `last_success_at`: Timestamps for recency checks and timeout detection.
+- `difficulty_estimate`: Captured from Claude's `<difficulty-estimate>` sigil. Informs future model selection for similar tasks.
+- `suggested_model`: The model that successfully completed this task. Used for learning "sonnet was enough for moderate difficulty."
+- `stuck_flag`: Boolean (0/1). Set to 1 when `consecutive_failures >= 3`. Triggers special handling (warnings, decomposition suggestions, human escalation).
+
+**Indexing strategy:**
+
+- `stuck_flag` index: Fast query for all stuck tasks (`WHERE stuck_flag = 1`).
+- `consecutive_failures` index: Find tasks approaching stuck threshold (`WHERE consecutive_failures >= 2`).
+
+**Update triggers:**
+
+This table is updated by `memory::record_iteration_metrics()` after each iteration:
+
+- Increment `total_attempts`
+- If outcome = 'done': reset `consecutive_failures` to 0, update `last_success_at`, set `suggested_model`
+- If outcome = 'failed'/'no_sigil'/'error': increment `consecutive_failures`, set `stuck_flag = 1` if `consecutive_failures >= 3`
+- Update `last_attempt_at` to current timestamp
+- If `<difficulty-estimate>` sigil present, update `difficulty_estimate`
 
 ### Schema Relationships
 
-<!-- Foreign key relationships to existing tasks table, ER diagram -->
+All new tables reference the existing `tasks` table via foreign keys. This maintains referential integrity and enables cascading deletes.
+
+```
+┌─────────────────┐
+│     tasks       │  (existing table)
+│  id (PK)        │
+│  parent_id      │
+│  title          │
+│  status         │
+│  ...            │
+└────────┬────────┘
+         │
+         │ (1:N)
+         ├──────────────────────────────────────────┐
+         │                                          │
+         ▼                                          ▼
+┌─────────────────────────┐            ┌──────────────────────────┐
+│  iteration_outcomes     │            │   strategy_metrics       │
+│  task_id (FK) ───┐      │            │   task_id (PK, FK)       │
+│  attempt_number  │      │            │   total_attempts         │
+│  model           │      │            │   consecutive_failures   │
+│  outcome         │      │            │   stuck_flag             │
+│  ...             │      │            │   ...                    │
+└──────────────────┼──────┘            └──────────────────────────┘
+                   │
+                   │ (1:1)
+                   ▼
+         ┌──────────────────────┐
+         │  failure_reports     │
+         │  task_id (FK) ───────┤
+         │  attempt_number (FK) │
+         │  what_was_tried      │
+         │  why_it_failed       │
+         │  error_category      │
+         │  ...                 │
+         └──────────────────────┘
+
+         ┌──────────────────────┐
+         │     learnings        │
+         │  id (PK)             │
+         │  task_id (FK, NULL)  │─ ─ ─ ─ ─ ─ ─ ─ ─ ─ (optional link to task)
+         │  superseded_by (FK)  │───┐
+         │  relevance_tags      │   │ (self-referential)
+         │  ...                 │   │
+         └──────────────────────┘◄──┘
+```
+
+**Foreign key cascade behavior:**
+
+- `iteration_outcomes.task_id` → `tasks.id` ON DELETE CASCADE: If a task is deleted, all its iteration outcomes are deleted.
+- `failure_reports.task_id` → `tasks.id` ON DELETE CASCADE: Deleting a task deletes its failure reports.
+- `failure_reports.(task_id, attempt_number)` → `iteration_outcomes.(task_id, attempt_number)` ON DELETE CASCADE: Deleting an iteration outcome deletes its failure report.
+- `strategy_metrics.task_id` → `tasks.id` ON DELETE CASCADE: Deleting a task deletes its metrics.
+- `learnings.task_id` → `tasks.id` ON DELETE SET NULL: Deleting a task does NOT delete learnings, just unlinks them. Learnings are general insights that outlive their origin task.
+- `learnings.superseded_by` → `learnings.id` ON DELETE SET NULL: Deleting a learning that superseded another clears the link but preserves both learnings.
+
+**Migration strategy (v1 → v2):**
+
+In `src/dag/db.rs`, add this to the `migrate()` function:
+
+```rust
+if from_version < 2 && to_version >= 2 {
+    conn.execute_batch(r#"
+        -- [All CREATE TABLE statements from above]
+        -- [All CREATE INDEX statements from above]
+    "#).context("Failed to create schema v2 (memory tables)")?;
+}
+```
+
+Bump `SCHEMA_VERSION` to `2`. Existing databases auto-migrate on next `init_db()` call.
 
 ## Sigil Design
 
