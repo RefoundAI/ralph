@@ -247,24 +247,12 @@ fn assess_escalation_need(content: &str) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::Args;
     use crate::config::Config;
     use crate::project::{ProjectConfig, RalphConfig, SpecsConfig, PromptsConfig};
     use std::path::PathBuf;
 
     /// Helper to build a Config with fixed strategy.
     fn fixed_config(model: &str) -> Config {
-        let args = Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: Some("fixed".to_string()),
-            model: Some(model.to_string()),
-        };
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
@@ -272,7 +260,17 @@ mod tests {
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
             },
         };
-        Config::from_args(args, project).unwrap()
+        Config::from_run_args(
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            Some("fixed".to_string()),
+            Some(model.to_string()),
+            project,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -398,17 +396,6 @@ mod tests {
     fn hint_overrides_cost_optimized_strategy() {
         // Even though analyze_progress would return sonnet for empty content,
         // the hint should win
-        let args = Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: Some("cost-optimized".to_string()),
-            model: None,
-        };
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
@@ -416,7 +403,17 @@ mod tests {
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
             },
         };
-        let mut config = Config::from_args(args, project).unwrap();
+        let mut config = Config::from_run_args(
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            Some("cost-optimized".to_string()),
+            None,
+            project,
+        )
+        .unwrap();
         assert_eq!(select_model(&mut config, Some("haiku")).model, "haiku");
     }
 
@@ -424,17 +421,6 @@ mod tests {
 
     /// Helper to build a Config with escalate strategy.
     fn escalate_config() -> Config {
-        let args = Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: Some("escalate".to_string()),
-            model: None,
-        };
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
@@ -442,7 +428,17 @@ mod tests {
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
             },
         };
-        Config::from_args(args, project).unwrap()
+        Config::from_run_args(
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            Some("escalate".to_string()),
+            None,
+            project,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -555,17 +551,6 @@ mod tests {
 
     /// Helper to build a Config with plan-then-execute strategy.
     fn plan_then_execute_config() -> Config {
-        let args = Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: Some("plan-then-execute".to_string()),
-            model: None,
-        };
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
@@ -573,7 +558,17 @@ mod tests {
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
             },
         };
-        Config::from_args(args, project).unwrap()
+        Config::from_run_args(
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            Some("plan-then-execute".to_string()),
+            None,
+            project,
+        )
+        .unwrap()
     }
 
     #[test]

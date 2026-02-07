@@ -8,7 +8,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::cli::Args;
+use crate::cli;
 use crate::project::{ProjectConfig, RalphConfig};
 
 /// Default allowed tools when not using sandbox.
@@ -100,16 +100,24 @@ pub struct Config {
 }
 
 impl Config {
-    /// Build config from CLI args and project config.
-    pub fn from_args(args: Args, project: ProjectConfig) -> Result<Self> {
+    /// Build config from run command args and project config.
+    pub fn from_run_args(
+        prompt_file: Option<String>,
+        once: bool,
+        no_sandbox: bool,
+        limit: Option<u32>,
+        allow: Vec<String>,
+        model_strategy: Option<String>,
+        model: Option<String>,
+        project: ProjectConfig,
+    ) -> Result<Self> {
         // Check for mutually exclusive flags
-        if args.once && args.limit.is_some() && args.limit.unwrap() > 0 {
+        if once && limit.is_some() && limit.unwrap() > 0 {
             bail!("--once and --limit are mutually exclusive");
         }
 
-        // Resolve model strategy early (before consuming args fields)
-        let (strategy_str, model) = args
-            .resolve_model_strategy()
+        // Resolve model strategy early
+        let (strategy_str, model) = cli::resolve_model_strategy(&model, &model_strategy)
             .map_err(|e| anyhow::anyhow!(e))?;
 
         let model_strategy = ModelStrategy::from_str(&strategy_str)?;
@@ -127,15 +135,9 @@ impl Config {
             ModelStrategy::PlanThenExecute => "opus".to_string(),
         };
 
-        let prompt_file = args
-            .prompt_file
-            .unwrap_or_else(|| "prompt".to_string());
+        let prompt_file = prompt_file.unwrap_or_else(|| "prompt".to_string());
 
-        let limit = if args.once {
-            1
-        } else {
-            args.limit.unwrap_or(0)
-        };
+        let limit = if once { 1 } else { limit.unwrap_or(0) };
 
         let iteration = env::var("RALPH_ITERATION")
             .ok()
@@ -147,13 +149,9 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(limit);
 
-        let use_sandbox = !args.no_sandbox;
+        let use_sandbox = !no_sandbox;
 
-        let allowed_tools = if let Some(tools) = args.allowed_tools {
-            tools.split_whitespace().map(String::from).collect()
-        } else {
-            DEFAULT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect()
-        };
+        let allowed_tools = DEFAULT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect();
 
         Ok(Config {
             prompt_file,
@@ -162,7 +160,7 @@ impl Config {
             total,
             use_sandbox,
             allowed_tools,
-            allow_rules: args.allow,
+            allow_rules: allow,
             model_strategy,
             model,
             current_model,
@@ -190,23 +188,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::Args;
     use crate::project::{ProjectConfig, RalphConfig, SpecsConfig, PromptsConfig};
-
-    /// Helper to build Args with model fields set.
-    fn args_with_model(model: Option<&str>, strategy: Option<&str>) -> Args {
-        Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: strategy.map(String::from),
-            model: model.map(String::from),
-        }
-    }
 
     /// Helper to build a test ProjectConfig.
     fn test_project() -> ProjectConfig {
@@ -219,10 +201,23 @@ mod tests {
         }
     }
 
+    /// Helper to build config from run args.
+    fn config_from_run(model: Option<&str>, strategy: Option<&str>) -> Result<Config> {
+        Config::from_run_args(
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            strategy.map(String::from),
+            model.map(String::from),
+            test_project(),
+        )
+    }
+
     #[test]
     fn config_default_strategy_is_cost_optimized() {
-        let args = args_with_model(None, None);
-        let config = Config::from_args(args, test_project()).unwrap();
+        let config = config_from_run(None, None).unwrap();
         assert_eq!(config.model_strategy, ModelStrategy::CostOptimized);
         assert_eq!(config.model, None);
         assert_eq!(config.current_model, "sonnet");
@@ -230,15 +225,13 @@ mod tests {
 
     #[test]
     fn config_fixed_strategy_requires_model() {
-        let args = args_with_model(None, Some("fixed"));
-        let result = Config::from_args(args, test_project());
+        let result = config_from_run(None, Some("fixed"));
         assert!(result.is_err());
     }
 
     #[test]
     fn config_fixed_strategy_with_model() {
-        let args = args_with_model(Some("opus"), Some("fixed"));
-        let config = Config::from_args(args, test_project()).unwrap();
+        let config = config_from_run(Some("opus"), Some("fixed")).unwrap();
         assert_eq!(config.model_strategy, ModelStrategy::Fixed);
         assert_eq!(config.model, Some("opus".to_string()));
         assert_eq!(config.current_model, "opus");
@@ -246,32 +239,28 @@ mod tests {
 
     #[test]
     fn config_model_alone_implies_fixed() {
-        let args = args_with_model(Some("haiku"), None);
-        let config = Config::from_args(args, test_project()).unwrap();
+        let config = config_from_run(Some("haiku"), None).unwrap();
         assert_eq!(config.model_strategy, ModelStrategy::Fixed);
         assert_eq!(config.current_model, "haiku");
     }
 
     #[test]
     fn config_escalate_starts_at_haiku() {
-        let args = args_with_model(None, Some("escalate"));
-        let config = Config::from_args(args, test_project()).unwrap();
+        let config = config_from_run(None, Some("escalate")).unwrap();
         assert_eq!(config.model_strategy, ModelStrategy::Escalate);
         assert_eq!(config.current_model, "haiku");
     }
 
     #[test]
     fn config_plan_then_execute_starts_at_opus() {
-        let args = args_with_model(None, Some("plan-then-execute"));
-        let config = Config::from_args(args, test_project()).unwrap();
+        let config = config_from_run(None, Some("plan-then-execute")).unwrap();
         assert_eq!(config.model_strategy, ModelStrategy::PlanThenExecute);
         assert_eq!(config.current_model, "opus");
     }
 
     #[test]
     fn config_next_iteration_preserves_strategy() {
-        let args = args_with_model(Some("sonnet"), Some("fixed"));
-        let config = Config::from_args(args, test_project()).unwrap();
+        let config = config_from_run(Some("sonnet"), Some("fixed")).unwrap();
         let next = config.next_iteration();
         assert_eq!(next.model_strategy, ModelStrategy::Fixed);
         assert_eq!(next.model, Some("sonnet".to_string()));
@@ -302,16 +291,14 @@ mod tests {
 
     #[test]
     fn config_has_agent_id() {
-        let args = args_with_model(None, None);
-        let config = Config::from_args(args, test_project()).unwrap();
+        let config = config_from_run(None, None).unwrap();
         assert!(!config.agent_id.is_empty());
         assert!(config.agent_id.starts_with("agent-"));
     }
 
     #[test]
     fn agent_id_matches_format() {
-        let args = args_with_model(None, None);
-        let config = Config::from_args(args, test_project()).unwrap();
+        let config = config_from_run(None, None).unwrap();
         // Format: agent-{8 hex chars}
         assert_eq!(config.agent_id.len(), 14); // "agent-" (6) + 8 hex chars
         assert!(config.agent_id.chars().skip(6).all(|c| c.is_ascii_hexdigit()));
@@ -319,11 +306,8 @@ mod tests {
 
     #[test]
     fn agent_id_different_on_separate_invocations() {
-        let args1 = args_with_model(None, None);
-        let config1 = Config::from_args(args1, test_project()).unwrap();
-
-        let args2 = args_with_model(None, None);
-        let config2 = Config::from_args(args2, test_project()).unwrap();
+        let config1 = config_from_run(None, None).unwrap();
+        let config2 = config_from_run(None, None).unwrap();
 
         // Two invocations should (very likely) produce different IDs
         // Note: this is probabilistic, but collision chance is extremely low with 32-bit hash
@@ -332,8 +316,7 @@ mod tests {
 
     #[test]
     fn agent_id_preserved_across_iterations() {
-        let args = args_with_model(None, None);
-        let config = Config::from_args(args, test_project()).unwrap();
+        let config = config_from_run(None, None).unwrap();
         let agent_id_1 = config.agent_id.clone();
 
         let next = config.next_iteration();

@@ -305,22 +305,10 @@ fn detect_git_dir() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cli::Args;
     use crate::project::{ProjectConfig, RalphConfig, SpecsConfig, PromptsConfig};
     use std::path::PathBuf;
 
     fn test_config() -> Config {
-        let args = Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: Some("cost-optimized".to_string()),
-            model: None,
-        };
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
@@ -328,7 +316,17 @@ mod tests {
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
             },
         };
-        Config::from_args(args, project).unwrap()
+        Config::from_run_args(
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            Some("cost-optimized".to_string()),
+            None,
+            project,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -443,17 +441,6 @@ mod tests {
 
     #[test]
     fn claude_args_model_reflects_fixed_strategy() {
-        let args = Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: Some("fixed".to_string()),
-            model: Some("opus".to_string()),
-        };
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
@@ -461,7 +448,17 @@ mod tests {
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
             },
         };
-        let config = Config::from_args(args, project).unwrap();
+        let config = Config::from_run_args(
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            Some("fixed".to_string()),
+            Some("opus".to_string()),
+            project,
+        )
+        .unwrap();
         let cli_args = build_claude_args(&config);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
@@ -472,17 +469,6 @@ mod tests {
 
     #[test]
     fn claude_args_model_reflects_escalate_strategy() {
-        let args = Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: Some("escalate".to_string()),
-            model: None,
-        };
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
@@ -490,7 +476,17 @@ mod tests {
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
             },
         };
-        let config = Config::from_args(args, project).unwrap();
+        let config = Config::from_run_args(
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            Some("escalate".to_string()),
+            None,
+            project,
+        )
+        .unwrap();
         let cli_args = build_claude_args(&config);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
@@ -501,17 +497,6 @@ mod tests {
 
     #[test]
     fn claude_args_model_reflects_plan_then_execute_strategy() {
-        let args = Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: Some("plan-then-execute".to_string()),
-            model: None,
-        };
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
@@ -519,7 +504,17 @@ mod tests {
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
             },
         };
-        let config = Config::from_args(args, project).unwrap();
+        let config = Config::from_run_args(
+            None,
+            false,
+            false,
+            None,
+            vec![],
+            Some("plan-then-execute".to_string()),
+            None,
+            project,
+        )
+        .unwrap();
         let cli_args = build_claude_args(&config);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(

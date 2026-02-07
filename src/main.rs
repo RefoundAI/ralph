@@ -11,6 +11,7 @@ mod run_loop;
 mod strategy;
 
 use anyhow::Result;
+use clap::Parser;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -53,39 +54,75 @@ mod tests {
 fn run() -> Result<ExitCode> {
     let args = cli::Args::parse_args();
 
-    // Handle init subcommand
-    if let Some(cli::Command::Init) = args.command {
-        project::init()?;
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    // Discover project config (walk up directory tree to find .ralph.toml)
-    let project = project::discover()?;
-
-    let config = config::Config::from_args(args, project)?;
-
-    output::formatter::print_iteration_info(&config);
-
-    match run_loop::run(config)? {
-        run_loop::Outcome::Complete => {
-            output::formatter::print_complete();
+    match args.command {
+        Some(cli::Command::Init) => {
+            project::init()?;
             Ok(ExitCode::SUCCESS)
         }
-        run_loop::Outcome::Failure => {
-            output::formatter::print_failure();
+        Some(cli::Command::Prompt) => {
+            eprintln!("ralph prompt: not yet implemented");
             Ok(ExitCode::FAILURE)
         }
-        run_loop::Outcome::LimitReached => {
-            output::formatter::print_limit_reached();
+        Some(cli::Command::Run {
+            prompt_file,
+            once,
+            no_sandbox,
+            limit,
+            allow,
+            model_strategy,
+            model,
+        }) => {
+            // Discover project config (walk up directory tree to find .ralph.toml)
+            let project = project::discover()?;
+
+            let config = config::Config::from_run_args(
+                prompt_file,
+                once,
+                no_sandbox,
+                limit,
+                allow,
+                model_strategy,
+                model,
+                project,
+            )?;
+
+            output::formatter::print_iteration_info(&config);
+
+            match run_loop::run(config)? {
+                run_loop::Outcome::Complete => {
+                    output::formatter::print_complete();
+                    Ok(ExitCode::SUCCESS)
+                }
+                run_loop::Outcome::Failure => {
+                    output::formatter::print_failure();
+                    Ok(ExitCode::FAILURE)
+                }
+                run_loop::Outcome::LimitReached => {
+                    output::formatter::print_limit_reached();
+                    Ok(ExitCode::SUCCESS)
+                }
+                run_loop::Outcome::Blocked => {
+                    eprintln!("Loop blocked: no ready tasks, but incomplete tasks remain");
+                    Ok(ExitCode::from(2))
+                }
+                run_loop::Outcome::NoPlan => {
+                    eprintln!("No plan: DAG is empty. Run 'ralph plan' to create tasks");
+                    Ok(ExitCode::from(3))
+                }
+            }
+        }
+        Some(cli::Command::Specs) => {
+            eprintln!("ralph specs: not yet implemented");
+            Ok(ExitCode::FAILURE)
+        }
+        Some(cli::Command::Plan { prompt_file: _ }) => {
+            eprintln!("ralph plan: not yet implemented");
+            Ok(ExitCode::FAILURE)
+        }
+        None => {
+            // Bare `ralph` with no subcommand prints help
+            cli::Args::parse_from(&["ralph", "--help"]);
             Ok(ExitCode::SUCCESS)
-        }
-        run_loop::Outcome::Blocked => {
-            eprintln!("Loop blocked: no ready tasks, but incomplete tasks remain");
-            Ok(ExitCode::from(2))
-        }
-        run_loop::Outcome::NoPlan => {
-            eprintln!("No plan: DAG is empty. Run 'ralph plan' to create tasks");
-            Ok(ExitCode::from(3))
         }
     }
 }

@@ -14,38 +14,6 @@ use clap::{Parser, Subcommand};
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
-
-    /// Path to prompt file (when no subcommand given)
-    #[arg(value_name = "PROMPT_FILE", env = "RALPH_FILE")]
-    pub prompt_file: Option<String>,
-
-    /// Run exactly once (conflicts with --limit)
-    #[arg(short = 'o', long)]
-    pub once: bool,
-
-    /// Disable sandbox-exec
-    #[arg(long)]
-    pub no_sandbox: bool,
-
-    /// Maximum iterations; 0 = forever
-    #[arg(long, value_name = "N", env = "RALPH_LIMIT")]
-    pub limit: Option<u32>,
-
-    /// Tool whitelist (space-separated, only with --no-sandbox)
-    #[arg(long, value_name = "LIST")]
-    pub allowed_tools: Option<String>,
-
-    /// Enable rule set (e.g., --allow=aws)
-    #[arg(short = 'a', long = "allow", value_name = "RULE")]
-    pub allow: Vec<String>,
-
-    /// Model strategy: fixed, cost-optimized, escalate, plan-then-execute
-    #[arg(long, value_name = "STRATEGY", env = "RALPH_MODEL_STRATEGY")]
-    pub model_strategy: Option<String>,
-
-    /// Model for fixed strategy: opus, sonnet, haiku. Implies --model-strategy=fixed when used alone.
-    #[arg(long, value_name = "MODEL", env = "RALPH_MODEL")]
-    pub model: Option<String>,
 }
 
 /// Available subcommands.
@@ -53,6 +21,46 @@ pub struct Args {
 pub enum Command {
     /// Initialize a new Ralph project
     Init,
+    /// Create a new prompt file
+    Prompt,
+    /// Run the agent loop
+    Run {
+        /// Path to prompt file (not a raw prompt string)
+        #[arg(value_name = "PROMPT_FILE", env = "RALPH_FILE")]
+        prompt_file: Option<String>,
+
+        /// Run exactly once (conflicts with --limit)
+        #[arg(short = 'o', long)]
+        once: bool,
+
+        /// Disable sandbox-exec
+        #[arg(long)]
+        no_sandbox: bool,
+
+        /// Maximum iterations; 0 = forever
+        #[arg(long, value_name = "N", env = "RALPH_LIMIT")]
+        limit: Option<u32>,
+
+        /// Enable rule set (e.g., --allow=aws)
+        #[arg(short = 'a', long = "allow", value_name = "RULE")]
+        allow: Vec<String>,
+
+        /// Model strategy: fixed, cost-optimized, escalate, plan-then-execute
+        #[arg(long, value_name = "STRATEGY", env = "RALPH_MODEL_STRATEGY")]
+        model_strategy: Option<String>,
+
+        /// Model for fixed strategy: opus, sonnet, haiku. Implies --model-strategy=fixed when used alone.
+        #[arg(long, value_name = "MODEL", env = "RALPH_MODEL")]
+        model: Option<String>,
+    },
+    /// Author specification documents
+    Specs,
+    /// Decompose prompt into task DAG
+    Plan {
+        /// Path to prompt file (not a raw prompt string)
+        #[arg(value_name = "PROMPT_FILE", env = "RALPH_FILE")]
+        prompt_file: Option<String>,
+    },
 }
 
 /// Valid model names.
@@ -65,44 +73,47 @@ impl Args {
     pub fn parse_args() -> Self {
         Self::parse()
     }
+}
 
-    /// Validate and resolve model/strategy arguments.
-    /// Returns (strategy, model) where strategy is always set.
-    pub fn resolve_model_strategy(&self) -> Result<(String, Option<String>), String> {
-        // Validate model name if provided
-        if let Some(ref model) = self.model {
-            if !VALID_MODELS.contains(&model.as_str()) {
-                return Err(format!(
-                    "invalid model '{}': must be one of {}",
-                    model,
-                    VALID_MODELS.join(", ")
-                ));
-            }
+/// Validate and resolve model/strategy arguments.
+/// Returns (strategy, model) where strategy is always set.
+pub fn resolve_model_strategy(
+    model: &Option<String>,
+    model_strategy: &Option<String>,
+) -> Result<(String, Option<String>), String> {
+    // Validate model name if provided
+    if let Some(ref m) = model {
+        if !VALID_MODELS.contains(&m.as_str()) {
+            return Err(format!(
+                "invalid model '{}': must be one of {}",
+                m,
+                VALID_MODELS.join(", ")
+            ));
         }
+    }
 
-        // Validate strategy name if provided
-        if let Some(ref strategy) = self.model_strategy {
-            if !VALID_STRATEGIES.contains(&strategy.as_str()) {
-                return Err(format!(
-                    "invalid model strategy '{}': must be one of {}",
-                    strategy,
-                    VALID_STRATEGIES.join(", ")
-                ));
-            }
+    // Validate strategy name if provided
+    if let Some(ref strategy) = model_strategy {
+        if !VALID_STRATEGIES.contains(&strategy.as_str()) {
+            return Err(format!(
+                "invalid model strategy '{}': must be one of {}",
+                strategy,
+                VALID_STRATEGIES.join(", ")
+            ));
         }
+    }
 
-        match (&self.model_strategy, &self.model) {
-            // --model alone implies fixed strategy
-            (None, Some(model)) => Ok(("fixed".to_string(), Some(model.clone()))),
-            // --model-strategy=fixed requires --model
-            (Some(strategy), None) if strategy == "fixed" => {
-                Err("--model-strategy=fixed requires --model to be set".to_string())
-            }
-            // Both provided
-            (Some(strategy), model) => Ok((strategy.clone(), model.clone())),
-            // Neither provided: default to cost-optimized
-            (None, None) => Ok(("cost-optimized".to_string(), None)),
+    match (model_strategy, model) {
+        // --model alone implies fixed strategy
+        (None, Some(model)) => Ok(("fixed".to_string(), Some(model.clone()))),
+        // --model-strategy=fixed requires --model
+        (Some(strategy), None) if strategy == "fixed" => {
+            Err("--model-strategy=fixed requires --model to be set".to_string())
         }
+        // Both provided
+        (Some(strategy), model) => Ok((strategy.clone(), model.clone())),
+        // Neither provided: default to cost-optimized
+        (None, None) => Ok(("cost-optimized".to_string(), None)),
     }
 }
 
@@ -110,78 +121,75 @@ impl Args {
 mod tests {
     use super::*;
 
-    fn args_with(model: Option<&str>, strategy: Option<&str>) -> Args {
-        Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: strategy.map(String::from),
-            model: model.map(String::from),
-        }
-    }
-
     #[test]
     fn model_alone_implies_fixed() {
-        let args = args_with(Some("opus"), None);
-        let (strategy, model) = args.resolve_model_strategy().unwrap();
-        assert_eq!(strategy, "fixed");
-        assert_eq!(model, Some("opus".to_string()));
+        let model = Some("opus".to_string());
+        let strategy = None;
+        let (resolved_strategy, resolved_model) = resolve_model_strategy(&model, &strategy).unwrap();
+        assert_eq!(resolved_strategy, "fixed");
+        assert_eq!(resolved_model, Some("opus".to_string()));
     }
 
     #[test]
     fn fixed_without_model_errors() {
-        let args = args_with(None, Some("fixed"));
-        let result = args.resolve_model_strategy();
+        let model = None;
+        let strategy = Some("fixed".to_string());
+        let result = resolve_model_strategy(&model, &strategy);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("requires --model"));
     }
 
     #[test]
     fn default_is_cost_optimized() {
-        let args = args_with(None, None);
-        let (strategy, model) = args.resolve_model_strategy().unwrap();
-        assert_eq!(strategy, "cost-optimized");
-        assert_eq!(model, None);
+        let model = None;
+        let strategy = None;
+        let (resolved_strategy, resolved_model) = resolve_model_strategy(&model, &strategy).unwrap();
+        assert_eq!(resolved_strategy, "cost-optimized");
+        assert_eq!(resolved_model, None);
     }
 
     #[test]
     fn invalid_model_name_errors() {
-        let args = args_with(Some("gpt4"), None);
-        let result = args.resolve_model_strategy();
+        let model = Some("gpt4".to_string());
+        let strategy = None;
+        let result = resolve_model_strategy(&model, &strategy);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid model"));
     }
 
     #[test]
     fn invalid_strategy_name_errors() {
-        let args = args_with(None, Some("random"));
-        let result = args.resolve_model_strategy();
+        let model = None;
+        let strategy = Some("random".to_string());
+        let result = resolve_model_strategy(&model, &strategy);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid model strategy"));
     }
 
     #[test]
     fn valid_models_accepted() {
-        for model in VALID_MODELS {
-            let args = args_with(Some(model), None);
-            assert!(args.resolve_model_strategy().is_ok(), "model '{}' should be valid", model);
+        for model_name in VALID_MODELS {
+            let model = Some(model_name.to_string());
+            let strategy = None;
+            assert!(
+                resolve_model_strategy(&model, &strategy).is_ok(),
+                "model '{}' should be valid",
+                model_name
+            );
         }
     }
 
     #[test]
     fn valid_strategies_accepted() {
-        for strategy in VALID_STRATEGIES {
+        for strategy_name in VALID_STRATEGIES {
             // Non-fixed strategies don't require --model
-            if *strategy != "fixed" {
-                let args = args_with(None, Some(strategy));
+            if *strategy_name != "fixed" {
+                let model = None;
+                let strategy = Some(strategy_name.to_string());
                 assert!(
-                    args.resolve_model_strategy().is_ok(),
+                    resolve_model_strategy(&model, &strategy).is_ok(),
                     "strategy '{}' should be valid",
-                    strategy
+                    strategy_name
                 );
             }
         }
@@ -189,39 +197,19 @@ mod tests {
 
     #[test]
     fn fixed_with_model_works() {
-        let args = args_with(Some("haiku"), Some("fixed"));
-        let (strategy, model) = args.resolve_model_strategy().unwrap();
-        assert_eq!(strategy, "fixed");
-        assert_eq!(model, Some("haiku".to_string()));
+        let model = Some("haiku".to_string());
+        let strategy = Some("fixed".to_string());
+        let (resolved_strategy, resolved_model) = resolve_model_strategy(&model, &strategy).unwrap();
+        assert_eq!(resolved_strategy, "fixed");
+        assert_eq!(resolved_model, Some("haiku".to_string()));
     }
 
     #[test]
     fn non_fixed_strategy_with_model_works() {
-        let args = args_with(Some("opus"), Some("escalate"));
-        let (strategy, model) = args.resolve_model_strategy().unwrap();
-        assert_eq!(strategy, "escalate");
-        assert_eq!(model, Some("opus".to_string()));
-    }
-
-    #[test]
-    fn env_vars_produce_same_fields() {
-        // We can't easily test env var parsing without spawning a process,
-        // but we verify that Args fields are populated identically regardless
-        // of source. This test ensures resolve_model_strategy works the same
-        // way whether values come from CLI or env.
-        let args = Args {
-            command: None,
-            prompt_file: None,
-            once: false,
-            no_sandbox: false,
-            limit: None,
-            allowed_tools: None,
-            allow: vec![],
-            model_strategy: Some("cost-optimized".to_string()),
-            model: None,
-        };
-        let (strategy, model) = args.resolve_model_strategy().unwrap();
-        assert_eq!(strategy, "cost-optimized");
-        assert_eq!(model, None);
+        let model = Some("opus".to_string());
+        let strategy = Some("escalate".to_string());
+        let (resolved_strategy, resolved_model) = resolve_model_strategy(&model, &strategy).unwrap();
+        assert_eq!(resolved_strategy, "escalate");
+        assert_eq!(resolved_model, Some("opus".to_string()));
     }
 }
