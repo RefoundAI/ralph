@@ -1767,26 +1767,325 @@ The escalation system does not prevent infinite retries. If Ralph's `--limit` is
 
 ## Migration Path
 
+This section describes a phased implementation plan for adding iteration memory to Ralph. Each phase is self-contained and shippable: Phase 1 lays the database and parsing foundation, Phase 2 adds error recovery, Phase 3 adds the learning system, and Phase 4 replaces the heuristic model strategy with data-driven intelligence. Each phase builds on the previous one but does not break existing functionality — at any point, Ralph can be released with only the phases completed so far.
+
+**Key constraint: backward compatibility.** Existing `.ralph/progress.db` files must auto-migrate without user action. Old prompts that don't emit new sigils must work unchanged. The existing task DAG system (`tasks`, `dependencies` tables) is never modified — only new tables are added.
+
 ### Phase 1: Foundation
 
-<!-- New DB tables, new sigil parsing, basic iteration outcome capture -->
-<!-- Files to modify, new files to create, testing strategy -->
+**Goal:** Create the database schema for all memory tables, add sigil parsers for the new sigils, and wire up basic iteration outcome recording in the run loop. After this phase, Ralph records structured data about each iteration but does not yet use it to modify behavior.
+
+**Files to modify:**
+
+| File | Changes |
+|------|---------|
+| `src/dag/db.rs` | Bump `SCHEMA_VERSION` from `1` to `2`. Add a v1→v2 migration branch in `migrate()` that creates four new tables (`iteration_outcomes`, `failure_reports`, `learnings`, `strategy_metrics`) and their indexes. All `CREATE TABLE` and `CREATE INDEX` statements from the Data Model section go here, wrapped in a single `execute_batch()` call. The migration is idempotent: the `if from_version < 2 && to_version >= 2` guard ensures it runs only once. Also add `PRAGMA auto_vacuum = FULL` to the connection setup (alongside existing WAL mode and foreign keys pragmas) so that pruning reclaims disk space. |
+| `src/claude/events.rs` | Add four new parsing functions below the existing `parse_next_model_hint()`, `parse_task_done()`, and `parse_task_failed()`: `parse_failure_report()`, `parse_learnings()`, `parse_difficulty_estimate()`, and `parse_retry_suggestion()`. Each follows the same pattern as the existing parsers (find start tag, find end tag, trim content, validate). Add corresponding struct definitions: `FailureReport { what_tried, why_failed, error_category, relevant_files, stack_trace }`, `Learning { category, tags, content }`. Add a helper function `extract_attribute(tag: &str, attr: &str) -> Option<String>` for parsing XML attributes in `<learning>` tags. Extend `ResultEvent` with four new fields: `failure_report: Option<FailureReport>`, `learnings: Vec<Learning>`, `difficulty_estimate: Option<String>`, `retry_suggestion: Option<String>`. |
+| `src/claude/parser.rs` | In the `"result"` event branch of `parse_event()`, after the existing sigil extraction calls (lines ~48-59), add calls to the four new parsers and wire the results into the `ResultEvent` constructor. This is straightforward plumbing: `failure_report: parse_failure_report(&result_text)`, etc. |
+| `src/run_loop.rs` | After the sigil handling block (after task completion/failure is processed, around line 144), add a call to `memory::record_iteration_metrics()`. This records the iteration's task_id, model, duration, token counts, and outcome into `iteration_outcomes` and updates `strategy_metrics`. This is the minimal "always capture" hook — it runs regardless of whether Claude emitted any memory sigils. The function receives `&db`, the task_id, the model string, the `ResultEvent`, and the outcome classification. |
+
+**New files to create:**
+
+| File | Purpose |
+|------|---------|
+| `src/memory/mod.rs` | Module root. Defines the public API: `record_iteration_metrics()`, `capture_failure()`, `capture_learnings()`, `get_failure_context()`, `get_relevant_learnings()`, `get_loop_status()`, `prune_old_data()`. In Phase 1, only `record_iteration_metrics()` is fully implemented; the others are stubbed as no-ops returning empty results. Re-exports submodule types. |
+| `src/memory/metrics.rs` | Implements `record_iteration_metrics()`. Inserts a row into `iteration_outcomes` (computing `attempt_number` as `SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM iteration_outcomes WHERE task_id = ?`). Upserts into `strategy_metrics` using `INSERT OR REPLACE` (incrementing `total_attempts`, updating `consecutive_failures` based on outcome, setting timestamps, and conditionally setting `stuck_flag` when `consecutive_failures >= 3`). If a `difficulty_estimate` is present in the `ResultEvent`, stores it. |
+
+**Module registration:**
+
+Add `mod memory;` to `src/main.rs` (or `src/lib.rs` if using a library crate) alongside the existing module declarations.
+
+**Testing strategy:**
+
+1. **Unit tests for sigil parsers** (`src/claude/events.rs`): Test each new parser with valid input, empty input, malformed input, missing closing tags, and multiple sigils. Follow the pattern of existing tests (if any) or add a `#[cfg(test)] mod tests` block. Key test cases:
+   - `parse_failure_report()`: Valid sigil → `Some(FailureReport)`, empty sigil → `None`, missing `what_tried` → `None`, extra fields → ignored
+   - `parse_learnings()`: Zero sigils → empty vec, one sigil → vec of 1, two sigils → vec of 2, malformed attributes → skipped
+   - `parse_difficulty_estimate()`: Valid value → `Some("hard")`, invalid value → `None`
+   - `parse_retry_suggestion()`: Valid → `Some(text)`, empty → `None`
+
+2. **Integration test for DB migration** (`tests/migration.rs` or inline in `src/dag/db.rs`): Create a v1 database manually (with only `tasks`, `dependencies`, `task_logs` tables), call `init_db()`, and verify all four new tables exist via `SELECT name FROM sqlite_master WHERE type='table'`. Verify indexes exist. Verify `PRAGMA user_version` returns `2`.
+
+3. **Integration test for metrics recording** (`tests/memory_metrics.rs`): Create a fresh database, insert a task, call `record_iteration_metrics()` with a mock outcome, and verify rows exist in both `iteration_outcomes` and `strategy_metrics` with correct values. Test the `attempt_number` auto-increment by calling `record_iteration_metrics()` three times and checking attempt numbers are 1, 2, 3.
+
+4. **Regression test:** Run `cargo test` to ensure existing DAG tests still pass. The new tables should not affect existing task operations.
+
+**Verification:**
+
+```bash
+cargo build                    # Ensure compilation succeeds
+cargo test                     # All existing + new tests pass
+cargo run -- init              # Creates progress.db with v2 schema
+sqlite3 .ralph/progress.db "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
+# Expected: dependencies, failure_reports, iteration_outcomes, learnings, strategy_metrics, task_logs, tasks
+```
 
 ### Phase 2: Error Recovery
 
-<!-- Failure report capture and injection, retry awareness in build_task_context() -->
-<!-- Files to modify, new files to create, testing strategy -->
+**Goal:** Capture structured failure reports when tasks fail and inject previous attempt context into retry prompts. After this phase, when a task is retried, Claude sees what was tried before and why it failed, dramatically reducing repeated failures.
+
+**Prerequisites:** Phase 1 complete (DB tables exist, `ResultEvent` carries failure report data, metrics recording works).
+
+**Files to modify:**
+
+| File | Changes |
+|------|---------|
+| `src/run_loop.rs` | After the existing `record_iteration_metrics()` call (added in Phase 1), add a conditional block: if the outcome is `Failed` or `NoSigil` (i.e., Claude didn't emit `<task-done>`), call `memory::capture_failure(&db, &task_id, &result_event)`. This extracts the `FailureReport` from `result_event.failure_report` (parsed in Phase 1) and inserts it into the `failure_reports` table. If no `<failure-report>` sigil was present, auto-generate a minimal report: `what_tried = ""`, `why_failed = "Task failed (no structured report)"`, `error_category = "unknown"`, `relevant_files = []`, `stack_trace = result_event.result.chars().take(500).collect()`. Also store the `retry_suggestion` if present. |
+| `src/claude/client.rs` | Modify `build_task_context()` signature to accept an optional `MemoryContext` parameter: `pub fn build_task_context(task: &TaskInfo, memory: Option<&MemoryContext>) -> String`. After the existing "Completed Prerequisites" section (around line 75), add a call to `render_previous_attempts()` if `memory.previous_attempts` is non-empty. The `MemoryContext` struct is defined in `src/memory/context.rs` (new file). In Phase 2, only the `previous_attempts` field is populated; `relevant_learnings` and `loop_status` are empty/default. Also update `build_system_prompt()` to document the `<failure-report>` and `<retry-suggestion>` sigils in a new "Memory Sigils (Optional)" section appended after the "Model Hint" section. |
+| `src/run_loop.rs` (second change) | Before calling `claude::client::run()`, query `memory::get_failure_context(&db, &task_id)` to retrieve previous attempts for the assigned task. Construct a `MemoryContext` with the returned `Vec<AttemptContext>` and pass it to `build_task_context()`. This is the injection side: the run loop gathers memory data and feeds it into the prompt builder. |
+
+**New files to create:**
+
+| File | Purpose |
+|------|---------|
+| `src/memory/errors.rs` | Implements `capture_failure()` and `get_failure_context()`. `capture_failure()` inserts into `failure_reports` (computing `attempt_number` from the matching `iteration_outcomes` row). `get_failure_context()` runs the LEFT JOIN query from the Context Injection section, returning `Vec<AttemptContext>`. The `AttemptContext` struct mirrors the query columns: `attempt_number`, `model`, `outcome`, `duration_ms`, `what_was_tried`, `why_it_failed`, `error_category`, `relevant_files` (deserialized from JSON), `stack_trace_snippet`, `retry_suggestion`. |
+| `src/memory/context.rs` | Defines `MemoryContext`, `AttemptContext`, `LearningContext`, `LoopStatus` structs. Implements `render_memory_context()`, `render_previous_attempts()`, `render_single_attempt()`, and the `CharBudget` tracker. In Phase 2, `render_learnings()` and `render_loop_status()` are implemented but produce empty output when no data is present. The rendering logic and markdown templates follow the Context Injection section exactly. |
+
+**Testing strategy:**
+
+1. **Unit tests for failure capture** (`src/memory/errors.rs`): Insert a task, record an iteration metric (Phase 1), then call `capture_failure()` with a `FailureReport` struct. Verify the row exists in `failure_reports` with correct columns. Test auto-generation when `failure_report` is `None`.
+
+2. **Unit tests for failure context retrieval** (`src/memory/errors.rs`): Insert a task with two failed attempts (both `iteration_outcomes` and `failure_reports` rows), then call `get_failure_context()`. Verify it returns two `AttemptContext` entries in chronological order. Verify the LEFT JOIN works: insert an `iteration_outcomes` row without a matching `failure_reports` row and confirm it still appears (with `None` for failure-specific fields).
+
+3. **Unit tests for context rendering** (`src/memory/context.rs`): Call `render_previous_attempts()` with various inputs: empty vec → empty string, one attempt → single block, two attempts → two blocks, attempt with retry suggestion → suggestion rendered at end. Test `CharBudget` enforcement: pass a budget of 100 chars and verify truncation message appears.
+
+4. **Integration test for round-trip** (`tests/error_recovery.rs`): Create a database, insert a task, simulate a failed iteration (record metrics + capture failure), then call `get_failure_context()` and `render_previous_attempts()`. Verify the rendered markdown contains the expected text. Then simulate a second failed iteration with different content and verify both attempts appear.
+
+5. **Integration test for `build_task_context()` with memory**: Construct a `TaskInfo` and `MemoryContext` and call `build_task_context()`. Verify the output contains the "### Previous Attempts" header. Verify that passing `None` for memory produces identical output to the pre-Phase-2 behavior (regression test).
+
+**Verification:**
+
+```bash
+cargo test                     # All tests pass
+cargo run -- run --once        # Single iteration; check log file for memory sigil documentation in system prompt
+```
 
 ### Phase 3: Learning System
 
-<!-- Learning sigil capture, storage, relevance matching, context injection -->
-<!-- Files to modify, new files to create, testing strategy -->
+**Goal:** Capture reusable insights from Claude's `<learning>` sigils, store them with relevance tags, and inject the most relevant learnings into future task contexts. After this phase, knowledge transfers across tasks — insights from completing one task improve success on related tasks.
+
+**Prerequisites:** Phase 2 complete (failure capture works, `MemoryContext` and rendering infrastructure exist, `build_task_context()` accepts memory parameter).
+
+**Files to modify:**
+
+| File | Changes |
+|------|---------|
+| `src/run_loop.rs` | After the `capture_failure()` call (added in Phase 2), add `memory::capture_learnings(&db, &task_id, &result_event)`. This runs unconditionally (on both success and failure), extracting any `<learning>` sigils from the result. Most iterations produce zero learnings, so this is a fast no-op in the common case. Before the Claude invocation, extend the `MemoryContext` construction to also call `memory::get_relevant_learnings(&db, &task_id, &task_info)` and populate the `relevant_learnings` field. |
+| `src/claude/client.rs` | Update `build_system_prompt()` to document the `<learning>` sigil in the "Memory Sigils (Optional)" section (alongside `<failure-report>` from Phase 2). Include the format with `category` and `tags` attributes and list the valid category values. The `render_memory_context()` function (from `memory::context`) already handles learnings rendering — no changes needed to `build_task_context()` itself. |
+| `src/memory/context.rs` | The `render_learnings()` function (stubbed in Phase 2) is now fully implemented: iterates over `Vec<LearningContext>`, renders each as a bullet point `- **[{category}]** {content}`, and respects the `CharBudget`. Add deduplication logic: if two learnings have the same category and >80% word overlap (computed by splitting into word sets and comparing intersection/union), keep only the most recent one. |
+
+**New files to create:**
+
+| File | Purpose |
+|------|---------|
+| `src/memory/learnings.rs` | Implements `capture_learnings()` and `get_relevant_learnings()`. `capture_learnings()` iterates over `result_event.learnings` (the `Vec<Learning>` parsed in Phase 1), generates a unique ID for each (`l-{6 hex}` using the same ID generation as `src/dag/ids.rs`), and inserts into the `learnings` table with `relevance_tags` serialized as JSON. `get_relevant_learnings()` implements the relevance matching algorithm: (1) extract keywords from task title and description (split on whitespace, extract file paths via regex `[a-zA-Z_/]+\.[a-z]+`, lowercase all), (2) run the `json_each()` query from the Context Injection section to find learnings with overlapping tags, (3) return `Vec<LearningContext>` sorted by match_score descending then recency. The `LearningContext` struct contains: `id`, `category`, `content`, `match_score`, `created_at`. |
+
+**Testing strategy:**
+
+1. **Unit tests for learning capture** (`src/memory/learnings.rs`): Parse a `ResultEvent` with two `<learning>` sigils, call `capture_learnings()`, verify two rows exist in the `learnings` table with correct category, content, and JSON-serialized `relevance_tags`.
+
+2. **Unit tests for relevance matching** (`src/memory/learnings.rs`): Insert several learnings with known tags. Create a task whose description mentions some of those tags. Call `get_relevant_learnings()` and verify: (a) learnings with matching tags are returned, (b) learnings with more matching tags rank higher, (c) learnings with `pruned_at` set are excluded, (d) learnings with zero matching tags are not returned.
+
+3. **Unit tests for deduplication** (`src/memory/context.rs`): Create two learnings with identical category and near-identical content. Call `render_learnings()` and verify only one appears in output.
+
+4. **Integration test for cross-task knowledge transfer** (`tests/learning_system.rs`): Create two tasks (A and B). Simulate completing task A with a learning tagged `["src/dag/db.rs", "SQLite"]`. Then simulate starting task B whose description mentions `src/dag/db.rs`. Call `get_relevant_learnings()` for task B and verify the learning from task A is returned.
+
+5. **Edge case test: `json_each()` availability**: Verify that the SQLite version bundled by `rusqlite` supports `json_each()`. If not, implement a fallback using `LIKE '%tag%'` on the raw JSON string (less precise but functional). Test with both approaches.
+
+**Verification:**
+
+```bash
+cargo test                     # All tests pass
+cargo run -- run --once        # Single iteration; verify learning sigil docs in system prompt
+```
 
 ### Phase 4: Strategic Intelligence
 
-<!-- Data-driven model strategy, difficulty estimation, stuck-loop detection -->
-<!-- Files to modify, new files to create, testing strategy -->
+**Goal:** Replace the heuristic-based model selection (which reads `progress.db` as raw text and searches for keywords) with data-driven selection using `strategy_metrics`. Add loop status injection and stuck-loop detection. After this phase, model escalation is based on actual failure counts rather than text pattern matching, and Claude has full situational awareness of the run's progress.
+
+**Prerequisites:** Phase 3 complete (all memory tables populated, `MemoryContext` fully functional, rendering infrastructure handles all three sections).
+
+**Files to modify:**
+
+| File | Changes |
+|------|---------|
+| `src/strategy.rs` | Replace the `analyze_progress()` function (which reads `progress.db` as a text file and searches for keywords like "error", "stuck") with `analyze_metrics()`, which queries `strategy_metrics` and `iteration_outcomes` tables. The new function returns a `MetricsAnalysis` struct with: `consecutive_failures` for the current task, `overall_success_rate` (from recent iterations), `is_stuck` (from `stuck_flag`), and `difficulty_estimate`. Modify `select_cost_optimized()` to use `MetricsAnalysis` instead of text-based signals: if `consecutive_failures >= 2` → return `opus`; if `overall_success_rate > 0.8` and `consecutive_failures == 0` → return `haiku`; otherwise → return `sonnet`. Modify `select_escalate()` similarly: escalation level is now driven by `consecutive_failures` rather than `escalation_level` counter. The `ModelSelection` struct gains a new field: `rationale: String` — a human-readable explanation of why this model was chosen (used in Loop Status rendering). Remove the file-reading code from `analyze_progress()` entirely. |
+| `src/run_loop.rs` | Before the Claude invocation, extend `MemoryContext` construction to also call `memory::get_loop_status(&db, &task_id, &config)` and populate the `loop_status` field. The `LoopStatus` struct needs: `current_iteration` (from `config.iteration`), `iteration_limit` (from `config.limit`), `task_attempts` (from `strategy_metrics.total_attempts`), `consecutive_failures`, `run_successes`, `run_total` (from aggregate `iteration_outcomes` query), `current_model`, `model_rationale` (from `ModelSelection`), `stuck_flag`. Pass the `ModelSelection` return value's rationale to the `LoopStatus` builder. |
+| `src/claude/client.rs` | Update `build_system_prompt()` to document the `<difficulty-estimate>` sigil in the "Memory Sigils (Optional)" section. The system prompt now lists all four sigils. No changes needed to `build_task_context()` — the `render_memory_context()` function handles Loop Status rendering via the already-implemented `render_loop_status()`. |
+| `src/memory/context.rs` | The `render_loop_status()` function (stubbed in Phase 2) is now fully implemented with the rendering logic from the Context Injection section. It renders iteration count, task attempt count, success rate, model choice with rationale, and conditionally the stuck-loop warning block. The stuck warning has highest priority within its section — it is always rendered if `stuck_flag` is true, even if the budget is tight (the warning text is ~200 chars). |
+| `src/config.rs` | Add a `task_id` field to `Config` (or pass it through the run loop) so that `strategy::select_model()` can query `strategy_metrics` for the specific task being attempted. Currently the strategy doesn't know which task will be claimed next — this requires either passing the task_id to `select_model()` or querying metrics after task claiming and adjusting the model before invoking Claude. The latter approach is cleaner: claim the task first, then select the model based on that task's history. This may require reordering the model selection and task claiming steps in `run_loop.rs`. |
+
+**New files to create:**
+
+| File | Purpose |
+|------|---------|
+| `src/memory/status.rs` | Implements `get_loop_status()`. Runs two queries: (1) task-specific metrics from `strategy_metrics` (`SELECT total_attempts, consecutive_failures, difficulty_estimate, stuck_flag WHERE task_id = ?`), (2) run-wide metrics from `iteration_outcomes` (`SELECT COUNT(*), SUM(CASE WHEN outcome='done' THEN 1 ELSE 0 END) WHERE started_at >= datetime('now', '-2 hours')`). Returns a `LoopStatus` struct combining both query results with config data (iteration number, limit, model, rationale). Handles the case where no `strategy_metrics` row exists yet (first attempt on this task) by returning defaults: `total_attempts = 0`, `consecutive_failures = 0`, `stuck_flag = false`. |
+
+**Run loop reordering:**
+
+The current run loop order is: select model → claim task → invoke Claude. Phase 4 requires: claim task → select model (using task-specific metrics) → invoke Claude. This reordering is necessary because data-driven model selection needs to know which task is being attempted. The change is safe: claiming the task first just means the model selection happens slightly later in the iteration. If the Claude invocation fails or is interrupted, the task's claim is released as before (the existing `release_claim()` logic is unchanged).
+
+```rust
+// Phase 4 run loop order (simplified):
+let task_id = dag::claim_task(&db, &ready_tasks[0].id, &config.agent_id)?;
+let model_selection = strategy::select_model(&db, &task_id, config.model_strategy, hint.as_deref());
+config.model = model_selection.model.clone();
+let memory_ctx = build_memory_context(&db, &task_id, &task_info, &model_selection, &config);
+let result = claude::client::run(&config, Some(&log_file))?;
+```
+
+**Testing strategy:**
+
+1. **Unit tests for data-driven model selection** (`src/strategy.rs`): Create a database, insert a task with varying `consecutive_failures` in `strategy_metrics`, and call `select_model()` for each strategy. Verify: `CostOptimized` with 0 failures → `sonnet`, with 2 failures → `opus`, with 0 failures and high success rate → `haiku`. `Escalate` with 0 failures → `haiku`, with 1 → `sonnet`, with 2+ → `opus`. Verify hint always overrides.
+
+2. **Unit tests for stuck detection**: Set `consecutive_failures = 3` and `stuck_flag = 1` in `strategy_metrics`. Call `get_loop_status()` and verify `stuck_flag` is true. Call `render_loop_status()` and verify the stuck warning appears in output.
+
+3. **Integration test for full context injection** (`tests/strategic_intelligence.rs`): Create a database with a task that has 2 failed attempts (in `iteration_outcomes` and `failure_reports`), a relevant learning (in `learnings`), and `consecutive_failures = 2` (in `strategy_metrics`). Build a `MemoryContext` by calling all three retrieval functions, then render it. Verify the output contains all three sections: Previous Attempts, Learnings, and Loop Status.
+
+4. **Regression test for model selection**: Verify that the `Fixed` and `PlanThenExecute` strategies are unaffected by the changes — they should not query `strategy_metrics` at all. Verify that `select_model()` gracefully handles a database without `strategy_metrics` rows (returns defaults).
+
+5. **Regression test for run loop reordering**: Run `cargo run -- run --once` and verify the iteration completes successfully with the new claim-then-select order. Check the log file to confirm the model selection rationale appears.
+
+**Verification:**
+
+```bash
+cargo test                     # All tests pass, including strategy tests
+cargo run -- run --once        # Full iteration with all memory systems active
+# Inspect the log file to verify:
+# 1. System prompt contains all four sigil docs
+# 2. Model selection rationale is data-driven
+# 3. Loop Status section appears in task context (if metrics exist)
+```
 
 ### Schema Migration Strategy
 
-<!-- Version tracking in SQLite, auto-migration of existing progress.db files, backward compatibility -->
+**Version tracking:** Ralph uses SQLite's built-in `PRAGMA user_version` for schema versioning, already implemented in `src/dag/db.rs`. The current schema version is `1`. The memory system bumps this to `2`.
+
+**Migration mechanism:** The existing `migrate()` function in `src/dag/db.rs` handles version upgrades. It reads the current `user_version`, compares it to the target `SCHEMA_VERSION` constant, and runs migration SQL for each version gap. The v1→v2 migration adds new tables alongside existing ones — it never modifies or drops existing tables.
+
+**Migration SQL (v1 → v2):**
+
+```rust
+const SCHEMA_VERSION: i32 = 2;
+
+fn migrate(conn: &Connection, from_version: i32, to_version: i32) -> Result<()> {
+    // ... existing v0→v1 migration ...
+
+    if from_version < 2 && to_version >= 2 {
+        conn.execute_batch(r#"
+            CREATE TABLE IF NOT EXISTS iteration_outcomes (
+                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                attempt_number INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL,
+                tokens_input INTEGER,
+                tokens_output INTEGER,
+                outcome TEXT NOT NULL
+                    CHECK (outcome IN ('done','failed','no_sigil','error')),
+                error_type TEXT,
+                PRIMARY KEY (task_id, attempt_number)
+            );
+            CREATE INDEX IF NOT EXISTS idx_iteration_outcomes_task_id
+                ON iteration_outcomes(task_id);
+            CREATE INDEX IF NOT EXISTS idx_iteration_outcomes_started_at
+                ON iteration_outcomes(started_at);
+            CREATE INDEX IF NOT EXISTS idx_iteration_outcomes_model_outcome
+                ON iteration_outcomes(model, outcome);
+
+            CREATE TABLE IF NOT EXISTS failure_reports (
+                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                attempt_number INTEGER NOT NULL,
+                what_was_tried TEXT NOT NULL,
+                why_it_failed TEXT NOT NULL,
+                error_category TEXT,
+                relevant_files TEXT,
+                stack_trace_snippet TEXT,
+                retry_suggestion TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (task_id, attempt_number),
+                FOREIGN KEY (task_id, attempt_number)
+                    REFERENCES iteration_outcomes(task_id, attempt_number)
+                    ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_failure_reports_task_id
+                ON failure_reports(task_id);
+            CREATE INDEX IF NOT EXISTS idx_failure_reports_error_category
+                ON failure_reports(error_category);
+
+            CREATE TABLE IF NOT EXISTS learnings (
+                id TEXT PRIMARY KEY,
+                task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+                category TEXT NOT NULL,
+                content TEXT NOT NULL,
+                relevance_tags TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                pruned_at TEXT,
+                superseded_by TEXT REFERENCES learnings(id) ON DELETE SET NULL,
+                last_used_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_learnings_task_id ON learnings(task_id);
+            CREATE INDEX IF NOT EXISTS idx_learnings_created_at ON learnings(created_at);
+            CREATE INDEX IF NOT EXISTS idx_learnings_pruned_at ON learnings(pruned_at);
+            CREATE INDEX IF NOT EXISTS idx_learnings_category ON learnings(category);
+
+            CREATE TABLE IF NOT EXISTS strategy_metrics (
+                task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                total_attempts INTEGER NOT NULL DEFAULT 0,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_attempt_at TEXT,
+                last_success_at TEXT,
+                difficulty_estimate TEXT,
+                suggested_model TEXT,
+                stuck_flag INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (task_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_strategy_metrics_stuck_flag
+                ON strategy_metrics(stuck_flag);
+            CREATE INDEX IF NOT EXISTS idx_strategy_metrics_consecutive_failures
+                ON strategy_metrics(consecutive_failures);
+        "#).context("Failed to create schema v2 (memory tables)")?;
+
+        conn.pragma_update(None, "user_version", 2)?;
+    }
+
+    Ok(())
+}
+```
+
+**Key design decisions:**
+
+1. **`CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`:** Defensive coding against partial migrations. If the process crashes mid-migration (e.g., after creating `iteration_outcomes` but before `learnings`), the next `init_db()` call re-runs the migration and the `IF NOT EXISTS` clauses prevent "table already exists" errors.
+
+2. **Single `execute_batch()` call:** All v2 tables are created in one batch to minimize transaction overhead. SQLite wraps `execute_batch()` in an implicit transaction, so either all tables are created or none are (atomicity).
+
+3. **No modification of existing tables:** The v1 tables (`tasks`, `dependencies`, `task_logs`) are never altered. This guarantees that existing DAG operations work identically after migration. The only visible change is the `user_version` pragma incrementing from 1 to 2.
+
+4. **Foreign key references to `tasks.id`:** All new tables reference the existing `tasks` table, maintaining referential integrity. Cascading deletes ensure that cleaning up a task also cleans up its memory data.
+
+5. **Auto-migration on open:** The `init_db()` function (called at the start of every `ralph run`) checks the current schema version and calls `migrate()` if needed. No explicit "ralph migrate" command is required — users simply run Ralph and their database is upgraded transparently.
+
+**Backward compatibility guarantees:**
+
+- **Old Ralph, new database:** If a user downgrades Ralph to a pre-memory version after upgrading, the old Ralph will see `user_version = 2` but only knows about version 1. It should fail gracefully with a "database version too new" error rather than silently corrupting data. This is enforced by adding a check in `init_db()`: if `current_version > SCHEMA_VERSION`, return an error instructing the user to upgrade Ralph.
+
+- **New Ralph, old database:** The new Ralph sees `user_version = 1` and runs the v1→v2 migration automatically. All existing tasks, dependencies, and logs are preserved. The new tables are empty until the first iteration with the memory system active.
+
+- **Fresh database:** `ralph init` creates a new `progress.db` with version 2 (running both v0→v1 and v1→v2 migrations), so fresh installations get the full schema immediately.
+
+**Future migrations (v2 → v3+):**
+
+The same pattern extends to future schema versions. Each migration is a guarded block (`if from_version < N && to_version >= N`) that runs DDL statements. Migrations are cumulative: upgrading from v1 to v3 runs both v1→v2 and v2→v3 blocks in sequence. This approach scales to any number of schema versions without accumulating migration files (unlike frameworks like Ecto or ActiveRecord that use separate migration files).
+
+**Rollback strategy:**
+
+SQLite does not support `DROP COLUMN` (before version 3.35.0), so rollback from v2→v1 is impractical. Instead, if a rollback is needed, the user can delete `.ralph/progress.db` and re-run `ralph init`. Since the memory tables are auxiliary (they don't affect task DAG operations), deleting and recreating the database only loses memory data, not task definitions. Task definitions can be repopulated by re-running `ralph plan`.
+
+**Testing the migration path:**
+
+1. **Fresh install test:** Run `ralph init` on a directory with no `.ralph/`. Verify `progress.db` has `user_version = 2` and all seven tables exist.
+
+2. **Upgrade test:** Create a v1 `progress.db` manually (using the v1 schema SQL), insert some tasks and dependencies, then run `ralph init` or `ralph run`. Verify `user_version = 2`, all new tables exist, and existing tasks/dependencies are intact.
+
+3. **Idempotency test:** Run `ralph init` twice on the same directory. Verify no errors and `user_version` is still 2.
+
+4. **Downgrade protection test:** Set `user_version = 3` on a database, then run Ralph (which knows about version 2). Verify Ralph exits with an error message rather than attempting to operate on a newer schema.
