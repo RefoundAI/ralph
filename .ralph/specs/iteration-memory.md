@@ -283,7 +283,7 @@ CREATE INDEX idx_failure_reports_error_category ON failure_reports(error_categor
 - `error_category`: Machine-readable error type. Used for relevance matching and pattern detection.
 - `relevant_files`: JSON array of strings like `["src/dag/tasks.rs", "src/run_loop.rs"]`. Enables file-based relevance matching for learnings.
 - `stack_trace_snippet`: Truncated stack trace (first 500 chars). Useful for diagnosing repeated errors.
-- `retry_suggestion`: Free-form text from the `<retry-suggestion>` sigil. Advice from Claude to its future self about what to try differently on retry. Rendered prominently in the Previous Attempts context section (see [Context Injection — Error Recovery Memory](#error-recovery-memory-1)).
+- `retry_suggestion`: Free-form text from the `<retry-suggestion>` sigil. Advice from Claude to its future self about what to try differently on retry. Rendered prominently in the Previous Attempts context section (see [Error Recovery Injection](#error-recovery-injection)).
 - `created_at`: When the failure was captured. Enables "freshest failure first" ordering.
 
 **Indexing strategy:**
@@ -896,9 +896,9 @@ pub struct MemoryContext {
 }
 ```
 
-### Error Recovery Memory
+### Error Recovery Injection
 
-When a task is being retried (it has previous entries in `iteration_outcomes`), the `### Previous Attempts` section is injected. This is the highest-priority memory section because it directly prevents the most common failure mode: repeating the same broken approach.
+When a task is being retried (it has previous entries in [`iteration_outcomes`](#iteration_outcomes-table)), the `### Previous Attempts` section is injected. This is the highest-priority memory section because it directly prevents the most common failure mode: repeating the same broken approach.
 
 **Query (run in `memory::get_failure_context()`):**
 
@@ -988,9 +988,9 @@ When the `<failure-report>` sigil was not provided (auto-generated minimal repor
 
 **Retry suggestion prominence:** The `retry_suggestion` from the most recent failure is rendered separately at the end of the Previous Attempts section, outside the per-attempt blocks, with bold formatting. This ensures Claude sees the suggestion even if it skims the attempt history.
 
-### Self-Improvement / Learning Extraction
+### Learning Injection
 
-When relevant learnings exist in the `learnings` table, the `### Learnings from Previous Iterations` section is injected. This provides cross-task knowledge transfer — insights from one task that help with a different task.
+When relevant learnings exist in the [`learnings` table](#learnings-table), the `### Learnings from Previous Iterations` section is injected. This provides cross-task knowledge transfer — insights from one task that help with a different task.
 
 **Relevance matching (run in `memory::get_relevant_learnings()`):**
 
@@ -1069,7 +1069,7 @@ fn render_learnings(learnings: &[LearningContext], budget: &mut CharBudget) -> S
 
 **Deduplication:** If multiple learnings have near-identical content (same category and >80% word overlap), only the most recent one is shown. This is implemented as a post-query filter in Rust rather than in SQL, since fuzzy matching in SQL is impractical.
 
-### Strategic Intelligence
+### Strategic Intelligence Injection
 
 The `### Loop Status` section provides Claude with meta-awareness of the overall run: how many iterations have passed, how this task has performed, and why the current model was selected. This influences Claude's approach — for example, knowing it's on the 3rd retry with an escalated model might prompt a fundamentally different strategy.
 
@@ -1545,7 +1545,7 @@ memory::prune_old_data(&db)?;
 | `failure_reports` | Task is `done` and >7 days old | DELETE (hard delete) |
 | `iteration_outcomes` | Task is `done` and >7 days old | DELETE |
 | `strategy_metrics` | Task is `done` and >30 days old | DELETE |
-| `learnings` | Age >90 days AND never matched | Set `pruned_at` (soft delete) |
+| `learnings` | Age >90 days AND (`last_used_at` is NULL or >30 days old) | Set `pruned_at` (soft delete) |
 | `learnings` | `superseded_by` is set AND >30 days old | Set `pruned_at` |
 
 **Rationale:**
@@ -1554,13 +1554,16 @@ memory::prune_old_data(&db)?;
 - **Long grace period for learnings:** Learnings are cross-task, so they remain valuable long after the origin task completes. A 90-day window ensures learnings are available across multi-month projects.
 - **Soft delete for learnings:** Setting `pruned_at` rather than hard-deleting allows "undo" functionality in the future (e.g., `ralph restore-learning l-abc123`) and forensic analysis.
 
-**Query-based staleness detection:**
+**Staleness detection via `last_used_at`:**
 
-To identify "never matched" learnings, the pruning system checks if a learning's ID has appeared in any query results since the last pruning run. This is tracked via a simple heuristic: if a learning was created >90 days ago and has never been returned by `get_relevant_learnings()` in the current run, it's a candidate for pruning. In v1, this is approximated by pruning learnings whose `created_at` is >90 days old and whose `task_id` is NULL or references a completed task (indicating it hasn't been reinforced by recent usage).
+The `learnings` table includes a `last_used_at` column (see [Data Model — `learnings` table](#learnings-table)), updated by `get_relevant_learnings()` whenever a learning is included in context injection. This provides a reliable signal of whether a learning is still actively useful.
 
-**Avoiding over-pruning:**
+A learning is a candidate for pruning when:
 
-Learnings with high match scores in recent relevance queries are marked as "recently used" by updating a new `last_used_at` column (added to `learnings` table in the schema). This column is updated by `get_relevant_learnings()` when a learning is included in context injection. Pruning skips learnings with `last_used_at` within the last 30 days, even if they are >90 days old.
+1. `created_at` is >90 days old, AND
+2. `last_used_at` is NULL (never matched) or >30 days old (not recently useful)
+
+This two-condition check ensures that old but actively-used learnings are retained, while truly stale learnings are cleaned up. Learnings whose `task_id` is NULL or references a completed task are not treated differently — the `last_used_at` timestamp is the authoritative freshness signal.
 
 **Compaction:**
 
@@ -1578,7 +1581,7 @@ The `.ralph/progress.db` database persists across separate `ralph run` invocatio
 
 2. **Subsequent run:** User runs `ralph run` again days or weeks later. The existing `progress.db` is opened, and all active learnings (`WHERE pruned_at IS NULL`) are available for relevance matching in the new run. If the new tasks involve similar file paths or error types, the old learnings are injected into context.
 
-3. **Staleness check:** To prevent stale learnings from accumulating indefinitely, the pruning system (see above) soft-deletes learnings that haven't been matched in recent runs. This is a passive staleness check — no explicit "last used" tracking across runs in v1 (deferred to future iteration).
+3. **Staleness check:** To prevent stale learnings from accumulating indefinitely, the [pruning system](#pruning) soft-deletes learnings that haven't been matched in recent runs. The `last_used_at` column in the `learnings` table is updated whenever a learning is included in context injection, and this timestamp persists across runs — so learnings that remain relevant across multiple runs are protected from age-based pruning.
 
 **Scenario: Codebase changes between runs**
 
@@ -1789,7 +1792,7 @@ The escalation system does not prevent infinite retries. If Ralph's `--limit` is
 
 ## Migration Path
 
-This section describes a phased implementation plan for adding iteration memory to Ralph. Each phase is self-contained and shippable: Phase 1 lays the database and parsing foundation (tables from the [Data Model](#data-model), parsers from [Sigil Design](#sigil-design)), Phase 2 adds error recovery ([Context Injection — Error Recovery](#error-recovery-memory-1)), Phase 3 adds the learning system ([Context Injection — Learning Extraction](#self-improvement--learning-extraction-1)), and Phase 4 replaces the heuristic model strategy with data-driven intelligence ([Context Injection — Strategic Intelligence](#strategic-intelligence-1)). Each phase builds on the previous one but does not break existing functionality — at any point, Ralph can be released with only the phases completed so far.
+This section describes a phased implementation plan for adding iteration memory to Ralph. Each phase is self-contained and shippable: Phase 1 lays the database and parsing foundation (tables from the [Data Model](#data-model), parsers from [Sigil Design](#sigil-design)), Phase 2 adds error recovery ([Error Recovery Injection](#error-recovery-injection)), Phase 3 adds the learning system ([Learning Injection](#learning-injection)), and Phase 4 replaces the heuristic model strategy with data-driven intelligence ([Strategic Intelligence Injection](#strategic-intelligence-injection)). Each phase builds on the previous one but does not break existing functionality — at any point, Ralph can be released with only the phases completed so far.
 
 **Key constraint: backward compatibility.** Existing `.ralph/progress.db` files must auto-migrate without user action. Old prompts that don't emit new sigils must work unchanged. The existing task DAG system (`tasks`, `dependencies` tables) is never modified — only new tables are added.
 
