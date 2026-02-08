@@ -52,8 +52,36 @@ ralph run task.md         # Use custom prompt file
 
 ## How It Works
 
+```mermaid
+flowchart TD
+    subgraph Planning
+        plan[ralph plan] --> decompose[Decompose prompt]
+        decompose --> dag[(SQLite DAG)]
+    end
+
+    subgraph "Run Loop"
+        run[ralph run] --> ready{Ready tasks?}
+        ready -- yes --> claim[Claim task]
+        claim --> model[Model strategy selects model]
+        model --> claude[Spawn Claude]
+        claude --> sigils{Parse sigils}
+        sigils -- task-done --> done[Complete task]
+        sigils -- task-failed --> fail[Fail task]
+        done --> auto[Auto-transitions]
+        fail --> auto
+        auto -- unblock dependents --> resolved{All resolved?}
+        auto -- auto-complete parent --> resolved
+        auto -- auto-fail parent --> resolved
+        resolved -- no --> ready
+        resolved -- yes --> exit0[Exit 0]
+        ready -- "no, but incomplete" --> exit2[Exit 2 Blocked]
+    end
+
+    dag --> run
+```
+
 1. `ralph init` creates a `.ralph.toml` config and `.ralph/` directory structure
-2. `ralph plan` (planned) decomposes a prompt into a DAG of tasks stored in
+2. `ralph plan` decomposes a prompt into a DAG of tasks stored in
    `.ralph/progress.db`
 3. `ralph run` picks the next ready task (by priority, then creation time),
    claims it, and invokes Claude Code
@@ -77,6 +105,18 @@ ralph run task.md         # Use custom prompt file
   prompts/               # Prompt files
 ```
 
+### Happy Path
+
+```
+ralph init -> write prompt -> ralph plan -> ralph run
+```
+
+The plan decomposes the prompt into 3 tasks: A, B (depends on A), C (depends
+on B). Run picks A (the only ready task), claims it, and spawns Claude. Claude
+completes the work and emits `<task-done>{A}</task-done>`. Ralph marks A as
+done, which unblocks B. Next iteration picks B, same flow. Then C. All tasks
+resolved, exit 0.
+
 ### Task DAG
 
 Tasks are stored in a SQLite database with:
@@ -88,6 +128,21 @@ Tasks are stored in a SQLite database with:
   children auto-completes the parent)
 - **Claim system** — each running Ralph agent gets a unique ID
   (`agent-{8 hex}`) and claims tasks atomically
+
+## Core Principles
+
+- **DAG-first** -- All work is tracked as tasks in a SQLite DAG. No work
+  happens outside the DAG.
+- **One task per iteration** -- Each Claude invocation works on exactly one
+  claimed task, keeping context focused.
+- **Signal-driven** -- Claude communicates results via sigils (`<task-done>`,
+  `<task-failed>`, `<promise>`, `<next-model>`). Ralph never interprets
+  Claude's prose.
+- **Auto-transitions** -- The DAG manages cascading state changes: completing
+  a task unblocks dependents; completing all children auto-completes the
+  parent; failing a child auto-fails the parent.
+- **Sandboxed by default** -- On macOS, Claude runs inside `sandbox-exec`
+  restricting writes to the project directory and essential paths.
 
 ## Model Strategy
 
@@ -149,9 +204,9 @@ Ralph uses a subcommand architecture:
 ```
 ralph init                   Initialize a new Ralph project
 ralph run [PROMPT_FILE]      Run the agent loop
-ralph plan [PROMPT_FILE]     Decompose prompt into task DAG (planned)
-ralph specs                  Author specification documents (planned)
-ralph prompt                 Create a new prompt file (planned)
+ralph plan [PROMPT_FILE]     Decompose prompt into task DAG
+ralph specs                  Author specification documents
+ralph prompt                 Create a new prompt file
 ```
 
 ### `ralph run` Options
@@ -174,6 +229,19 @@ Options:
   -h, --help              Print help
 ```
 
+### `ralph plan` Options
+
+```
+ralph plan [OPTIONS] [PROMPT_FILE]
+
+Arguments:
+  [PROMPT_FILE]           Path to prompt file [default: selects from .ralph/prompts/]
+
+Options:
+      --model <MODEL>     Model for planning [default: opus]
+  -h, --help              Print help
+```
+
 ### Environment Variables
 
 | Variable               | Description                       |
@@ -184,6 +252,16 @@ Options:
 | `RALPH_TOTAL`          | Total iterations (for display)    |
 | `RALPH_MODEL`          | Default model (opus/sonnet/haiku) |
 | `RALPH_MODEL_STRATEGY` | Default model strategy            |
+
+### Exit Codes
+
+| Exit Code | Outcome      | Meaning                                    |
+| --------- | ------------ | ------------------------------------------ |
+| 0         | Complete     | All tasks resolved                         |
+| 0         | LimitReached | Iteration limit hit (not an error)         |
+| 1         | Failure      | Critical failure (FAILURE sigil or error)   |
+| 2         | Blocked      | No ready tasks but incomplete tasks remain |
+| 3         | NoPlan       | DAG is empty -- run `ralph plan` first     |
 
 ## Development
 

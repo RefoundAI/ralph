@@ -25,9 +25,10 @@ DAG-driven loop: open `.ralph/progress.db`, get ready tasks, claim one, run Clau
 
 ### DAG Task System (`src/dag/`)
 SQLite-based task management with WAL mode and foreign keys:
+- **mod.rs**: Defines `Task` and `TaskCounts` structs. Re-exports main task operations (`get_ready_tasks`, `claim_task`, `complete_task`, `fail_task`, `release_claim`, `all_resolved`). Implements `get_task_counts()` and `open_db()`.
 - **db.rs**: Opens/creates `.ralph/progress.db`, defines schema (`tasks`, `dependencies`, `task_logs` tables)
 - **ids.rs**: Generates task IDs (`t-{6 hex}`) from SHA-256 of timestamp+counter
-- **tasks.rs**: `get_ready_tasks()`, `claim_task()`, `complete_task()`, `fail_task()`, `release_claim()`, `all_resolved()`
+- **tasks.rs**: `compute_parent_status()` derives parent status from children (any failed -> failed, all done -> done). `get_task_status()` returns derived status for a task considering its children.
 - **transitions.rs**: Status transitions (`pending`→`in_progress`→`done`/`failed`) with auto-transitions: completing a task unblocks dependents; completing all children auto-completes parent; failing a child auto-fails parent
 - **dependencies.rs**: Dependency management with BFS cycle detection
 - **crud.rs**: Task CRUD operations (`create_task`, `get_task`, `update_task`, `delete_task`, `add_log`)
@@ -43,12 +44,22 @@ SQLite-based task management with WAL mode and foreign keys:
 - `ralph init` creates `.ralph.toml`, `.ralph/` directory structure, and empty `progress.db`
 - Config sections: `[specs]` (dirs), `[prompts]` (dir)
 
+### Config (`src/config.rs`)
+- Holds the `Config` struct: prompt file, limits, iteration counters, sandbox settings, model strategy, agent ID, project root, parsed `RalphConfig`
+- Defines the `ModelStrategy` enum: `Fixed`, `CostOptimized`, `Escalate`, `PlanThenExecute`
+- Generates agent IDs: `agent-{8 hex}` from `DefaultHasher` over timestamp + PID
+- Default allowed tools list: `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep`, `Task`, `TodoWrite`, `NotebookEdit`, `WebFetch`, `WebSearch`, `mcp__*`
+
 ### Sandbox (`src/sandbox/`)
 macOS `sandbox-exec` integration for filesystem write restrictions:
 - **profile.rs**: Generates sandbox.sb profiles dynamically
 - **rules.rs**: Defines allow rules (e.g., `--allow=aws` grants `~/.aws` write access)
 
 The sandbox denies all writes except: project directory, temp dirs, Claude state (`~/.claude`, `~/.config/claude`), `~/.cache`, `~/.local/state`, and git worktree roots. Also blocks `com.apple.systemevents` to prevent UI automation.
+
+### Output (`src/output/`)
+- **formatter.rs**: Terminal output formatting with ANSI colors via `colored` crate. Renders streaming deltas (thinking in dim, text in bright white), tool use (cyan name, dimmed input), tool errors (red, first 5 lines), result summaries (duration + cost in green). Uses macOS `say` for audio notifications. Clickable file hyperlinks via terminal escape codes.
+- **logger.rs**: Generates log file paths under `$TMPDIR/ralph/logs/<project_name>/<timestamp>.log`
 
 ### Model Strategy (`src/strategy.rs`)
 Selects which Claude model to use each iteration based on `--model-strategy`:
