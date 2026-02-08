@@ -1,5 +1,21 @@
 # Iteration Memory
 
+> **TL;DR:** Three memory systems stored in four new SQLite tables within the existing `progress.db`. All synchronous, all optional, all backward-compatible.
+>
+> | System | What it does | Key tables | New sigils |
+> |--------|-------------|------------|------------|
+> | **Error Recovery** | Prevents retries from repeating failed approaches | `iteration_outcomes`, `failure_reports` | `<failure-report>`, `<retry-suggestion>` |
+> | **Learning Extraction** | Transfers insights across tasks via tag-based relevance matching | `learnings` | `<learning>` |
+> | **Strategic Intelligence** | Data-driven model escalation and stuck-loop detection | `strategy_metrics` | `<difficulty-estimate>` |
+>
+> **Key design decisions:**
+> - Memory is project-scoped (per `progress.db`), not global
+> - Context injection is budget-capped at 5000 chars (~1250 tokens) with priority: previous attempts > learnings > loop status
+> - All new sigils are optional; their absence changes nothing about execution
+> - Schema migration is automatic (v1 to v2) via the existing `migrate()` mechanism
+> - No async, no background processes, no external dependencies — pure synchronous Rust + SQLite
+> - Four-phase implementation: Foundation, Error Recovery, Learning System, Strategic Intelligence
+
 Ralph currently treats each iteration as stateless: a fresh Claude Code session receives a task assignment but has no memory of what happened in previous iterations. This design is simple but leads to repeated failures, wasted compute on known-bad approaches, and inability to learn from experience within a run.
 
 This spec designs three memory systems that give Ralph cross-iteration awareness while maintaining the existing synchronous, single-agent, SQLite-backed architecture.
@@ -11,6 +27,8 @@ This spec designs three memory systems that give Ralph cross-iteration awareness
 3. **Strategic Intelligence** -- Data-driven model selection, difficulty estimation, and stuck-loop detection
 
 ## Architecture Overview
+
+This section provides a high-level view of each system's data flow and hook points. For table schemas see [Data Model](#data-model), for sigil formats see [Sigil Design](#sigil-design), for rendering logic see [Context Injection](#context-injection), for data lifecycle see [Lifecycle](#lifecycle), and for phased implementation see [Migration Path](#migration-path).
 
 ### Error Recovery Memory
 
@@ -245,6 +263,7 @@ CREATE TABLE failure_reports (
     error_category TEXT,                    -- 'test_failure', 'build_error', 'missing_file', 'logic_error', etc.
     relevant_files TEXT,                    -- JSON array of file paths mentioned in error
     stack_trace_snippet TEXT,               -- First N lines of stack trace or error output
+    retry_suggestion TEXT,                  -- Free-form suggestion for next attempt (from <retry-suggestion> sigil)
     created_at TEXT NOT NULL,               -- ISO 8601 timestamp
     PRIMARY KEY (task_id, attempt_number),
     FOREIGN KEY (task_id, attempt_number)
@@ -264,6 +283,7 @@ CREATE INDEX idx_failure_reports_error_category ON failure_reports(error_categor
 - `error_category`: Machine-readable error type. Used for relevance matching and pattern detection.
 - `relevant_files`: JSON array of strings like `["src/dag/tasks.rs", "src/run_loop.rs"]`. Enables file-based relevance matching for learnings.
 - `stack_trace_snippet`: Truncated stack trace (first 500 chars). Useful for diagnosing repeated errors.
+- `retry_suggestion`: Free-form text from the `<retry-suggestion>` sigil. Advice from Claude to its future self about what to try differently on retry. Rendered prominently in the Previous Attempts context section (see [Context Injection — Error Recovery Memory](#error-recovery-memory-1)).
 - `created_at`: When the failure was captured. Enables "freshest failure first" ordering.
 
 **Indexing strategy:**
@@ -286,7 +306,8 @@ CREATE TABLE learnings (
     relevance_tags TEXT NOT NULL,           -- JSON array of strings: file paths, keywords, error types
     created_at TEXT NOT NULL,               -- ISO 8601 timestamp
     pruned_at TEXT,                         -- NULL if active, timestamp if pruned
-    superseded_by TEXT REFERENCES learnings(id) ON DELETE SET NULL  -- Points to newer learning that replaces this one
+    superseded_by TEXT REFERENCES learnings(id) ON DELETE SET NULL,  -- Points to newer learning that replaces this one
+    last_used_at TEXT                       -- Updated when this learning is included in context injection; used by pruning to avoid removing actively-useful learnings
 );
 
 CREATE INDEX idx_learnings_task_id ON learnings(task_id);
@@ -305,6 +326,7 @@ CREATE INDEX idx_learnings_category ON learnings(category);
 - `created_at`: When the learning was captured. Newer learnings prioritized when budget-limited.
 - `pruned_at`: NULL if learning is active. Non-NULL timestamp if it's been archived/removed from active use. Allows soft deletion.
 - `superseded_by`: Points to a newer learning that replaces/generalizes this one. Enables chaining/evolution of learnings over time.
+- `last_used_at`: Timestamp updated by `get_relevant_learnings()` whenever this learning is included in context injection. Used by the [pruning system](#pruning) to protect actively-useful learnings from age-based removal — learnings with `last_used_at` within the last 30 days are retained even if they are older than the 90-day pruning threshold.
 
 **Indexing strategy:**
 
@@ -430,7 +452,7 @@ All new tables reference the existing `tasks` table via foreign keys. This maint
 - `learnings.task_id` → `tasks.id` ON DELETE SET NULL: Deleting a task does NOT delete learnings, just unlinks them. Learnings are general insights that outlive their origin task.
 - `learnings.superseded_by` → `learnings.id` ON DELETE SET NULL: Deleting a learning that superseded another clears the link but preserves both learnings.
 
-**Migration strategy (v1 → v2):**
+**Migration strategy (v1 → v2):** See [Schema Migration Strategy](#schema-migration-strategy) for the complete migration SQL and implementation details.
 
 In `src/dag/db.rs`, add this to the `migrate()` function:
 
@@ -540,7 +562,7 @@ pub fn parse_failure_report(text: &str) -> Option<FailureReport> {
 }
 ```
 
-**Storage:** Parsed fields are inserted into the `failure_reports` table. The `relevant_files` Vec is serialized to JSON.
+**Storage:** Parsed fields are inserted into the [`failure_reports` table](#failure_reports-table). The `relevant_files` Vec is serialized to JSON.
 
 **Example usage:**
 
@@ -644,7 +666,7 @@ pub fn parse_learnings(text: &str) -> Vec<Learning> {
 }
 ```
 
-**Storage:** Each parsed learning gets a unique ID (`l-{6 hex}`) and is inserted into the `learnings` table. The `tags` Vec is serialized to JSON in the `relevance_tags` column.
+**Storage:** Each parsed learning gets a unique ID (`l-{6 hex}`) and is inserted into the [`learnings` table](#learnings-table). The `tags` Vec is serialized to JSON in the `relevance_tags` column.
 
 **Example usage:**
 
@@ -718,7 +740,7 @@ pub fn parse_difficulty_estimate(text: &str) -> Option<String> {
 }
 ```
 
-**Storage:** Stored in `strategy_metrics.difficulty_estimate` column. Updated on each iteration; last estimate wins.
+**Storage:** Stored in [`strategy_metrics.difficulty_estimate`](#strategy_metrics-table) column. Updated on each iteration; last estimate wins.
 
 **Example usage:**
 
@@ -775,7 +797,7 @@ pub fn parse_retry_suggestion(text: &str) -> Option<String> {
 }
 ```
 
-**Storage:** Stored in `failure_reports` table (new column: `retry_suggestion TEXT`). This is part of the failure report for a specific attempt.
+**Storage:** Stored in the [`failure_reports` table](#failure_reports-table) in the `retry_suggestion` column. This is part of the failure report for a specific attempt.
 
 **Example usage:**
 
@@ -839,7 +861,7 @@ These are optional. Omitting them has no negative effect; they purely add capabi
 
 ## Context Injection
 
-Context injection is the consumer side of iteration memory: it takes stored data (failure reports, learnings, metrics) and renders it into the system prompt that Claude sees each iteration. All injection happens in `claude::client::build_task_context()`, which already builds the "Assigned Task" section with task details, parent context, and completed prerequisites. Memory context is appended after the existing sections, gated by data availability — if no memory data exists for a task, no memory sections appear and the prompt is identical to today's.
+Context injection is the consumer side of iteration memory: it takes stored data from the [Data Model](#data-model) tables (failure reports, learnings, metrics) — populated via [sigil parsing](#sigil-design) — and renders it into the system prompt that Claude sees each iteration. All injection happens in `claude::client::build_task_context()`, which already builds the "Assigned Task" section with task details, parent context, and completed prerequisites. Memory context is appended after the existing sections, gated by data availability — if no memory data exists for a task, no memory sections appear and the prompt is identical to today's.
 
 **Injection point in `build_task_context()`:**
 
@@ -1391,7 +1413,7 @@ Read all files in: .ralph/specs
 
 ## Lifecycle
 
-This section describes how iteration memory data is created, grows, evolves, and is eventually cleaned up during and across Ralph runs. Memory is not append-only — it must be actively managed to prevent unbounded growth and to keep the most relevant insights accessible.
+This section describes how iteration memory data (defined in the [Data Model](#data-model), captured via [sigils](#sigil-design), and consumed by [context injection](#context-injection)) is created, grows, evolves, and is eventually cleaned up during and across Ralph runs. Memory is not append-only — it must be actively managed to prevent unbounded growth and to keep the most relevant insights accessible.
 
 ### Memory Growth
 
@@ -1767,7 +1789,7 @@ The escalation system does not prevent infinite retries. If Ralph's `--limit` is
 
 ## Migration Path
 
-This section describes a phased implementation plan for adding iteration memory to Ralph. Each phase is self-contained and shippable: Phase 1 lays the database and parsing foundation, Phase 2 adds error recovery, Phase 3 adds the learning system, and Phase 4 replaces the heuristic model strategy with data-driven intelligence. Each phase builds on the previous one but does not break existing functionality — at any point, Ralph can be released with only the phases completed so far.
+This section describes a phased implementation plan for adding iteration memory to Ralph. Each phase is self-contained and shippable: Phase 1 lays the database and parsing foundation (tables from the [Data Model](#data-model), parsers from [Sigil Design](#sigil-design)), Phase 2 adds error recovery ([Context Injection — Error Recovery](#error-recovery-memory-1)), Phase 3 adds the learning system ([Context Injection — Learning Extraction](#self-improvement--learning-extraction-1)), and Phase 4 replaces the heuristic model strategy with data-driven intelligence ([Context Injection — Strategic Intelligence](#strategic-intelligence-1)). Each phase builds on the previous one but does not break existing functionality — at any point, Ralph can be released with only the phases completed so far.
 
 **Key constraint: backward compatibility.** Existing `.ralph/progress.db` files must auto-migrate without user action. Old prompts that don't emit new sigils must work unchanged. The existing task DAG system (`tasks`, `dependencies` tables) is never modified — only new tables are added.
 
