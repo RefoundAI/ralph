@@ -186,6 +186,7 @@ src/
 │   ├── errors.rs              # Failure report capture, storage, and retrieval
 │   ├── learnings.rs           # Learning extraction, storage, relevance matching
 │   ├── metrics.rs             # Iteration metrics recording and querying
+│   ├── status.rs              # Loop status and stuck-loop detection queries
 │   └── context.rs             # Context rendering: builds the memory sections
 │                              #   for injection into build_task_context()
 ```
@@ -194,13 +195,13 @@ src/
 
 | Module | Change |
 |---|---|
-| `src/dag/db.rs` | Bump `SCHEMA_VERSION` to 2. Add `failure_reports`, `learnings`, `strategy_metrics` tables in `migrate()` (v1→v2 migration). |
-| `src/claude/events.rs` | Add `parse_failure_report()`, `parse_learning()`, `parse_difficulty_estimate()` sigil parsers. Add corresponding fields to `ResultEvent`. |
+| `src/dag/db.rs` | Bump `SCHEMA_VERSION` to 2. Add `iteration_outcomes`, `failure_reports`, `learnings`, `strategy_metrics` tables in `migrate()` (v1→v2 migration). |
+| `src/claude/events.rs` | Add `parse_failure_report()`, `parse_learnings()`, `parse_difficulty_estimate()`, and `parse_retry_suggestion()` sigil parsers. Add corresponding struct definitions (`FailureReport`, `Learning`) and `extract_attribute()` helper. Extend `ResultEvent` with new fields. |
 | `src/claude/parser.rs` | Wire new sigil parsers into `ResultEvent` construction (in the Result event branch). |
 | `src/claude/client.rs` | Modify `build_task_context()` to accept a `MemoryContext` struct and render memory sections (previous attempts, learnings, loop status). Modify `build_system_prompt()` to document new sigils. |
 | `src/run_loop.rs` | After sigil processing, call `memory::capture_failure()`, `memory::capture_learnings()`, `memory::record_iteration_metrics()`. Before building task context, call `memory::get_failure_context()`, `memory::get_relevant_learnings()`, `memory::get_loop_status()`. |
 | `src/strategy.rs` | Replace `analyze_progress()` file-reading heuristic with `strategy_metrics` table queries. Replace `assess_escalation_need()` similarly. |
-| `src/config.rs` | No changes needed — existing `Config` struct is sufficient. |
+| `src/config.rs` | Likely no changes needed if run loop reordering (claim task first, then select model) is adopted in [Phase 4](#phase-4-strategic-intelligence). See Phase 4 discussion for details. |
 | `src/dag/mod.rs` | Re-export memory-related DB initialization if needed (or keep memory module self-contained with its own DB access). |
 
 **Design decision — memory module DB access:** The `memory` module receives a `&Db` reference from the run loop (same database handle used for tasks). All memory tables live in the same `progress.db` file, maintaining the single-database architecture. The memory module does not own the connection; it borrows it from the run loop, just as `dag::claim_task()` and `dag::complete_task()` do today.
@@ -940,7 +941,7 @@ fn render_previous_attempts(attempts: &[AttemptContext], budget: &mut CharBudget
     for attempt in attempts {
         let section = render_single_attempt(attempt);
         if !budget.can_fit(section.len()) {
-            output.push_str("_(Earlier attempts truncated due to context budget)_\n");
+            output.push_str("_(Remaining attempts truncated due to context budget)_\n");
             break;
         }
         budget.consume(section.len());
@@ -984,7 +985,7 @@ When the `<failure-report>` sigil was not provided (auto-generated minimal repor
 - **No structured failure report was provided.**
 ```
 
-**Attempt ordering:** Attempts are rendered in chronological order (oldest first) so Claude can see the progression of approaches. However, when budget is limited, the most recent attempt is always included (it has the freshest context) — the truncation logic removes older attempts first.
+**Attempt ordering:** Attempts are rendered in chronological order (oldest first) so Claude can see the progression of approaches. When budget is limited, the rendering loop breaks early — older attempts are rendered first, so newer attempts may be truncated. However, the `retry_suggestion` from the most recent failure is always rendered separately (outside the loop), ensuring the most actionable context is preserved regardless of budget constraints. If budget-aware ordering becomes important in practice, the rendering can be changed to reserve space for the most recent attempt before iterating older ones.
 
 **Retry suggestion prominence:** The `retry_suggestion` from the most recent failure is rendered separately at the end of the Previous Attempts section, outside the per-attempt blocks, with bold formatting. This ensures Claude sees the suggestion even if it skims the attempt history.
 
@@ -1181,6 +1182,8 @@ Memory context competes with the task description and system prompt for Claude's
 
 **Total default budget: 5000 characters** (~1250 tokens at 4 chars/token). This is approximately 2-3% of Claude's context window, leaving ample room for the task description, system prompt, and Claude's own working space.
 
+> **Note:** The "Default Budget" column represents the *maximum* each section can consume, not a reserved allocation. The implementation uses a single shared `CharBudget` that decrements as sections render in priority order. If Previous Attempts uses only 1000 chars of its 3000-char maximum, the remaining 4000 chars are available for Learnings and Loop Status. Conversely, if Previous Attempts uses all 5000 chars, later sections are silently omitted.
+
 **Budget allocation algorithm:**
 
 ```rust
@@ -1230,7 +1233,7 @@ fn render_memory_context(mem: &MemoryContext) -> String {
 
 Each section renders items in priority order (most relevant first) and stops when its budget slice is exhausted. Within a section:
 
-- **Previous Attempts:** Most recent attempt is always included first (highest value). If budget remains, older attempts are added in reverse chronological order. Stack traces are truncated to 500 chars. If even the most recent attempt exceeds budget, it is hard-truncated with `_(truncated)_`.
+- **Previous Attempts:** Rendered in chronological order (oldest first). The rendering loop breaks early when budget is exhausted, showing a truncation notice. Because older attempts are rendered first, newer attempts may be dropped — but the most recent attempt's `retry_suggestion` is always rendered separately outside the loop (see [`render_previous_attempts()`](#error-recovery-injection)). Stack traces are truncated to 500 chars. If even a single attempt exceeds budget, it is hard-truncated with `_(truncated)_`.
 - **Learnings:** Highest-scoring learnings first. Each learning is a single bullet point (typically 100-200 chars). Rendering stops mid-list if budget is exhausted. No partial learnings — a learning either fits entirely or is omitted.
 - **Loop Status:** Rendered as a single block (~300-400 chars). Either the entire block fits or it's omitted. No partial rendering.
 
@@ -1421,7 +1424,7 @@ Memory data accumulates continuously during a Ralph run. Each iteration adds new
 
 **Capture triggers:**
 
-1. **Iteration start:** When `run_loop::run()` claims a task and starts an iteration, a row is inserted into `strategy_metrics` if it doesn't exist yet (or updated if it does). This happens immediately after `claim_task()` succeeds.
+1. **Iteration start:** When `run_loop::run()` claims a task and starts an iteration, a row is inserted into [`strategy_metrics`](#strategy_metrics-table) if it doesn't exist yet (or updated if it does). This happens immediately after `claim_task()` succeeds.
 
 2. **Iteration completion:** After Claude finishes (regardless of outcome) and sigils are parsed, `run_loop::run()` invokes three memory capture functions sequentially:
 
@@ -1796,6 +1799,8 @@ This section describes a phased implementation plan for adding iteration memory 
 
 **Key constraint: backward compatibility.** Existing `.ralph/progress.db` files must auto-migrate without user action. Old prompts that don't emit new sigils must work unchanged. The existing task DAG system (`tasks`, `dependencies` tables) is never modified — only new tables are added.
 
+> **Note on Lifecycle features:** The [Summarization](#summarization) and [Pruning](#pruning) systems described in the [Lifecycle](#lifecycle) section are not assigned to a specific phase. They can be added after Phase 4 as incremental improvements — the memory system functions correctly without them (data simply accumulates). Implement them when database size or learning count becomes a practical concern.
+
 ### Phase 1: Foundation
 
 **Goal:** Create the database schema for all memory tables, add sigil parsers for the new sigils, and wire up basic iteration outcome recording in the run loop. After this phase, Ralph records structured data about each iteration but does not yet use it to modify behavior.
@@ -2114,3 +2119,4 @@ SQLite does not support `DROP COLUMN` (before version 3.35.0), so rollback from 
 3. **Idempotency test:** Run `ralph init` twice on the same directory. Verify no errors and `user_version` is still 2.
 
 4. **Downgrade protection test:** Set `user_version = 3` on a database, then run Ralph (which knows about version 2). Verify Ralph exits with an error message rather than attempting to operate on a newer schema.
+
