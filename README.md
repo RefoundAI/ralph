@@ -2,11 +2,11 @@
 
 Autonomous agent loop harness for [Claude Code][claude-code].
 
-Ralph decomposes a prompt into a DAG of tasks, then iteratively invokes Claude
-Code to complete them one at a time. Task state lives in a SQLite database,
-enabling dependency tracking, automatic unblocking, and hierarchical task
-relationships. On macOS, it sandboxes Claude to restrict filesystem writes to
-the project directory.
+Ralph manages features through a structured lifecycle: specify, plan, decompose
+into a DAG of tasks, then iteratively invoke Claude Code to complete them one at
+a time. Task state lives in a SQLite database, enabling dependency tracking,
+automatic unblocking, and hierarchical task relationships. On macOS, it sandboxes
+Claude to restrict filesystem writes to the project directory.
 
 > [!WARNING]
 > Ralph can (and possibly WILL) destroy anything you have access to, according
@@ -39,24 +39,50 @@ cargo build --release
 ./target/release/ralph --help
 ```
 
-## Quick Start
+## Getting Started
+
+Ralph organizes work around **features** that progress through a defined
+lifecycle: `draft` -> `planned` -> `ready` -> `running` -> `done`/`failed`.
 
 ```bash
-ralph init                # Create .ralph.toml and directory structure
-# Create specs in .ralph/specs/ and a prompt file
-ralph run                 # Loop until all tasks complete
-ralph run --once          # Single iteration for testing
-ralph run --limit=5       # Max 5 iterations
-ralph run task.md         # Use custom prompt file
+# 1. Initialize a Ralph project
+ralph init
+
+# 2. Craft a specification (interactive Claude session)
+ralph feature spec auth
+
+# 3. Create an implementation plan from the spec (interactive Claude session)
+ralph feature plan auth
+
+# 4. Decompose the plan into a task DAG
+ralph feature build auth
+
+# 5. Run the agent loop
+ralph run auth
+```
+
+Each step builds on the previous one. The `spec` and `plan` commands open
+interactive Claude sessions where you collaborate to refine the specification and
+plan. The `build` command decomposes the plan into concrete tasks stored in the
+DAG. Finally, `run` picks tasks one at a time and invokes Claude to complete
+them.
+
+For quick one-off work, create standalone tasks instead:
+
+```bash
+ralph task new              # Interactive: create a standalone task
+ralph task list             # See what you have
+ralph run t-abc123          # Run a specific task by ID
 ```
 
 ## How It Works
 
 ```mermaid
 flowchart TD
-    subgraph Planning
-        plan[ralph plan] --> decompose[Decompose prompt]
-        decompose --> dag[(SQLite DAG)]
+    subgraph "Feature Lifecycle"
+        spec[ralph feature spec] --> plan[ralph feature plan]
+        plan --> build[ralph feature build]
+        build --> dag[(SQLite DAG)]
     end
 
     subgraph "Run Loop"
@@ -65,8 +91,12 @@ flowchart TD
         claim --> model[Model strategy selects model]
         model --> claude[Spawn Claude]
         claude --> sigils{Parse sigils}
-        sigils -- task-done --> done[Complete task]
-        sigils -- task-failed --> fail[Fail task]
+        sigils -- task-done --> verify{Verify?}
+        sigils -- task-failed --> retry{Retries left?}
+        verify -- pass --> done[Complete task]
+        verify -- fail --> retry
+        retry -- yes --> claim
+        retry -- no --> fail[Fail task]
         done --> auto[Auto-transitions]
         fail --> auto
         auto -- unblock dependents --> resolved{All resolved?}
@@ -80,20 +110,22 @@ flowchart TD
     dag --> run
 ```
 
-1. `ralph init` creates a `.ralph.toml` config and `.ralph/` directory structure
-2. `ralph plan` decomposes a prompt into a DAG of tasks stored in
-   `.ralph/progress.db`
-3. `ralph run` picks the next ready task (by priority, then creation time),
-   claims it, and invokes Claude Code
-4. Claude works on the assigned task and signals the result:
-   - `<task-done>{task_id}</task-done>` — task completed, triggers
+1. `ralph feature spec <name>` creates a feature in `draft` state and opens an
+   interactive Claude session to craft a specification
+2. `ralph feature plan <name>` creates an implementation plan from the spec
+3. `ralph feature build <name>` decomposes the plan into a DAG of tasks stored
+   in `.ralph/progress.db`
+4. `ralph run <target>` picks the next ready task (by priority, then creation
+   time), claims it, and invokes Claude Code
+5. Claude works on the assigned task and signals the result:
+   - `<task-done>{task_id}</task-done>` -- task completed, triggers
      auto-unblocking of dependents
-   - `<task-failed>{task_id}</task-failed>` — task failed, auto-fails parent
-5. Ralph checks if all tasks are resolved; if not and the limit hasn't been
+   - `<task-failed>{task_id}</task-failed>` -- task failed, retried up to
+     `--max-retries` times
+6. After each task completion, a **verification agent** (a read-only Claude
+   session) checks the work. On failure, the task is retried.
+7. Ralph checks if all tasks are resolved; if not and the limit has not been
    reached, it picks the next ready task and loops
-6. Special sigils for the overall project:
-   - `<promise>COMPLETE</promise>` — all tasks done, exit 0
-   - `<promise>FAILURE</promise>` — critical failure, exit 1
 
 ### Project Structure
 
@@ -101,36 +133,52 @@ flowchart TD
 .ralph.toml              # Project configuration
 .ralph/
   progress.db            # SQLite DAG database (gitignored)
-  specs/                 # Specification documents
+  features/              # Feature specs and plans
+    <name>/
+      spec.md            # Feature specification
+      plan.md            # Implementation plan
+  skills/                # Reusable agent skills
+    <name>/
+      SKILL.md           # Skill definition with YAML frontmatter
+  specs/                 # Specification documents (legacy)
   prompts/               # Prompt files
 ```
 
-### Happy Path
+### Configuration
 
-```
-ralph init -> write prompt -> ralph plan -> ralph run
-```
+The `.ralph.toml` file controls project-level defaults:
 
-The plan decomposes the prompt into 3 tasks: A, B (depends on A), C (depends
-on B). Run picks A (the only ready task), claims it, and spawns Claude. Claude
-completes the work and emits `<task-done>{A}</task-done>`. Ralph marks A as
-done, which unblocks B. Next iteration picks B, same flow. Then C. All tasks
-resolved, exit 0.
+```toml
+[specs]
+# dirs = [".ralph/specs"]
+
+[prompts]
+# dir = ".ralph/prompts"
+
+[execution]
+# max_retries = 3
+# verify = true
+# learn = true
+```
 
 ### Task DAG
 
 Tasks are stored in a SQLite database with:
 
-- **Hierarchical relationships** — parent/child tasks with derived parent status
-- **Dependencies** — blocker/blocked relationships with cycle detection
-- **Status transitions** — `pending` → `in_progress` → `done`/`failed`, with
+- **Hierarchical relationships** -- parent/child tasks with derived parent status
+- **Dependencies** -- blocker/blocked relationships with cycle detection
+- **Status transitions** -- `pending` -> `in_progress` -> `done`/`failed`, with
   auto-transitions (completing a task unblocks its dependents; completing all
   children auto-completes the parent)
-- **Claim system** — each running Ralph agent gets a unique ID
+- **Claim system** -- each running Ralph agent gets a unique ID
   (`agent-{8 hex}`) and claims tasks atomically
+- **Feature scoping** -- tasks belong to features and are queried by feature
+  context during execution
 
 ## Core Principles
 
+- **Feature-driven** -- Work is organized into features with specifications,
+  plans, and task DAGs. The lifecycle provides structure and traceability.
 - **DAG-first** -- All work is tracked as tasks in a SQLite DAG. No work
   happens outside the DAG.
 - **One task per iteration** -- Each Claude invocation works on exactly one
@@ -141,32 +189,58 @@ Tasks are stored in a SQLite database with:
 - **Auto-transitions** -- The DAG manages cascading state changes: completing
   a task unblocks dependents; completing all children auto-completes the
   parent; failing a child auto-fails the parent.
+- **Verify then trust** -- A read-only verification agent checks each
+  completed task before accepting it.
 - **Sandboxed by default** -- On macOS, Claude runs inside `sandbox-exec`
   restricting writes to the project directory and essential paths.
 
+## Verification
+
+After each task completion, Ralph spawns a read-only Claude session that:
+
+1. Reads the relevant source files
+2. Runs applicable tests
+3. Checks acceptance criteria from the task description
+4. Emits `<verify-pass/>` or `<verify-fail>reason</verify-fail>`
+
+Failed verifications trigger a retry (up to `--max-retries`). Disable
+verification with `--no-verify`.
+
+## Skills and Learning
+
+Ralph supports a skills system for reusable agent knowledge:
+
+- **Skills** are stored in `.ralph/skills/<name>/SKILL.md` with YAML frontmatter
+- Skills are discovered automatically each iteration and included in the agent's
+  context
+- When **learning mode** is enabled (default), Claude can create new skills and
+  update `CLAUDE.md` based on what it learns during execution
+
+Disable learning with `--no-learn`.
+
 ## Model Strategy
 
-Ralph can swap between Claude models (`opus`, `sonnet`, `haiku`) across loop
+Ralph swaps between Claude models (`opus`, `sonnet`, `haiku`) across loop
 iterations to optimize cost and capability. Use `--model-strategy` to select a
 strategy, or `--model` to pin a specific model.
 
 ```bash
-ralph run --model=opus                        # Always use opus (fixed)
-ralph run --model-strategy=cost-optimized     # Default: pick model by progress signals
-ralph run --model-strategy=escalate           # Start at haiku, escalate on errors
-ralph run --model-strategy=plan-then-execute  # Opus for iteration 1, sonnet after
+ralph run auth --model=opus                        # Always use opus (fixed)
+ralph run auth --model-strategy=cost-optimized     # Default: pick model by progress signals
+ralph run auth --model-strategy=escalate           # Start at haiku, escalate on errors
+ralph run auth --model-strategy=plan-then-execute  # Opus for iteration 1, sonnet after
 ```
 
 ### Strategies
 
-- **`cost-optimized`** (default) — Picks the cheapest model likely to succeed.
+- **`cost-optimized`** (default) -- Picks the cheapest model likely to succeed.
   Defaults to `sonnet`; escalates to `opus` on error/failure signals; drops to
   `haiku` when tasks are completing cleanly.
-- **`fixed`** — Always uses the model from `--model`. No swapping.
-- **`escalate`** — Starts at `haiku`. On failure signals (errors, stuck, panics),
+- **`fixed`** -- Always uses the model from `--model`. No swapping.
+- **`escalate`** -- Starts at `haiku`. On failure signals (errors, stuck, panics),
   escalates to `sonnet` then `opus`. Never auto-de-escalates; only a Claude hint
   can step back down.
-- **`plan-then-execute`** — Uses `opus` for the first iteration (planning), then
+- **`plan-then-execute`** -- Uses `opus` for the first iteration (planning), then
   `sonnet` for all subsequent iterations (execution).
 
 ### Claude Model Hints
@@ -193,29 +267,30 @@ By default, Ralph wraps Claude in `sandbox-exec` to restrict filesystem writes:
   automation)
 
 ```bash
-ralph run --no-sandbox       # Disable sandboxing
-ralph run --allow=aws        # Grant write access to ~/.aws
+ralph run auth --no-sandbox       # Disable sandboxing
+ralph run auth --allow=aws        # Grant write access to ~/.aws
 ```
 
 ## CLI Reference
 
-Ralph uses a subcommand architecture:
-
 ```
-ralph init                   Initialize a new Ralph project
-ralph run [PROMPT_FILE]      Run the agent loop
-ralph plan [PROMPT_FILE]     Decompose prompt into task DAG
-ralph specs                  Author specification documents
-ralph prompt                 Create a new prompt file
+ralph init                        Initialize a new Ralph project
+ralph feature spec <name>         Interactively craft a specification
+ralph feature plan <name>         Interactively create an implementation plan
+ralph feature build <name>        Decompose plan into task DAG
+ralph feature list                List all features and their status
+ralph task new                    Interactively create a standalone task
+ralph task list                   List standalone tasks
+ralph run <target>                Run the agent loop on a feature or task
 ```
 
 ### `ralph run` Options
 
 ```
-ralph run [OPTIONS] [PROMPT_FILE]
+ralph run [OPTIONS] <TARGET>
 
 Arguments:
-  [PROMPT_FILE]           Path to prompt file [default: prompt]
+  <TARGET>                Feature name or task ID (t-...)
 
 Options:
   -o, --once              Run exactly once
@@ -224,34 +299,28 @@ Options:
       --model-strategy <STRATEGY>
                           Strategy: fixed, cost-optimized, escalate, plan-then-execute
                           [default: cost-optimized]
+      --max-retries <N>   Maximum retries for failed tasks
+      --no-verify         Disable autonomous verification
+      --no-learn          Disable skill creation + CLAUDE.md updates
       --no-sandbox        Disable macOS sandbox
   -a, --allow <RULE>      Enable sandbox rule (e.g., aws)
   -h, --help              Print help
 ```
 
-### `ralph plan` Options
+### `ralph feature` Options
 
-```
-ralph plan [OPTIONS] [PROMPT_FILE]
-
-Arguments:
-  [PROMPT_FILE]           Path to prompt file [default: selects from .ralph/prompts/]
-
-Options:
-      --model <MODEL>     Model for planning [default: opus]
-  -h, --help              Print help
-```
+The `spec`, `plan`, and `build` subcommands each accept an optional
+`--model <MODEL>` flag to choose the Claude model (defaults to `opus`).
 
 ### Environment Variables
 
 | Variable               | Description                       |
 | :--------------------- | :-------------------------------- |
-| `RALPH_FILE`           | Default prompt file               |
 | `RALPH_LIMIT`          | Default iteration limit           |
-| `RALPH_ITERATION`      | Current iteration (for resume)    |
-| `RALPH_TOTAL`          | Total iterations (for display)    |
 | `RALPH_MODEL`          | Default model (opus/sonnet/haiku) |
 | `RALPH_MODEL_STRATEGY` | Default model strategy            |
+| `RALPH_ITERATION`      | Current iteration (for resume)    |
+| `RALPH_TOTAL`          | Total iterations (for display)    |
 
 ### Exit Codes
 
@@ -261,7 +330,7 @@ Options:
 | 0         | LimitReached | Iteration limit hit (not an error)         |
 | 1         | Failure      | Critical failure (FAILURE sigil or error)   |
 | 2         | Blocked      | No ready tasks but incomplete tasks remain |
-| 3         | NoPlan       | DAG is empty -- run `ralph plan` first     |
+| 3         | NoPlan       | DAG is empty -- run `ralph feature build`  |
 
 ## Development
 

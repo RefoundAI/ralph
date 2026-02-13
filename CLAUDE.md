@@ -19,34 +19,43 @@ Ralph is an autonomous agent loop harness that iteratively invokes Claude Code u
 ## Architecture
 
 ### Core Loop (`src/run_loop.rs`)
-DAG-driven loop: open `.ralph/progress.db`, get ready tasks, claim one, run Claude, handle sigils, repeat. No async runtime — uses synchronous `std::process` with `BufReader::lines()` for streaming.
+DAG-driven loop: open `.ralph/progress.db`, get scoped ready tasks, claim one, build iteration context (parent, blockers, spec/plan, retry info, skills), run Claude, handle sigils, verify (if enabled), retry on failure, repeat. No async runtime — uses synchronous `std::process` with `BufReader::lines()` for streaming.
 
 **Outcome enum**: `Complete`, `Failure`, `LimitReached`, `Blocked` (no ready tasks but incomplete tasks remain), `NoPlan` (DAG is empty).
 
+**Key functions**: `resolve_feature_context()` loads spec/plan for feature targets. `get_scoped_ready_tasks()` filters by feature or task ID. `build_iteration_context()` assembles full context. `handle_task_done()` orchestrates verification + retry. `discover_skills()` scans `.ralph/skills/*/SKILL.md`.
+
 ### DAG Task System (`src/dag/`)
-SQLite-based task management with WAL mode and foreign keys:
-- **mod.rs**: Defines `Task` and `TaskCounts` structs. Re-exports main task operations (`get_ready_tasks`, `claim_task`, `complete_task`, `fail_task`, `release_claim`, `all_resolved`). Implements `get_task_counts()` and `open_db()`.
-- **db.rs**: Opens/creates `.ralph/progress.db`, defines schema (`tasks`, `dependencies`, `task_logs` tables)
-- **ids.rs**: Generates task IDs (`t-{6 hex}`) from SHA-256 of timestamp+counter
+SQLite-based task management with WAL mode and foreign keys (schema v2):
+- **mod.rs**: Defines `Task` (with `feature_id`, `retry_count`, `max_retries`, `verification_status`) and `TaskCounts` structs. Re-exports main task operations. Implements scoped queries: `get_ready_tasks_for_feature()`, `get_standalone_tasks()`, `get_feature_task_counts()`, `retry_task()`.
+- **db.rs**: Opens/creates `.ralph/progress.db`, defines schema (`tasks`, `dependencies`, `task_logs`, `features` tables). Schema v2 adds `features` table and extends `tasks` with `feature_id`, `task_type`, `retry_count`, `max_retries`, `verification_status`.
+- **ids.rs**: Generates task IDs (`t-{6 hex}`) and feature IDs (`f-{6 hex}`) from SHA-256 of timestamp+counter.
 - **tasks.rs**: `compute_parent_status()` derives parent status from children (any failed -> failed, all done -> done). `get_task_status()` returns derived status for a task considering its children.
 - **transitions.rs**: Status transitions (`pending`→`in_progress`→`done`/`failed`) with auto-transitions: completing a task unblocks dependents; completing all children auto-completes parent; failing a child auto-fails parent
 - **dependencies.rs**: Dependency management with BFS cycle detection
-- **crud.rs**: Task CRUD operations (`create_task`, `get_task`, `update_task`, `delete_task`, `add_log`)
+- **crud.rs**: Task CRUD operations (`create_task`, `create_task_with_feature`, `get_task`, `update_task`, `delete_task`, `add_log`)
+
+### Feature Management (`src/feature.rs`)
+CRUD operations for features: `create_feature`, `get_feature` (by name), `get_feature_by_id`, `list_features`, `update_feature_status/spec_path/plan_path`, `ensure_feature_dirs`, `read_spec`, `read_plan`, `feature_exists`.
+
+### Verification Agent (`src/verification.rs`)
+Spawns a read-only Claude session to verify completed tasks. Uses restricted tools (`Bash Read Glob Grep`). Parses `<verify-pass/>` and `<verify-fail>reason</verify-fail>` sigils.
 
 ### Claude Integration (`src/claude/`)
-- **client.rs**: Spawns `claude` CLI with `--output-format stream-json` and `--model <model>`, handles both direct and sandboxed execution. Builds the system prompt with DAG task assignment instructions. Also defines `TaskInfo`, `ParentContext`, `BlockerContext` structs and `build_task_context()` for rendering task assignment markdown.
-- **interactive.rs**: Implements `prompt`, `specs`, and `plan` subcommands. `run_interactive()` spawns Claude with inherited stdio for interactive sessions. `run_streaming()` spawns Claude in print mode with NDJSON streaming and no tools for plan decomposition. Also contains `extract_plan_json()` for parsing plan output, `PlanOutput`/`PlanTask` structs, and system prompt builders for all three subcommands.
+- **client.rs**: Spawns `claude` CLI with `--output-format stream-json` and `--model <model>`, handles both direct and sandboxed execution. Builds the system prompt with DAG task assignment instructions, spec/plan content, retry info, skills summary, and learning instructions. Defines `TaskInfo`, `ParentContext`, `BlockerContext`, `RetryInfo`, `IterationContext` structs. `build_task_context()` renders task assignment markdown.
+- **interactive.rs**: `run_interactive()` spawns Claude with inherited stdio for interactive sessions. `run_streaming()` spawns Claude in print mode with NDJSON streaming and no tools for plan decomposition. Contains `extract_plan_json()` for parsing build output.
 - **events.rs**: Typed event structs for NDJSON parsing. Parses sigils from result text: `<task-done>`, `<task-failed>`, `<next-model>`, `<promise>COMPLETE/FAILURE</promise>`
 - **parser.rs**: Deserializes raw JSON into typed events
 
 ### Project Configuration (`src/project.rs`)
 - Discovers `.ralph.toml` by walking up directory tree from CWD
-- `ralph init` creates `.ralph.toml`, `.ralph/` directory structure, and empty `progress.db`
-- Config sections: `[specs]` (dirs), `[prompts]` (dir)
+- `ralph init` creates `.ralph.toml`, `.ralph/` directory structure (including `features/`, `skills/`), and empty `progress.db`
+- Config sections: `[specs]` (dirs), `[prompts]` (dir), `[execution]` (max_retries, verify, learn)
 
 ### Config (`src/config.rs`)
-- Holds the `Config` struct: prompt file, limits, iteration counters, sandbox settings, model strategy, agent ID, project root, parsed `RalphConfig`
+- Holds the `Config` struct: prompt file, limits, iteration counters, sandbox settings, model strategy, agent ID, project root, parsed `RalphConfig`, max_retries, verify, learn, run_target
 - Defines the `ModelStrategy` enum: `Fixed`, `CostOptimized`, `Escalate`, `PlanThenExecute`
+- Defines the `RunTarget` enum: `Feature(String)`, `Task(String)`
 - Generates agent IDs: `agent-{8 hex}` from `DefaultHasher` over timestamp + PID
 - Default allowed tools list: `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep`, `Task`, `TodoWrite`, `NotebookEdit`, `WebFetch`, `WebSearch`, `mcp__*`
 
@@ -77,34 +86,44 @@ Claude's output is scanned for:
 - `<promise>COMPLETE</promise>` - All tasks done, exit 0
 - `<promise>FAILURE</promise>` - Critical failure, exit 1
 - `<next-model>MODEL</next-model>` - Hint for next iteration's model
+- `<verify-pass/>` - Verification passed (emitted by verification agent)
+- `<verify-fail>reason</verify-fail>` - Verification failed (emitted by verification agent)
 
 ### Key Files
 - `.ralph.toml` - Project configuration (discovered by walking up directory tree)
 - `.ralph/progress.db` - SQLite DAG database (gitignored)
-- `.ralph/specs/` - Specification documents
+- `.ralph/features/<name>/spec.md` - Feature specifications
+- `.ralph/features/<name>/plan.md` - Feature implementation plans
+- `.ralph/skills/<name>/SKILL.md` - Reusable agent skills with YAML frontmatter
+- `.ralph/specs/` - Specification documents (legacy)
 - `.ralph/prompts/` - Prompt files
 - `prompt` (default) - Task description file read by Claude each iteration
 
 ## CLI
 
-Ralph uses a subcommand architecture:
+Ralph uses a nested subcommand architecture:
 
 ```
-ralph init                    # Initialize project (.ralph.toml, .ralph/ dirs)
-ralph run [PROMPT_FILE]       # Run agent loop (default prompt: "prompt")
-  --once                      # Single iteration
-  --limit=N                   # Max iterations (0=unlimited)
-  --model=MODEL               # opus, sonnet, haiku (implies fixed strategy)
-  --model-strategy=STRAT      # fixed, cost-optimized, escalate, plan-then-execute
-  --no-sandbox                # Disable macOS sandbox
-  --allow=RULE                # Enable sandbox rule (e.g., aws)
-ralph plan [PROMPT_FILE]      # Decompose prompt into task DAG
-  --model=MODEL               # Model for planning (default: opus)
-ralph specs                   # Author specification documents (interactive)
-ralph prompt                  # Create a new prompt file (interactive)
+ralph init                        # Initialize project (.ralph.toml, .ralph/ dirs)
+ralph feature spec <name>         # Interactive: craft a specification
+ralph feature plan <name>         # Interactive: create implementation plan from spec
+ralph feature build <name>        # Decompose plan into task DAG
+ralph feature list                # List features and status
+ralph task new                    # Interactive: create standalone task
+ralph task list                   # List standalone tasks
+ralph run <target>                # Execute scoped work (feature name or task ID)
+  --once                          # Single iteration
+  --limit=N                       # Max iterations (0=unlimited)
+  --model=MODEL                   # opus, sonnet, haiku (implies fixed strategy)
+  --model-strategy=STRAT          # fixed, cost-optimized, escalate, plan-then-execute
+  --no-sandbox                    # Disable macOS sandbox
+  --allow=RULE                    # Enable sandbox rule (e.g., aws)
+  --max-retries=N                 # Maximum retries for failed tasks
+  --no-verify                     # Disable autonomous verification
+  --no-learn                      # Disable skill creation + CLAUDE.md updates
 ```
 
-Environment variables: `RALPH_FILE`, `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RALPH_ITERATION`, `RALPH_TOTAL`.
+Environment variables: `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RALPH_ITERATION`, `RALPH_TOTAL`.
 
 ## Nix Development
 
