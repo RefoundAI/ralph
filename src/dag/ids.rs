@@ -35,6 +35,25 @@ pub fn generate_task_id() -> String {
     format!("t-{:02x}{:02x}{:02x}", hash[0], hash[1], hash[2])
 }
 
+/// Generate a new feature ID.
+///
+/// Format: `f-` + 6 hex chars from SHA-256 of `(timestamp_nanos || counter)`.
+pub fn generate_feature_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("System time is before UNIX epoch")
+        .as_nanos();
+
+    let counter = COUNTER.fetch_add(1, Ordering::SeqCst);
+
+    let mut hasher = Sha256::new();
+    hasher.update(timestamp.to_le_bytes());
+    hasher.update(counter.to_le_bytes());
+    let hash = hasher.finalize();
+
+    format!("f-{:02x}{:02x}{:02x}", hash[0], hash[1], hash[2])
+}
+
 /// Generate a task ID and insert it into the database.
 ///
 /// Retries up to `max_retries` times on UNIQUE constraint violation.

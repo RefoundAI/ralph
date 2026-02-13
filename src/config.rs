@@ -17,6 +17,15 @@ const DEFAULT_ALLOWED_TOOLS: &[&str] = &[
     "TodoWrite", "NotebookEdit", "WebFetch", "WebSearch", "mcp__*",
 ];
 
+/// Target for the `ralph run` command.
+#[derive(Debug, Clone)]
+pub enum RunTarget {
+    /// Run a feature by name.
+    Feature(String),
+    /// Run a standalone task by ID (t-...).
+    Task(String),
+}
+
 /// Model strategy for selecting Claude models across loop iterations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelStrategy {
@@ -98,6 +107,14 @@ pub struct Config {
     pub ralph_config: RalphConfig,
     /// Unique agent ID for this run (format: agent-{8 hex chars}).
     pub agent_id: String,
+    /// Maximum retries for failed tasks.
+    pub max_retries: u32,
+    /// Whether to enable autonomous verification.
+    pub verify: bool,
+    /// Whether to enable skill creation + CLAUDE.md updates.
+    pub learn: bool,
+    /// The target for this run (feature or standalone task).
+    pub run_target: Option<RunTarget>,
 }
 
 impl Config {
@@ -112,6 +129,10 @@ impl Config {
         model_strategy: Option<String>,
         model: Option<String>,
         project: ProjectConfig,
+        run_target: Option<RunTarget>,
+        max_retries_override: Option<u32>,
+        no_verify: bool,
+        no_learn: bool,
     ) -> Result<Self> {
         // Check for mutually exclusive flags
         if once && limit.is_some() && limit.unwrap() > 0 {
@@ -155,6 +176,11 @@ impl Config {
 
         let allowed_tools = DEFAULT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect();
 
+        let execution = &project.config.execution;
+        let max_retries = max_retries_override.unwrap_or(execution.max_retries);
+        let verify = !no_verify && execution.verify;
+        let learn = !no_learn && execution.learn;
+
         Ok(Config {
             prompt_file,
             limit,
@@ -170,6 +196,10 @@ impl Config {
             project_root: project.root,
             ralph_config: project.config,
             agent_id: generate_agent_id(),
+            max_retries,
+            verify,
+            learn,
+            run_target,
         })
     }
 
@@ -199,6 +229,7 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                ..Default::default()
             },
         }
     }
@@ -214,6 +245,10 @@ mod tests {
             strategy.map(String::from),
             model.map(String::from),
             test_project(),
+            None,
+            None,
+            false,
+            false,
         )
     }
 

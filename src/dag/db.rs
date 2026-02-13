@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use std::path::Path;
 
 /// Current schema version.
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 /// SQLite database wrapper.
 pub struct Db {
@@ -87,6 +87,32 @@ fn migrate(conn: &Connection, from_version: i32, to_version: i32) -> Result<()> 
             "#,
         )
         .context("Failed to create schema v1")?;
+    }
+
+    if from_version < 2 && to_version >= 2 {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS features (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                spec_path TEXT,
+                plan_path TEXT,
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN ('draft','planned','ready','running','done','failed')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            ALTER TABLE tasks ADD COLUMN feature_id TEXT REFERENCES features(id);
+            ALTER TABLE tasks ADD COLUMN task_type TEXT DEFAULT 'feature'
+                CHECK (task_type IN ('feature','standalone'));
+            ALTER TABLE tasks ADD COLUMN retry_count INTEGER DEFAULT 0;
+            ALTER TABLE tasks ADD COLUMN max_retries INTEGER DEFAULT 3;
+            ALTER TABLE tasks ADD COLUMN verification_status TEXT
+                CHECK (verification_status IN ('pending','passed','failed'));
+            "#,
+        )
+        .context("Failed to create schema v2")?;
     }
 
     // Set schema version

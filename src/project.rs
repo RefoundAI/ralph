@@ -26,6 +26,38 @@ pub struct RalphConfig {
     pub specs: SpecsConfig,
     #[serde(default)]
     pub prompts: PromptsConfig,
+    #[serde(default)]
+    pub execution: ExecutionConfig,
+}
+
+/// Execution configuration section.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct ExecutionConfig {
+    #[serde(default = "default_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_true")]
+    pub verify: bool,
+    #[serde(default = "default_true")]
+    pub learn: bool,
+}
+
+impl Default for ExecutionConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: default_max_retries(),
+            verify: true,
+            learn: true,
+        }
+    }
+}
+
+fn default_max_retries() -> u32 {
+    3
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Specs configuration section.
@@ -157,6 +189,8 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
     let ralph_dir = cwd.join(".ralph");
     let prompts_dir = ralph_dir.join("prompts");
     let specs_dir = ralph_dir.join("specs");
+    let features_dir = ralph_dir.join("features");
+    let skills_dir = ralph_dir.join("skills");
 
     fs::create_dir_all(&ralph_dir)
         .context("Failed to create .ralph/ directory")?;
@@ -164,6 +198,10 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
         .context("Failed to create .ralph/prompts/ directory")?;
     fs::create_dir_all(&specs_dir)
         .context("Failed to create .ralph/specs/ directory")?;
+    fs::create_dir_all(&features_dir)
+        .context("Failed to create .ralph/features/ directory")?;
+    fs::create_dir_all(&skills_dir)
+        .context("Failed to create .ralph/skills/ directory")?;
 
     println!("Created .ralph/ directory structure");
 

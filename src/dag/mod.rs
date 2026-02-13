@@ -12,12 +12,12 @@ mod transitions;
 use anyhow::Result;
 
 #[allow(unused_imports)]
-pub use crud::{add_log, create_task, delete_task, get_task, get_task_tree, update_task, TaskUpdate};
+pub use crud::{add_log, create_task, create_task_with_feature, delete_task, get_task, get_task_tree, update_task, TaskUpdate};
 pub use db::{init_db, Db};
 #[allow(unused_imports)]
 pub use dependencies::{add_dependency, remove_dependency};
 #[allow(unused_imports)]
-pub use ids::{generate_task_id, generate_and_insert_task_id};
+pub use ids::{generate_task_id, generate_feature_id, generate_and_insert_task_id};
 #[allow(unused_imports)]
 pub use tasks::{compute_parent_status, get_task_status};
 
@@ -29,6 +29,10 @@ pub struct Task {
     pub title: String,
     pub description: String,
     pub parent_id: Option<String>,
+    pub feature_id: Option<String>,
+    pub retry_count: i32,
+    pub max_retries: i32,
+    pub verification_status: Option<String>,
 }
 
 /// Task counts summary.
@@ -56,7 +60,8 @@ pub fn get_ready_tasks(db: &Db) -> Result<Vec<Task>> {
     // Ordered by: priority ASC, created_at ASC
     let mut stmt = db.conn().prepare(
         r#"
-        SELECT DISTINCT t.id, t.title, t.description, t.parent_id
+        SELECT DISTINCT t.id, t.title, t.description, t.parent_id,
+               t.feature_id, t.retry_count, t.max_retries, t.verification_status
         FROM tasks t
         WHERE t.status = 'pending'
           -- Must be a leaf node (no children)
@@ -89,6 +94,10 @@ pub fn get_ready_tasks(db: &Db) -> Result<Vec<Task>> {
                 title: row.get(1)?,
                 description: row.get(2)?,
                 parent_id: row.get(3)?,
+                feature_id: row.get(4)?,
+                retry_count: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
+                max_retries: row.get::<_, Option<i32>>(6)?.unwrap_or(3),
+                verification_status: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -175,6 +184,125 @@ pub fn all_resolved(db: &Db) -> Result<bool> {
     Ok(unresolved == 0)
 }
 
+/// Get all tasks for a specific feature that are ready to execute.
+pub fn get_ready_tasks_for_feature(db: &Db, feature_id: &str) -> Result<Vec<Task>> {
+    let mut stmt = db.conn().prepare(
+        r#"
+        SELECT DISTINCT t.id, t.title, t.description, t.parent_id,
+               t.feature_id, t.retry_count, t.max_retries, t.verification_status
+        FROM tasks t
+        WHERE t.status = 'pending'
+          AND t.feature_id = ?
+          AND NOT EXISTS (
+              SELECT 1 FROM tasks c WHERE c.parent_id = t.id
+          )
+          AND (
+              t.parent_id IS NULL
+              OR NOT EXISTS (
+                  SELECT 1 FROM tasks p WHERE p.id = t.parent_id AND p.status = 'failed'
+              )
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM dependencies d
+              JOIN tasks b ON d.blocker_id = b.id
+              WHERE d.blocked_id = t.id
+                AND b.status != 'done'
+          )
+        ORDER BY t.priority ASC, t.created_at ASC
+        "#,
+    )?;
+
+    let tasks = stmt
+        .query_map([feature_id], |row| {
+            Ok(Task {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                description: row.get(2)?,
+                parent_id: row.get(3)?,
+                feature_id: row.get(4)?,
+                retry_count: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
+                max_retries: row.get::<_, Option<i32>>(6)?.unwrap_or(3),
+                verification_status: row.get(7)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(tasks)
+}
+
+/// Get standalone tasks (not associated with any feature).
+pub fn get_standalone_tasks(db: &Db) -> Result<Vec<Task>> {
+    let mut stmt = db.conn().prepare(
+        r#"
+        SELECT id, title, description, parent_id,
+               feature_id, retry_count, max_retries, verification_status
+        FROM tasks
+        WHERE task_type = 'standalone'
+        ORDER BY priority ASC, created_at ASC
+        "#,
+    )?;
+
+    let tasks = stmt
+        .query_map([], |row| {
+            Ok(Task {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                description: row.get(2)?,
+                parent_id: row.get(3)?,
+                feature_id: row.get(4)?,
+                retry_count: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
+                max_retries: row.get::<_, Option<i32>>(6)?.unwrap_or(3),
+                verification_status: row.get(7)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(tasks)
+}
+
+/// Get task counts for a specific feature.
+pub fn get_feature_task_counts(db: &Db, feature_id: &str) -> Result<TaskCounts> {
+    let total: usize = db.conn().query_row(
+        "SELECT COUNT(*) FROM tasks WHERE feature_id = ?",
+        [feature_id],
+        |row| row.get(0),
+    )?;
+
+    let ready = get_ready_tasks_for_feature(db, feature_id)?.len();
+
+    let done: usize = db.conn().query_row(
+        "SELECT COUNT(*) FROM tasks WHERE feature_id = ? AND status = 'done'",
+        [feature_id],
+        |row| row.get(0),
+    )?;
+
+    let blocked: usize = db.conn().query_row(
+        "SELECT COUNT(*) FROM tasks WHERE feature_id = ? AND status = 'blocked'",
+        [feature_id],
+        |row| row.get(0),
+    )?;
+
+    Ok(TaskCounts {
+        total,
+        ready,
+        done,
+        blocked,
+    })
+}
+
+/// Retry a failed task: transition back to pending and increment retry_count.
+pub fn retry_task(db: &Db, task_id: &str) -> Result<()> {
+    // Transition failed -> pending
+    transitions::set_task_status(db.conn(), task_id, "pending")?;
+    // Increment retry_count and set verification_status to failed
+    db.conn().execute(
+        "UPDATE tasks SET retry_count = retry_count + 1, verification_status = 'failed', claimed_by = NULL WHERE id = ?",
+        [task_id],
+    )?;
+    Ok(())
+}
+
 /// Release the claim on a task (set to pending if in_progress).
 pub fn release_claim(db: &Db, task_id: &str) -> Result<()> {
     // Only release if currently in_progress
@@ -206,6 +334,10 @@ mod tests {
             title: "Test task".to_string(),
             description: "A test task".to_string(),
             parent_id: None,
+            feature_id: None,
+            retry_count: 0,
+            max_retries: 3,
+            verification_status: None,
         };
         assert_eq!(task.id, "t-abc123");
         assert_eq!(task.title, "Test task");

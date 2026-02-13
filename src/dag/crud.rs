@@ -22,6 +22,20 @@ pub fn create_task(
     parent_id: Option<&str>,
     priority: i32,
 ) -> Result<Task> {
+    create_task_with_feature(db, title, description, parent_id, priority, None, "feature", 3)
+}
+
+/// Create a new task with feature association and task type.
+pub fn create_task_with_feature(
+    db: &Db,
+    title: &str,
+    description: Option<&str>,
+    parent_id: Option<&str>,
+    priority: i32,
+    feature_id: Option<&str>,
+    task_type: &str,
+    max_retries: i32,
+) -> Result<Task> {
     // Validate parent exists if specified
     if let Some(pid) = parent_id {
         let exists: bool = db
@@ -44,8 +58,8 @@ pub fn create_task(
     let id = generate_and_insert_task_id(
         |id| {
             db.conn().execute(
-                "INSERT INTO tasks (id, title, description, parent_id, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                rusqlite::params![id, title, desc, parent_id, priority, &timestamp, &timestamp],
+                "INSERT INTO tasks (id, title, description, parent_id, priority, feature_id, task_type, max_retries, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![id, title, desc, parent_id, priority, feature_id, task_type, max_retries, &timestamp, &timestamp],
             )?;
             Ok(())
         },
@@ -57,6 +71,10 @@ pub fn create_task(
         title: title.to_string(),
         description: desc.to_string(),
         parent_id: parent_id.map(|s| s.to_string()),
+        feature_id: feature_id.map(|s| s.to_string()),
+        retry_count: 0,
+        max_retries,
+        verification_status: None,
     })
 }
 
@@ -64,7 +82,7 @@ pub fn create_task(
 pub fn get_task(db: &Db, id: &str) -> Result<Task> {
     db.conn()
         .query_row(
-            "SELECT id, title, description, parent_id FROM tasks WHERE id = ?",
+            "SELECT id, title, description, parent_id, feature_id, retry_count, max_retries, verification_status FROM tasks WHERE id = ?",
             [id],
             |row| {
                 Ok(Task {
@@ -72,6 +90,10 @@ pub fn get_task(db: &Db, id: &str) -> Result<Task> {
                     title: row.get(1)?,
                     description: row.get(2)?,
                     parent_id: row.get(3)?,
+                    feature_id: row.get(4)?,
+                    retry_count: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
+                    max_retries: row.get::<_, Option<i32>>(6)?.unwrap_or(3),
+                    verification_status: row.get(7)?,
                 })
             },
         )
@@ -203,13 +225,17 @@ pub fn get_task_tree(db: &Db, root_id: &str) -> Result<Vec<Task>> {
     while let Some(parent_id) = queue.pop() {
         let children: Vec<Task> = db
             .conn()
-            .prepare("SELECT id, title, description, parent_id FROM tasks WHERE parent_id = ?")?
+            .prepare("SELECT id, title, description, parent_id, feature_id, retry_count, max_retries, verification_status FROM tasks WHERE parent_id = ?")?
             .query_map([&parent_id], |row| {
                 Ok(Task {
                     id: row.get(0)?,
                     title: row.get(1)?,
                     description: row.get(2)?,
                     parent_id: row.get(3)?,
+                    feature_id: row.get(4)?,
+                    retry_count: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
+                    max_retries: row.get::<_, Option<i32>>(6)?.unwrap_or(3),
+                    verification_status: row.get(7)?,
                 })
             })?
             .collect::<Result<_, _>>()
