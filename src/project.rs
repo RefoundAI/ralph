@@ -241,8 +241,8 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
 
     println!("\nRalph project initialized successfully!");
     println!("Next steps:");
-    println!("  - Run 'ralph' to start the agent loop");
-    println!("  - Or create specs in .ralph/specs/");
+    println!("  - Run 'ralph feature spec <name>' to define a feature");
+    println!("  - Or run 'ralph task new' to create a standalone task");
 
     Ok(())
 }
