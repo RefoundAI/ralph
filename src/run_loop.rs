@@ -1,13 +1,18 @@
 //! Main iteration loop.
 
 use anyhow::{Context, Result};
-use colored::*;
+use std::path::Path;
 
 use crate::claude;
-use crate::config::Config;
-use crate::dag;
+use crate::claude::client::{
+    BlockerContext, IterationContext, ParentContext, RetryInfo, TaskInfo,
+};
+use crate::config::{Config, RunTarget};
+use crate::dag::{self, Db, Task};
+use crate::feature;
 use crate::output::{formatter, logger};
 use crate::strategy;
+use crate::verification;
 
 /// Outcome of the loop execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,7 +25,7 @@ pub enum Outcome {
     LimitReached,
     /// No ready tasks, but incomplete tasks exist
     Blocked,
-    /// DAG is empty, user must run `ralph plan`
+    /// DAG is empty, user must run `ralph feature build`
     NoPlan,
 }
 
@@ -32,12 +37,16 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         progress_db
             .to_str()
             .context("Failed to convert progress.db path to string")?,
-    ).context("Failed to open DAG database")?;
+    )
+    .context("Failed to open DAG database")?;
+
+    // Resolve feature context (spec + plan content) if targeting a feature
+    let (feature_id, spec_content, plan_content) = resolve_feature_context(&config, &db)?;
 
     loop {
-        // Get task counts and ready tasks
+        // Get scoped ready tasks
+        let ready_tasks = get_scoped_ready_tasks(&config, &db, feature_id.as_deref())?;
         let counts = dag::get_task_counts(&db).context("Failed to get task counts")?;
-        let ready_tasks = dag::get_ready_tasks(&db).context("Failed to get ready tasks")?;
 
         // Print DAG summary at the start of each iteration
         if config.iteration == 1 {
@@ -52,10 +61,11 @@ pub fn run(mut config: Config) -> Result<Outcome> {
             return Ok(Outcome::NoPlan);
         }
 
-        // Check if no tasks are ready and some are incomplete (blocked)
+        // Check if all tasks are resolved before declaring blocked
         if ready_tasks.is_empty() {
-            // If all tasks are done or failed, this shouldn't happen (all_resolved check below)
-            // But if we're here and ready is empty, it means we're blocked
+            if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+                return Ok(Outcome::Complete);
+            }
             return Ok(Outcome::Blocked);
         }
 
@@ -68,12 +78,7 @@ pub fn run(mut config: Config) -> Result<Outcome> {
             .context("Failed to claim task")?;
 
         // Print iteration info with colors (task ID in cyan)
-        println!(
-            "[iter {}] Working on: {} -- {}",
-            config.iteration,
-            task_id.cyan(),
-            task.title
-        );
+        formatter::print_task_working(config.iteration, &task_id, &task.title);
 
         // Set up logging
         let log_file = logger::setup_log_file();
@@ -84,8 +89,17 @@ pub fn run(mut config: Config) -> Result<Outcome> {
             formatter::print_sandbox_warning();
         }
 
-        // Run Claude
-        let result = claude::client::run(&config, Some(&log_file))
+        // Build iteration context
+        let iteration_context = build_iteration_context(
+            &db,
+            task,
+            spec_content.as_deref(),
+            plan_content.as_deref(),
+            &config,
+        )?;
+
+        // Run Claude with context
+        let result = claude::client::run(&config, Some(&log_file), Some(&iteration_context))
             .context("Failed to run Claude")?;
 
         println!("Log available at: ");
@@ -107,39 +121,29 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         if let Some(ref r) = result {
             if let Some(ref done_id) = r.task_done {
                 if done_id == &task_id {
-                    dag::complete_task(&db, &task_id)
-                        .context("Failed to complete task")?;
-                    println!(
-                        "[iter {}] {}: {}",
-                        config.iteration,
-                        "Done".green(),
-                        task_id.cyan()
-                    );
+                    handle_task_done(&db, &config, task, spec_content.as_deref(), plan_content.as_deref(), &log_file)?;
                 } else {
-                    eprintln!("Warning: task-done sigil ID {} does not match assigned task {}", done_id, task_id);
+                    eprintln!(
+                        "Warning: task-done sigil ID {} does not match assigned task {}",
+                        done_id, task_id
+                    );
                 }
             } else if let Some(ref failed_id) = r.task_failed {
                 if failed_id == &task_id {
                     dag::fail_task(&db, &task_id, "Task marked failed by Claude")
                         .context("Failed to fail task")?;
-                    println!(
-                        "[iter {}] {}: {}",
-                        config.iteration,
-                        "Failed".red(),
-                        task_id.cyan()
-                    );
+                    formatter::print_task_failed(config.iteration, &task_id);
                 } else {
-                    eprintln!("Warning: task-failed sigil ID {} does not match assigned task {}", failed_id, task_id);
+                    eprintln!(
+                        "Warning: task-failed sigil ID {} does not match assigned task {}",
+                        failed_id, task_id
+                    );
                 }
             } else {
                 // No sigil - release the claim and treat as incomplete
                 dag::release_claim(&db, &task_id)
                     .context("Failed to release task claim")?;
-                println!(
-                    "[iter {}] Incomplete (no sigil): {}",
-                    config.iteration,
-                    task_id.cyan()
-                );
+                formatter::print_task_incomplete(config.iteration, &task_id);
             }
         }
 
@@ -159,8 +163,7 @@ pub fn run(mut config: Config) -> Result<Outcome> {
 
         // Select model for the next iteration based on strategy,
         // passing Claude's hint (if any) from the previous result
-        let selection =
-            strategy::select_model(&mut config, next_model_hint.as_deref());
+        let selection = strategy::select_model(&mut config, next_model_hint.as_deref());
 
         // Log override events when hint disagrees with strategy
         if selection.was_overridden {
@@ -175,6 +178,267 @@ pub fn run(mut config: Config) -> Result<Outcome> {
 
         formatter::print_iteration_info(&config);
     }
+}
+
+/// Resolve feature context: returns (feature_id, spec_content, plan_content).
+fn resolve_feature_context(
+    config: &Config,
+    db: &Db,
+) -> Result<(Option<String>, Option<String>, Option<String>)> {
+    match &config.run_target {
+        Some(RunTarget::Feature(name)) => {
+            let feat = feature::get_feature(db, name)?;
+            let spec = feature::read_spec(&config.project_root, name).ok();
+            let plan = feature::read_plan(&config.project_root, name).ok();
+            Ok((Some(feat.id), spec, plan))
+        }
+        Some(RunTarget::Task(task_id)) => {
+            // Standalone task — check if it has a feature_id
+            let task = dag::get_task(db, task_id)?;
+            if let Some(ref fid) = task.feature_id {
+                let feat = feature::get_feature_by_id(db, fid)?;
+                let spec = feature::read_spec(&config.project_root, &feat.name).ok();
+                let plan = feature::read_plan(&config.project_root, &feat.name).ok();
+                Ok((Some(fid.clone()), spec, plan))
+            } else {
+                Ok((None, None, None))
+            }
+        }
+        None => Ok((None, None, None)),
+    }
+}
+
+/// Get ready tasks scoped to the run target.
+fn get_scoped_ready_tasks(
+    config: &Config,
+    db: &Db,
+    feature_id: Option<&str>,
+) -> Result<Vec<Task>> {
+    match &config.run_target {
+        Some(RunTarget::Feature(_)) => {
+            if let Some(fid) = feature_id {
+                dag::get_ready_tasks_for_feature(db, fid)
+                    .context("Failed to get ready tasks for feature")
+            } else {
+                dag::get_ready_tasks(db).context("Failed to get ready tasks")
+            }
+        }
+        Some(RunTarget::Task(task_id)) => {
+            // For a standalone task target, only return that task if it's ready
+            let ready = dag::get_ready_tasks(db).context("Failed to get ready tasks")?;
+            Ok(ready.into_iter().filter(|t| t.id == *task_id).collect())
+        }
+        None => dag::get_ready_tasks(db).context("Failed to get ready tasks"),
+    }
+}
+
+/// Build the full iteration context for the assigned task.
+fn build_iteration_context(
+    db: &Db,
+    task: &Task,
+    spec_content: Option<&str>,
+    plan_content: Option<&str>,
+    config: &Config,
+) -> Result<IterationContext> {
+    // Build parent context
+    let parent = if let Some(ref pid) = task.parent_id {
+        let parent_task = dag::get_task(db, pid).ok();
+        parent_task.map(|p| ParentContext {
+            title: p.title,
+            description: p.description,
+        })
+    } else {
+        None
+    };
+
+    // Build completed blockers context
+    let completed_blockers = get_completed_blockers(db, &task.id)?;
+
+    // Build retry info if this is a retry
+    let retry_info = if task.retry_count > 0 {
+        let failure_reason = get_last_failure_reason(db, &task.id)?;
+        Some(RetryInfo {
+            attempt: task.retry_count + 1,
+            max_retries: task.max_retries,
+            previous_failure_reason: failure_reason,
+        })
+    } else {
+        None
+    };
+
+    // Discover available skills
+    let skills_summary = discover_skills(&config.project_root);
+
+    let task_info = TaskInfo {
+        task_id: task.id.clone(),
+        title: task.title.clone(),
+        description: task.description.clone(),
+        parent,
+        completed_blockers,
+        specs_dirs: config.ralph_config.specs.dirs.clone(),
+    };
+
+    Ok(IterationContext {
+        task: task_info,
+        spec_content: spec_content.map(|s| s.to_string()),
+        plan_content: plan_content.map(|s| s.to_string()),
+        retry_info,
+        skills_summary,
+        learn: config.learn,
+    })
+}
+
+/// Discover available skills by scanning `.ralph/skills/*/SKILL.md`.
+///
+/// Returns a list of (name, description) tuples. Parses YAML frontmatter
+/// for the `description` field. Silently skips any files that can't be read or parsed.
+fn discover_skills(project_root: &Path) -> Vec<(String, String)> {
+    let skills_dir = project_root.join(".ralph/skills");
+    let mut skills = Vec::new();
+
+    let entries = match std::fs::read_dir(&skills_dir) {
+        Ok(entries) => entries,
+        Err(_) => return skills,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let skill_file = path.join("SKILL.md");
+        if !skill_file.exists() {
+            continue;
+        }
+
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        if let Ok(content) = std::fs::read_to_string(&skill_file) {
+            let description = parse_skill_description(&content);
+            skills.push((name, description));
+        }
+    }
+
+    skills
+}
+
+/// Parse the `description` field from a SKILL.md frontmatter block.
+///
+/// Expects YAML frontmatter between `---` delimiters at the top of the file.
+fn parse_skill_description(content: &str) -> String {
+    let trimmed = content.trim();
+    if !trimmed.starts_with("---") {
+        return "No description".to_string();
+    }
+
+    // Find the closing ---
+    if let Some(end_idx) = trimmed[3..].find("---") {
+        let frontmatter = &trimmed[3..3 + end_idx];
+        for line in frontmatter.lines() {
+            let line = line.trim();
+            if let Some(desc) = line.strip_prefix("description:") {
+                return desc.trim().to_string();
+            }
+        }
+    }
+
+    "No description".to_string()
+}
+
+/// Get completed blockers (dependencies) for a task.
+fn get_completed_blockers(db: &Db, task_id: &str) -> Result<Vec<BlockerContext>> {
+    let mut stmt = db.conn().prepare(
+        r#"
+        SELECT t.id, t.title, COALESCE(
+            (SELECT message FROM task_logs WHERE task_id = t.id ORDER BY timestamp DESC LIMIT 1),
+            t.description
+        )
+        FROM dependencies d
+        JOIN tasks t ON d.blocker_id = t.id
+        WHERE d.blocked_id = ? AND t.status = 'done'
+        "#,
+    )?;
+
+    let blockers = stmt
+        .query_map([task_id], |row| {
+            Ok(BlockerContext {
+                task_id: row.get(0)?,
+                title: row.get(1)?,
+                summary: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(blockers)
+}
+
+/// Get the last failure reason from task logs.
+fn get_last_failure_reason(db: &Db, task_id: &str) -> Result<String> {
+    let reason: String = db
+        .conn()
+        .query_row(
+            "SELECT message FROM task_logs WHERE task_id = ? ORDER BY timestamp DESC LIMIT 1",
+            [task_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "No failure reason recorded".to_string());
+    Ok(reason)
+}
+
+/// Handle a task-done sigil: verify (if enabled) and complete or retry.
+fn handle_task_done(
+    db: &Db,
+    config: &Config,
+    task: &Task,
+    spec_content: Option<&str>,
+    plan_content: Option<&str>,
+    log_file: &str,
+) -> Result<()> {
+    let task_id = &task.id;
+
+    if config.verify {
+        // Run verification agent
+        formatter::print_verification_start(config.iteration, task_id);
+
+        let v_result = verification::verify_task(config, task, spec_content, plan_content, log_file)?;
+
+        if v_result.passed {
+            // Verification passed — complete the task
+            dag::complete_task(db, task_id).context("Failed to complete task")?;
+            db.conn().execute(
+                "UPDATE tasks SET verification_status = 'passed' WHERE id = ?",
+                [task_id.as_str()],
+            )?;
+            formatter::print_verification_passed(config.iteration, task_id);
+        } else {
+            // Verification failed
+            formatter::print_verification_failed(config.iteration, task_id, &v_result.reason);
+
+            // Log the failure
+            dag::add_log(db, task_id, &format!("Verification failed: {}", v_result.reason))?;
+
+            if task.retry_count < task.max_retries {
+                // Retry: transition failed → pending, increment retry_count
+                dag::retry_task(db, task_id).context("Failed to retry task")?;
+                formatter::print_retry(config.iteration, task_id, task.retry_count + 1, task.max_retries);
+            } else {
+                // Max retries exhausted — fail the task
+                dag::fail_task(db, task_id, &format!("Verification failed after {} retries: {}", task.max_retries, v_result.reason))
+                    .context("Failed to fail task")?;
+                formatter::print_max_retries_exhausted(config.iteration, task_id);
+            }
+        }
+    } else {
+        // No verification — complete immediately
+        dag::complete_task(db, task_id).context("Failed to complete task")?;
+        formatter::print_task_done(config.iteration, task_id);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -205,7 +469,6 @@ mod tests {
         let db = dag::open_db(temp_file.path().to_str().unwrap()).unwrap();
 
         // Create a simple chain: A -> B -> C
-        // Insert them directly (we'd normally use create_task, but that's not exported)
         db.conn()
             .execute(
                 "INSERT INTO tasks (id, title, description, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -314,5 +577,120 @@ mod tests {
         assert!(!dag::all_resolved(&db).unwrap());
 
         // This is the Blocked scenario
+    }
+
+    #[test]
+    fn completed_blockers_are_retrieved() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = dag::open_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        // Create two tasks: A blocks B
+        db.conn()
+            .execute(
+                "INSERT INTO tasks (id, title, description, priority, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params!["t-a", "Task A", "Description A", 0, "done", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO tasks (id, title, description, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                rusqlite::params!["t-b", "Task B", "Description B", 0, "2024-01-01T00:00:01Z", "2024-01-01T00:00:01Z"],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO dependencies (blocker_id, blocked_id) VALUES (?, ?)",
+                rusqlite::params!["t-a", "t-b"],
+            )
+            .unwrap();
+
+        let blockers = get_completed_blockers(&db, "t-b").unwrap();
+        assert_eq!(blockers.len(), 1);
+        assert_eq!(blockers[0].task_id, "t-a");
+        assert_eq!(blockers[0].title, "Task A");
+    }
+
+    #[test]
+    fn last_failure_reason_from_logs() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = dag::open_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO tasks (id, title, description, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                rusqlite::params!["t-x", "Task X", "", 0, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+            )
+            .unwrap();
+
+        dag::add_log(&db, "t-x", "First failure").unwrap();
+        dag::add_log(&db, "t-x", "Second failure").unwrap();
+
+        let reason = get_last_failure_reason(&db, "t-x").unwrap();
+        assert_eq!(reason, "Second failure");
+    }
+
+    #[test]
+    fn last_failure_reason_missing() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = dag::open_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        let reason = get_last_failure_reason(&db, "t-nonexistent").unwrap();
+        assert_eq!(reason, "No failure reason recorded");
+    }
+
+    #[test]
+    fn parse_skill_description_from_frontmatter() {
+        let content = "---\nname: test-skill\ndescription: A useful skill for testing\n---\n\nStep 1: Do something";
+        assert_eq!(
+            parse_skill_description(content),
+            "A useful skill for testing"
+        );
+    }
+
+    #[test]
+    fn parse_skill_description_missing_frontmatter() {
+        let content = "Just some markdown content";
+        assert_eq!(parse_skill_description(content), "No description");
+    }
+
+    #[test]
+    fn parse_skill_description_no_description_field() {
+        let content = "---\nname: test-skill\n---\nContent";
+        assert_eq!(parse_skill_description(content), "No description");
+    }
+
+    #[test]
+    fn discover_skills_empty_dir() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join(".ralph/skills");
+        std::fs::create_dir_all(&skills_dir).unwrap();
+
+        let skills = discover_skills(temp_dir.path());
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn discover_skills_finds_skill() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let skill_dir = temp_dir.path().join(".ralph/skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: Does cool things\n---\nInstructions here",
+        )
+        .unwrap();
+
+        let skills = discover_skills(temp_dir.path());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].0, "my-skill");
+        assert_eq!(skills[0].1, "Does cool things");
+    }
+
+    #[test]
+    fn discover_skills_nonexistent_dir() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        // Don't create .ralph/skills — should return empty, not error
+        let skills = discover_skills(temp_dir.path());
+        assert!(skills.is_empty());
     }
 }

@@ -229,6 +229,97 @@ pub fn hyperlink(path: &str) {
     println!("\x1b]8;;file://{}\x1b\\{}\x1b]8;;\x1b\\", path, path);
 }
 
+/// Print verification start message.
+pub fn print_verification_start(iteration: u32, task_id: &str) {
+    println!(
+        "[iter {}] {} {}",
+        iteration,
+        "Verifying:".yellow(),
+        task_id.cyan()
+    );
+}
+
+/// Print verification passed message.
+pub fn print_verification_passed(iteration: u32, task_id: &str) {
+    println!(
+        "[iter {}] {} (verified): {}",
+        iteration,
+        "Done".green(),
+        task_id.cyan()
+    );
+}
+
+/// Print verification failed message.
+pub fn print_verification_failed(iteration: u32, task_id: &str, reason: &str) {
+    println!(
+        "[iter {}] {} verification: {} — {}",
+        iteration,
+        "Failed".red(),
+        task_id.cyan(),
+        reason
+    );
+}
+
+/// Print retry message.
+pub fn print_retry(iteration: u32, task_id: &str, attempt: i32, max: i32) {
+    println!(
+        "[iter {}] Retrying {} (attempt {}/{})",
+        iteration,
+        task_id.cyan(),
+        attempt,
+        max
+    );
+}
+
+/// Print max retries exhausted message.
+pub fn print_max_retries_exhausted(iteration: u32, task_id: &str) {
+    println!(
+        "[iter {}] {} (max retries exhausted): {}",
+        iteration,
+        "Failed".red(),
+        task_id.cyan()
+    );
+}
+
+/// Print task done message.
+pub fn print_task_done(iteration: u32, task_id: &str) {
+    println!(
+        "[iter {}] {}: {}",
+        iteration,
+        "Done".green(),
+        task_id.cyan()
+    );
+}
+
+/// Print task failed message.
+pub fn print_task_failed(iteration: u32, task_id: &str) {
+    println!(
+        "[iter {}] {}: {}",
+        iteration,
+        "Failed".red(),
+        task_id.cyan()
+    );
+}
+
+/// Print task incomplete (no sigil) message.
+pub fn print_task_incomplete(iteration: u32, task_id: &str) {
+    println!(
+        "[iter {}] Incomplete (no sigil): {}",
+        iteration,
+        task_id.cyan()
+    );
+}
+
+/// Print task working message.
+pub fn print_task_working(iteration: u32, task_id: &str, title: &str) {
+    println!(
+        "[iter {}] Working on: {} -- {}",
+        iteration,
+        task_id.cyan(),
+        title
+    );
+}
+
 fn speak(message: &str) {
     if Command::new("which").arg("say").output().is_ok() {
         let msg = message.to_string();

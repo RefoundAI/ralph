@@ -15,7 +15,6 @@ use super::events::{Event, ResultEvent};
 use super::parser;
 
 /// Information about a task assigned to Claude for the current iteration.
-#[allow(dead_code)]
 pub struct TaskInfo {
     pub task_id: String,
     pub title: String,
@@ -26,25 +25,41 @@ pub struct TaskInfo {
 }
 
 /// Context about a task's parent task.
-#[allow(dead_code)]
 pub struct ParentContext {
     pub title: String,
     pub description: String,
 }
 
 /// Context about a completed blocker (prerequisite) task.
-#[allow(dead_code)]
 pub struct BlockerContext {
     pub task_id: String,
     pub title: String,
     pub summary: String,
 }
 
+/// Information about a retry attempt.
+pub struct RetryInfo {
+    pub attempt: i32,
+    pub max_retries: i32,
+    pub previous_failure_reason: String,
+}
+
+/// Full iteration context passed to the system prompt.
+pub struct IterationContext {
+    pub task: TaskInfo,
+    pub spec_content: Option<String>,
+    pub plan_content: Option<String>,
+    pub retry_info: Option<RetryInfo>,
+    /// Available skills (name, description) for the agent to reference.
+    pub skills_summary: Vec<(String, String)>,
+    /// Whether learning (skill creation + CLAUDE.md updates) is enabled.
+    pub learn: bool,
+}
+
 /// Build a task context block for the assigned task.
 ///
 /// Returns a formatted markdown block with task details, parent context,
 /// completed prerequisites, and specs directory references.
-#[allow(dead_code)]
 pub fn build_task_context(task: &TaskInfo) -> String {
     let mut output = String::new();
 
@@ -84,8 +99,8 @@ pub fn build_task_context(task: &TaskInfo) -> String {
 }
 
 /// Build the CLI args vec for invoking the `claude` command.
-fn build_claude_args(config: &Config) -> Vec<String> {
-    let system_prompt = build_system_prompt(config);
+fn build_claude_args(config: &Config, context: Option<&IterationContext>) -> Vec<String> {
+    let system_prompt = build_system_prompt(config, context);
 
     let mut args = vec![
         "--print".to_string(),
@@ -114,14 +129,19 @@ fn build_claude_args(config: &Config) -> Vec<String> {
 
 /// Run Claude with the given config and stream output.
 /// Returns the final result event, if any.
-pub fn run(config: &Config, log_file: Option<&str>) -> Result<Option<ResultEvent>> {
-    let args = build_claude_args(config);
+pub fn run(config: &Config, log_file: Option<&str>, context: Option<&IterationContext>) -> Result<Option<ResultEvent>> {
+    let args = build_claude_args(config, context);
 
     if config.use_sandbox {
         run_sandboxed(&args, log_file, config)
     } else {
         run_direct(&args, log_file)
     }
+}
+
+/// Run Claude directly with custom args (used by verification agent).
+pub fn run_direct_with_args(args: &[String], log_file: Option<&str>) -> Result<Option<ResultEvent>> {
+    run_direct(args, log_file)
 }
 
 fn run_direct(args: &[String], log_file: Option<&str>) -> Result<Option<ResultEvent>> {
@@ -270,8 +290,10 @@ pub(crate) fn drain_stderr(mut stderr: std::process::ChildStderr) -> thread::Joi
     })
 }
 
-fn build_system_prompt(_config: &Config) -> String {
-    r#"You are operating in a Ralph loop - an autonomous, iterative coding workflow.
+fn build_system_prompt(_config: &Config, context: Option<&IterationContext>) -> String {
+    let mut prompt = String::new();
+
+    prompt.push_str(r#"You are operating in a Ralph loop - an autonomous, iterative coding workflow.
 
 ## Your Task
 
@@ -333,7 +355,62 @@ Rules:
 - The hint applies to the NEXT iteration only; it is not persistent
 - Valid values are exactly: `opus`, `sonnet`, `haiku`
 - If omitted, Ralph's configured model strategy decides automatically
-- Use this when you can tell the next task is trivial (hint haiku) or complex (hint opus)"#.to_string()
+- Use this when you can tell the next task is trivial (hint haiku) or complex (hint opus)"#);
+
+    // Append iteration context if provided
+    if let Some(ctx) = context {
+        prompt.push_str("\n\n");
+        prompt.push_str(&build_task_context(&ctx.task));
+
+        if let Some(ref spec) = ctx.spec_content {
+            prompt.push_str("\n## Feature Specification\n\n");
+            prompt.push_str(spec);
+            prompt.push('\n');
+        }
+
+        if let Some(ref plan) = ctx.plan_content {
+            prompt.push_str("\n## Feature Plan\n\n");
+            prompt.push_str(plan);
+            prompt.push('\n');
+        }
+
+        if let Some(ref retry) = ctx.retry_info {
+            prompt.push_str("\n## Retry Information\n\n");
+            prompt.push_str(&format!(
+                "**This is retry attempt {} of {}.**\n\n",
+                retry.attempt, retry.max_retries
+            ));
+            prompt.push_str("The previous attempt failed verification with the following reason:\n\n");
+            prompt.push_str(&format!("> {}\n\n", retry.previous_failure_reason));
+            prompt.push_str("Fix the issues identified above before marking the task as done.\n");
+        }
+
+        // Skills summary
+        if !ctx.skills_summary.is_empty() {
+            prompt.push_str("\n## Available Skills\n\n");
+            prompt.push_str("The following skills are available in `.ralph/skills/`. Read the full SKILL.md for details when relevant.\n\n");
+            for (name, description) in &ctx.skills_summary {
+                prompt.push_str(&format!("- **{}**: {}\n", name, description));
+            }
+        }
+
+        // Learning instructions
+        if ctx.learn {
+            prompt.push_str("\n## Learning\n\n");
+            prompt.push_str("When you discover reusable patterns or encounter gotchas:\n\n");
+            prompt.push_str("1. **Agent Skills**: Create `.ralph/skills/<skill-name>/SKILL.md` with:\n");
+            prompt.push_str("   ```\n");
+            prompt.push_str("   ---\n");
+            prompt.push_str("   name: <skill-name>\n");
+            prompt.push_str("   description: <when to use this skill>\n");
+            prompt.push_str("   ---\n");
+            prompt.push_str("   <step-by-step instructions>\n");
+            prompt.push_str("   ```\n\n");
+            prompt.push_str("2. **CLAUDE.md**: Add project-specific knowledge that helps future agents.\n");
+        }
+    }
+
+    prompt
 }
 
 fn write_temp_profile(content: &str) -> Result<String> {
@@ -384,6 +461,7 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                ..Default::default()
             },
         };
         Config::from_run_args(
@@ -395,6 +473,10 @@ mod tests {
             Some("cost-optimized".to_string()),
             None,
             project,
+            None,
+            None,
+            false,
+            false,
         )
         .unwrap()
     }
@@ -402,7 +484,7 @@ mod tests {
     #[test]
     fn system_prompt_contains_next_model_tag() {
         let config = test_config();
-        let prompt = build_system_prompt(&config);
+        let prompt = build_system_prompt(&config, None);
         assert!(
             prompt.contains("<next-model>"),
             "system prompt should document the <next-model> sigil"
@@ -412,7 +494,7 @@ mod tests {
     #[test]
     fn system_prompt_contains_all_three_model_names() {
         let config = test_config();
-        let prompt = build_system_prompt(&config);
+        let prompt = build_system_prompt(&config, None);
         assert!(prompt.contains("opus"), "system prompt should mention opus");
         assert!(
             prompt.contains("sonnet"),
@@ -427,7 +509,7 @@ mod tests {
     #[test]
     fn system_prompt_contains_next_model_opus_example() {
         let config = test_config();
-        let prompt = build_system_prompt(&config);
+        let prompt = build_system_prompt(&config, None);
         assert!(
             prompt.contains("<next-model>opus</next-model>"),
             "system prompt should show opus example"
@@ -437,7 +519,7 @@ mod tests {
     #[test]
     fn system_prompt_contains_next_model_sonnet_example() {
         let config = test_config();
-        let prompt = build_system_prompt(&config);
+        let prompt = build_system_prompt(&config, None);
         assert!(
             prompt.contains("<next-model>sonnet</next-model>"),
             "system prompt should show sonnet example"
@@ -447,7 +529,7 @@ mod tests {
     #[test]
     fn system_prompt_contains_next_model_haiku_example() {
         let config = test_config();
-        let prompt = build_system_prompt(&config);
+        let prompt = build_system_prompt(&config, None);
         assert!(
             prompt.contains("<next-model>haiku</next-model>"),
             "system prompt should show haiku example"
@@ -457,7 +539,7 @@ mod tests {
     #[test]
     fn system_prompt_contains_completion_sigils() {
         let config = test_config();
-        let prompt = build_system_prompt(&config);
+        let prompt = build_system_prompt(&config, None);
         assert!(
             prompt.contains("<promise>COMPLETE</promise>"),
             "system prompt should document COMPLETE sigil"
@@ -471,7 +553,7 @@ mod tests {
     #[test]
     fn system_prompt_contains_one_task_per_loop() {
         let config = test_config();
-        let prompt = build_system_prompt(&config);
+        let prompt = build_system_prompt(&config, None);
         assert!(
             prompt.contains("ONE TASK PER LOOP"),
             "system prompt should contain ONE TASK PER LOOP rule"
@@ -481,7 +563,7 @@ mod tests {
     #[test]
     fn system_prompt_contains_task_sigils() {
         let config = test_config();
-        let prompt = build_system_prompt(&config);
+        let prompt = build_system_prompt(&config, None);
         assert!(
             prompt.contains("<task-done>"),
             "system prompt should document task-done sigil"
@@ -495,7 +577,7 @@ mod tests {
     #[test]
     fn system_prompt_no_progress_file_references() {
         let config = test_config();
-        let prompt = build_system_prompt(&config);
+        let prompt = build_system_prompt(&config, None);
         assert!(
             !prompt.contains("progress.txt"),
             "system prompt should not reference progress.txt"
@@ -513,7 +595,7 @@ mod tests {
     #[test]
     fn claude_args_contain_model_flag() {
         let config = test_config();
-        let args = build_claude_args(&config);
+        let args = build_claude_args(&config, None);
         assert!(
             args.contains(&"--model".to_string()),
             "args should contain --model flag"
@@ -523,7 +605,7 @@ mod tests {
     #[test]
     fn claude_args_model_flag_followed_by_model_name() {
         let config = test_config();
-        let args = build_claude_args(&config);
+        let args = build_claude_args(&config, None);
         let model_idx = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
             args[model_idx + 1], config.current_model,
@@ -538,6 +620,7 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                ..Default::default()
             },
         };
         let config = Config::from_run_args(
@@ -549,9 +632,13 @@ mod tests {
             Some("fixed".to_string()),
             Some("opus".to_string()),
             project,
+            None,
+            None,
+            false,
+            false,
         )
         .unwrap();
-        let cli_args = build_claude_args(&config);
+        let cli_args = build_claude_args(&config, None);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
             cli_args[model_idx + 1], "opus",
@@ -566,6 +653,7 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                ..Default::default()
             },
         };
         let config = Config::from_run_args(
@@ -577,9 +665,13 @@ mod tests {
             Some("escalate".to_string()),
             None,
             project,
+            None,
+            None,
+            false,
+            false,
         )
         .unwrap();
-        let cli_args = build_claude_args(&config);
+        let cli_args = build_claude_args(&config, None);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
             cli_args[model_idx + 1], "haiku",
@@ -594,6 +686,7 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                ..Default::default()
             },
         };
         let config = Config::from_run_args(
@@ -605,9 +698,13 @@ mod tests {
             Some("plan-then-execute".to_string()),
             None,
             project,
+            None,
+            None,
+            false,
+            false,
         )
         .unwrap();
-        let cli_args = build_claude_args(&config);
+        let cli_args = build_claude_args(&config, None);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
             cli_args[model_idx + 1], "opus",

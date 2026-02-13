@@ -21,13 +21,21 @@ pub struct Args {
 pub enum Command {
     /// Initialize a new Ralph project
     Init,
-    /// Create a new prompt file
-    Prompt,
-    /// Run the agent loop
+    /// Manage features (spec, plan, build, list)
+    Feature {
+        #[command(subcommand)]
+        action: FeatureAction,
+    },
+    /// Manage standalone tasks (new, list)
+    Task {
+        #[command(subcommand)]
+        action: TaskAction,
+    },
+    /// Run the agent loop on a feature or task
     Run {
-        /// Path to prompt file (not a raw prompt string)
-        #[arg(value_name = "PROMPT_FILE", env = "RALPH_FILE")]
-        prompt_file: Option<String>,
+        /// Feature name or task ID (t-...) to run
+        #[arg(value_name = "TARGET")]
+        target: String,
 
         /// Run exactly once (conflicts with --limit)
         #[arg(short = 'o', long)]
@@ -52,19 +60,69 @@ pub enum Command {
         /// Model for fixed strategy: opus, sonnet, haiku. Implies --model-strategy=fixed when used alone.
         #[arg(long, value_name = "MODEL", env = "RALPH_MODEL")]
         model: Option<String>,
-    },
-    /// Author specification documents
-    Specs,
-    /// Decompose prompt into task DAG
-    Plan {
-        /// Path to prompt file (not a raw prompt string)
-        #[arg(value_name = "PROMPT_FILE", env = "RALPH_FILE")]
-        prompt_file: Option<String>,
 
-        /// Model to use for planning: opus (default), sonnet, haiku
-        #[arg(long, value_name = "MODEL", env = "RALPH_MODEL")]
+        /// Maximum retries for failed tasks
+        #[arg(long, value_name = "N")]
+        max_retries: Option<u32>,
+
+        /// Disable autonomous verification
+        #[arg(long)]
+        no_verify: bool,
+
+        /// Disable skill creation + CLAUDE.md updates
+        #[arg(long)]
+        no_learn: bool,
+    },
+}
+
+/// Feature subcommands.
+#[derive(Subcommand, Debug)]
+pub enum FeatureAction {
+    /// Interactively craft a specification for a feature
+    Spec {
+        /// Feature name
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        /// Model to use: opus (default), sonnet, haiku
+        #[arg(long, value_name = "MODEL")]
         model: Option<String>,
     },
+    /// Interactively create an implementation plan from a spec
+    Plan {
+        /// Feature name
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        /// Model to use: opus (default), sonnet, haiku
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+    },
+    /// Decompose a plan into a task DAG
+    Build {
+        /// Feature name
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        /// Model to use: opus (default), sonnet, haiku
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+    },
+    /// List all features and their status
+    List,
+}
+
+/// Task subcommands.
+#[derive(Subcommand, Debug)]
+pub enum TaskAction {
+    /// Interactively create a new standalone task
+    New {
+        /// Model to use: opus (default), sonnet, haiku
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+    },
+    /// List standalone tasks
+    List,
 }
 
 /// Valid model names.

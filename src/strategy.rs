@@ -258,6 +258,7 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                ..Default::default()
             },
         };
         Config::from_run_args(
@@ -269,6 +270,10 @@ mod tests {
             Some("fixed".to_string()),
             Some(model.to_string()),
             project,
+            None,
+            None,
+            false,
+            false,
         )
         .unwrap()
     }
@@ -401,6 +406,7 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                ..Default::default()
             },
         };
         let mut config = Config::from_run_args(
@@ -412,6 +418,10 @@ mod tests {
             Some("cost-optimized".to_string()),
             None,
             project,
+            None,
+            None,
+            false,
+            false,
         )
         .unwrap();
         assert_eq!(select_model(&mut config, Some("haiku")).model, "haiku");
@@ -426,6 +436,7 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                ..Default::default()
             },
         };
         Config::from_run_args(
@@ -437,6 +448,10 @@ mod tests {
             Some("escalate".to_string()),
             None,
             project,
+            None,
+            None,
+            false,
+            false,
         )
         .unwrap()
     }
@@ -556,6 +571,7 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
                 prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                ..Default::default()
             },
         };
         Config::from_run_args(
@@ -567,6 +583,10 @@ mod tests {
             Some("plan-then-execute".to_string()),
             None,
             project,
+            None,
+            None,
+            false,
+            false,
         )
         .unwrap()
     }
