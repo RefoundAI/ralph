@@ -238,6 +238,7 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             }
 
             // Create a root parent task for the feature
+            let max_retries = project.config.execution.max_retries as i32;
             let root = dag::create_task_with_feature(
                 &db,
                 &format!("Feature: {}", name),
@@ -246,7 +247,7 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 0,
                 Some(&feat.id),
                 "feature",
-                3,
+                max_retries,
             )?;
             eprintln!("  {} Feature: {}", root.id, name);
 
@@ -267,7 +268,7 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                     task.priority,
                     Some(&feat.id),
                     "feature",
-                    3,
+                    max_retries,
                 )?;
                 eprintln!("  {} {}", created.id, task.title);
                 id_map.insert(task.id.clone(), created.id);

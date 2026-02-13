@@ -259,7 +259,7 @@ fn build_iteration_context(
         let failure_reason = get_last_failure_reason(db, &task.id)?;
         Some(RetryInfo {
             attempt: task.retry_count + 1,
-            max_retries: task.max_retries,
+            max_retries: config.max_retries as i32,
             previous_failure_reason: failure_reason,
         })
     } else {
@@ -421,13 +421,14 @@ fn handle_task_done(
             // Log the failure
             dag::add_log(db, task_id, &format!("Verification failed: {}", v_result.reason))?;
 
-            if task.retry_count < task.max_retries {
+            let max_retries = config.max_retries as i32;
+            if task.retry_count < max_retries {
                 // Retry: transition failed → pending, increment retry_count
                 dag::retry_task(db, task_id).context("Failed to retry task")?;
-                formatter::print_retry(config.iteration, task_id, task.retry_count + 1, task.max_retries);
+                formatter::print_retry(config.iteration, task_id, task.retry_count + 1, max_retries);
             } else {
                 // Max retries exhausted — fail the task
-                dag::fail_task(db, task_id, &format!("Verification failed after {} retries: {}", task.max_retries, v_result.reason))
+                dag::fail_task(db, task_id, &format!("Verification failed after {} retries: {}", max_retries, v_result.reason))
                     .context("Failed to fail task")?;
                 formatter::print_max_retries_exhausted(config.iteration, task_id);
             }
