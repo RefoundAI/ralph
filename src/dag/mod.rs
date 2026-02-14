@@ -10,6 +10,7 @@ mod tasks;
 mod transitions;
 
 use anyhow::Result;
+use serde::Serialize;
 
 #[allow(unused_imports)]
 pub use crud::{add_log, create_task, create_task_with_feature, delete_task, get_task, get_task_tree, update_task, TaskUpdate};
@@ -20,19 +21,28 @@ pub use dependencies::{add_dependency, remove_dependency};
 pub use ids::{generate_task_id, generate_feature_id, generate_and_insert_task_id};
 #[allow(unused_imports)]
 pub use tasks::{compute_parent_status, get_task_status};
+#[allow(unused_imports)]
+pub use crud::{get_task_logs, get_task_blockers, get_tasks_blocked_by, get_all_tasks_for_feature, get_all_tasks, LogEntry};
+pub use transitions::{force_complete_task, force_fail_task, force_reset_task};
 
 /// A task in the DAG.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(dead_code)]
 pub struct Task {
     pub id: String,
     pub title: String,
     pub description: String,
+    pub status: String,
     pub parent_id: Option<String>,
     pub feature_id: Option<String>,
+    pub task_type: String,
+    pub priority: i32,
     pub retry_count: i32,
     pub max_retries: i32,
     pub verification_status: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub claimed_by: Option<String>,
 }
 
 /// Task counts summary.
@@ -49,6 +59,33 @@ pub fn open_db(path: &str) -> Result<Db> {
     init_db(path)
 }
 
+/// Map a row to a Task.
+///
+/// Expects columns in order: id, title, description, status, parent_id, feature_id,
+/// task_type, priority, retry_count, max_retries, verification_status, created_at,
+/// updated_at, claimed_by
+pub(crate) fn task_from_row(row: &rusqlite::Row) -> rusqlite::Result<Task> {
+    Ok(Task {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        description: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        status: row.get(3)?,
+        parent_id: row.get(4)?,
+        feature_id: row.get(5)?,
+        task_type: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "feature".to_string()),
+        priority: row.get::<_, Option<i32>>(7)?.unwrap_or(0),
+        retry_count: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
+        max_retries: row.get::<_, Option<i32>>(9)?.unwrap_or(3),
+        verification_status: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+        claimed_by: row.get(13)?,
+    })
+}
+
+/// The standard column list for task queries.
+const TASK_COLUMNS: &str = "id, title, description, status, parent_id, feature_id, task_type, priority, retry_count, max_retries, verification_status, created_at, updated_at, claimed_by";
+
 /// Get all tasks that are ready to execute.
 pub fn get_ready_tasks(db: &Db) -> Result<Vec<Task>> {
     // A task is ready when:
@@ -58,10 +95,9 @@ pub fn get_ready_tasks(db: &Db) -> Result<Vec<Task>> {
     // 4. Task is a leaf node (no children)
     //
     // Ordered by: priority ASC, created_at ASC
-    let mut stmt = db.conn().prepare(
+    let query = format!(
         r#"
-        SELECT DISTINCT t.id, t.title, t.description, t.parent_id,
-               t.feature_id, t.retry_count, t.max_retries, t.verification_status
+        SELECT DISTINCT t.{cols}
         FROM tasks t
         WHERE t.status = 'pending'
           -- Must be a leaf node (no children)
@@ -85,21 +121,12 @@ pub fn get_ready_tasks(db: &Db) -> Result<Vec<Task>> {
           )
         ORDER BY t.priority ASC, t.created_at ASC
         "#,
-    )?;
+        cols = TASK_COLUMNS.replace(", ", ", t."),
+    );
+    let mut stmt = db.conn().prepare(&query)?;
 
     let tasks = stmt
-        .query_map([], |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                description: row.get(2)?,
-                parent_id: row.get(3)?,
-                feature_id: row.get(4)?,
-                retry_count: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
-                max_retries: row.get::<_, Option<i32>>(6)?.unwrap_or(3),
-                verification_status: row.get(7)?,
-            })
-        })?
+        .query_map([], task_from_row)?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tasks)
@@ -186,10 +213,9 @@ pub fn all_resolved(db: &Db) -> Result<bool> {
 
 /// Get all tasks for a specific feature that are ready to execute.
 pub fn get_ready_tasks_for_feature(db: &Db, feature_id: &str) -> Result<Vec<Task>> {
-    let mut stmt = db.conn().prepare(
+    let query = format!(
         r#"
-        SELECT DISTINCT t.id, t.title, t.description, t.parent_id,
-               t.feature_id, t.retry_count, t.max_retries, t.verification_status
+        SELECT DISTINCT t.{cols}
         FROM tasks t
         WHERE t.status = 'pending'
           AND t.feature_id = ?
@@ -211,21 +237,12 @@ pub fn get_ready_tasks_for_feature(db: &Db, feature_id: &str) -> Result<Vec<Task
           )
         ORDER BY t.priority ASC, t.created_at ASC
         "#,
-    )?;
+        cols = TASK_COLUMNS.replace(", ", ", t."),
+    );
+    let mut stmt = db.conn().prepare(&query)?;
 
     let tasks = stmt
-        .query_map([feature_id], |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                description: row.get(2)?,
-                parent_id: row.get(3)?,
-                feature_id: row.get(4)?,
-                retry_count: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
-                max_retries: row.get::<_, Option<i32>>(6)?.unwrap_or(3),
-                verification_status: row.get(7)?,
-            })
-        })?
+        .query_map([feature_id], task_from_row)?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tasks)
@@ -233,29 +250,14 @@ pub fn get_ready_tasks_for_feature(db: &Db, feature_id: &str) -> Result<Vec<Task
 
 /// Get standalone tasks (not associated with any feature).
 pub fn get_standalone_tasks(db: &Db) -> Result<Vec<Task>> {
-    let mut stmt = db.conn().prepare(
-        r#"
-        SELECT id, title, description, parent_id,
-               feature_id, retry_count, max_retries, verification_status
-        FROM tasks
-        WHERE task_type = 'standalone'
-        ORDER BY priority ASC, created_at ASC
-        "#,
-    )?;
+    let query = format!(
+        "SELECT {} FROM tasks WHERE task_type = 'standalone' ORDER BY priority ASC, created_at ASC",
+        TASK_COLUMNS,
+    );
+    let mut stmt = db.conn().prepare(&query)?;
 
     let tasks = stmt
-        .query_map([], |row| {
-            Ok(Task {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                description: row.get(2)?,
-                parent_id: row.get(3)?,
-                feature_id: row.get(4)?,
-                retry_count: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
-                max_retries: row.get::<_, Option<i32>>(6)?.unwrap_or(3),
-                verification_status: row.get(7)?,
-            })
-        })?
+        .query_map([], task_from_row)?
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(tasks)
@@ -333,11 +335,17 @@ mod tests {
             id: "t-abc123".to_string(),
             title: "Test task".to_string(),
             description: "A test task".to_string(),
+            status: "pending".to_string(),
             parent_id: None,
             feature_id: None,
+            task_type: "feature".to_string(),
+            priority: 0,
             retry_count: 0,
             max_retries: 3,
             verification_status: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            claimed_by: None,
         };
         assert_eq!(task.id, "t-abc123");
         assert_eq!(task.title, "Test task");

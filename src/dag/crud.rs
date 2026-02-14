@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::dag::{generate_and_insert_task_id, Db, Task};
+use crate::dag::{generate_and_insert_task_id, task_from_row, Db, Task, TASK_COLUMNS};
 
 /// Fields that can be updated on a task.
 #[derive(Debug, Clone, Default)]
@@ -70,33 +70,25 @@ pub fn create_task_with_feature(
         id: id.clone(),
         title: title.to_string(),
         description: desc.to_string(),
+        status: "pending".to_string(),
         parent_id: parent_id.map(|s| s.to_string()),
         feature_id: feature_id.map(|s| s.to_string()),
+        task_type: task_type.to_string(),
+        priority,
         retry_count: 0,
         max_retries,
         verification_status: None,
+        created_at: timestamp.clone(),
+        updated_at: timestamp,
+        claimed_by: None,
     })
 }
 
 /// Get a task by ID.
 pub fn get_task(db: &Db, id: &str) -> Result<Task> {
+    let query = format!("SELECT {} FROM tasks WHERE id = ?", TASK_COLUMNS);
     db.conn()
-        .query_row(
-            "SELECT id, title, description, parent_id, feature_id, retry_count, max_retries, verification_status FROM tasks WHERE id = ?",
-            [id],
-            |row| {
-                Ok(Task {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    description: row.get(2)?,
-                    parent_id: row.get(3)?,
-                    feature_id: row.get(4)?,
-                    retry_count: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
-                    max_retries: row.get::<_, Option<i32>>(6)?.unwrap_or(3),
-                    verification_status: row.get(7)?,
-                })
-            },
-        )
+        .query_row(&query, [id], task_from_row)
         .context(format!("Failed to get task '{}'", id))
 }
 
@@ -223,21 +215,11 @@ pub fn get_task_tree(db: &Db, root_id: &str) -> Result<Vec<Task>> {
     let mut queue = vec![root_id.to_string()];
 
     while let Some(parent_id) = queue.pop() {
+        let query = format!("SELECT {} FROM tasks WHERE parent_id = ?", TASK_COLUMNS);
         let children: Vec<Task> = db
             .conn()
-            .prepare("SELECT id, title, description, parent_id, feature_id, retry_count, max_retries, verification_status FROM tasks WHERE parent_id = ?")?
-            .query_map([&parent_id], |row| {
-                Ok(Task {
-                    id: row.get(0)?,
-                    title: row.get(1)?,
-                    description: row.get(2)?,
-                    parent_id: row.get(3)?,
-                    feature_id: row.get(4)?,
-                    retry_count: row.get::<_, Option<i32>>(5)?.unwrap_or(0),
-                    max_retries: row.get::<_, Option<i32>>(6)?.unwrap_or(3),
-                    verification_status: row.get(7)?,
-                })
-            })?
+            .prepare(&query)?
+            .query_map([&parent_id], task_from_row)?
             .collect::<Result<_, _>>()
             .context("Failed to get child tasks")?;
 
@@ -272,6 +254,93 @@ pub fn add_log(db: &Db, task_id: &str, message: &str) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// A log entry for a task.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LogEntry {
+    pub task_id: String,
+    pub message: String,
+    pub timestamp: String,
+}
+
+/// Get all log entries for a task.
+pub fn get_task_logs(db: &Db, task_id: &str) -> Result<Vec<LogEntry>> {
+    let mut stmt = db.conn().prepare(
+        "SELECT task_id, message, timestamp FROM task_logs WHERE task_id = ? ORDER BY timestamp ASC",
+    )?;
+
+    let logs = stmt
+        .query_map([task_id], |row| {
+            Ok(LogEntry {
+                task_id: row.get(0)?,
+                message: row.get(1)?,
+                timestamp: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(logs)
+}
+
+/// Get tasks that block a given task (its blockers/prerequisites).
+pub fn get_task_blockers(db: &Db, task_id: &str) -> Result<Vec<Task>> {
+    let query = format!(
+        "SELECT t.{} FROM dependencies d JOIN tasks t ON d.blocker_id = t.id WHERE d.blocked_id = ?",
+        TASK_COLUMNS.replace(", ", ", t."),
+    );
+    let mut stmt = db.conn().prepare(&query)?;
+
+    let tasks = stmt
+        .query_map([task_id], task_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(tasks)
+}
+
+/// Get tasks that are blocked by a given task (its dependents).
+pub fn get_tasks_blocked_by(db: &Db, task_id: &str) -> Result<Vec<Task>> {
+    let query = format!(
+        "SELECT t.{} FROM dependencies d JOIN tasks t ON d.blocked_id = t.id WHERE d.blocker_id = ?",
+        TASK_COLUMNS.replace(", ", ", t."),
+    );
+    let mut stmt = db.conn().prepare(&query)?;
+
+    let tasks = stmt
+        .query_map([task_id], task_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(tasks)
+}
+
+/// Get all tasks for a feature.
+pub fn get_all_tasks_for_feature(db: &Db, feature_id: &str) -> Result<Vec<Task>> {
+    let query = format!(
+        "SELECT {} FROM tasks WHERE feature_id = ? ORDER BY priority ASC, created_at ASC",
+        TASK_COLUMNS,
+    );
+    let mut stmt = db.conn().prepare(&query)?;
+
+    let tasks = stmt
+        .query_map([feature_id], task_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(tasks)
+}
+
+/// Get all tasks in the database.
+pub fn get_all_tasks(db: &Db) -> Result<Vec<Task>> {
+    let query = format!(
+        "SELECT {} FROM tasks ORDER BY priority ASC, created_at ASC",
+        TASK_COLUMNS,
+    );
+    let mut stmt = db.conn().prepare(&query)?;
+
+    let tasks = stmt
+        .query_map([], task_from_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(tasks)
 }
 
 #[cfg(test)]

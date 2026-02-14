@@ -205,6 +205,107 @@ fn auto_fail_parent(conn: &Connection, task_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Force a task to "done" status, regardless of current state.
+///
+/// Steps through the valid transitions: pending→in_progress→done.
+/// If already done, this is a no-op.
+pub fn force_complete_task(conn: &Connection, task_id: &str) -> Result<()> {
+    let current_status: String = conn
+        .query_row(
+            "SELECT status FROM tasks WHERE id = ?",
+            [task_id],
+            |row| row.get(0),
+        )
+        .context(format!("Task '{}' not found", task_id))?;
+
+    match current_status.as_str() {
+        "done" => Ok(()),
+        "in_progress" => set_task_status(conn, task_id, "done"),
+        "pending" => {
+            set_task_status(conn, task_id, "in_progress")?;
+            set_task_status(conn, task_id, "done")
+        }
+        "failed" => {
+            // failed→pending→in_progress→done
+            set_task_status(conn, task_id, "pending")?;
+            set_task_status(conn, task_id, "in_progress")?;
+            set_task_status(conn, task_id, "done")
+        }
+        "blocked" => {
+            // blocked→pending→in_progress→done
+            set_task_status(conn, task_id, "pending")?;
+            set_task_status(conn, task_id, "in_progress")?;
+            set_task_status(conn, task_id, "done")
+        }
+        _ => Err(anyhow!("Unknown status '{}'", current_status)),
+    }
+}
+
+/// Force a task to "failed" status, regardless of current state.
+///
+/// Steps through the valid transitions to reach failed.
+/// If already failed, this is a no-op.
+pub fn force_fail_task(conn: &Connection, task_id: &str) -> Result<()> {
+    let current_status: String = conn
+        .query_row(
+            "SELECT status FROM tasks WHERE id = ?",
+            [task_id],
+            |row| row.get(0),
+        )
+        .context(format!("Task '{}' not found", task_id))?;
+
+    match current_status.as_str() {
+        "failed" => Ok(()),
+        "in_progress" => set_task_status(conn, task_id, "failed"),
+        "pending" => {
+            set_task_status(conn, task_id, "in_progress")?;
+            set_task_status(conn, task_id, "failed")
+        }
+        "blocked" => {
+            // blocked→pending→in_progress→failed
+            set_task_status(conn, task_id, "pending")?;
+            set_task_status(conn, task_id, "in_progress")?;
+            set_task_status(conn, task_id, "failed")
+        }
+        "done" => {
+            // Can't transition from done to failed directly.
+            // This is an unusual case but we handle it by just updating directly.
+            conn.execute(
+                "UPDATE tasks SET status = 'failed', updated_at = datetime('now') WHERE id = ?",
+                [task_id],
+            )?;
+            auto_fail_parent(conn, task_id)?;
+            Ok(())
+        }
+        _ => Err(anyhow!("Unknown status '{}'", current_status)),
+    }
+}
+
+/// Force a task back to "pending" status, regardless of current state.
+pub fn force_reset_task(conn: &Connection, task_id: &str) -> Result<()> {
+    let current_status: String = conn
+        .query_row(
+            "SELECT status FROM tasks WHERE id = ?",
+            [task_id],
+            |row| row.get(0),
+        )
+        .context(format!("Task '{}' not found", task_id))?;
+
+    match current_status.as_str() {
+        "pending" => Ok(()),
+        "in_progress" | "blocked" | "failed" => set_task_status(conn, task_id, "pending"),
+        "done" => {
+            // Direct update since done→pending isn't a valid transition
+            conn.execute(
+                "UPDATE tasks SET status = 'pending', updated_at = datetime('now') WHERE id = ?",
+                [task_id],
+            )?;
+            Ok(())
+        }
+        _ => Err(anyhow!("Unknown status '{}'", current_status)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
