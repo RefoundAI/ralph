@@ -27,13 +27,13 @@ DAG-driven loop: open `.ralph/progress.db`, get scoped ready tasks, claim one, b
 
 ### DAG Task System (`src/dag/`)
 SQLite-based task management with WAL mode and foreign keys (schema v2):
-- **mod.rs**: Defines `Task` (with `feature_id`, `retry_count`, `max_retries`, `verification_status`) and `TaskCounts` structs. Re-exports main task operations. Implements scoped queries: `get_ready_tasks_for_feature()`, `get_standalone_tasks()`, `get_feature_task_counts()`, `retry_task()`.
+- **mod.rs**: Defines `Task` (with `status`, `priority`, `created_at`, `updated_at`, `claimed_by`, `task_type`, `feature_id`, `retry_count`, `max_retries`, `verification_status`) and `TaskCounts` structs. Provides `task_from_row()` helper and `TASK_COLUMNS` constant for consistent SQL queries. Re-exports main task operations. Implements scoped queries: `get_ready_tasks_for_feature()`, `get_standalone_tasks()`, `get_feature_task_counts()`, `retry_task()`. Force-transition functions: `force_complete_task()`, `force_fail_task()`, `force_reset_task()`.
 - **db.rs**: Opens/creates `.ralph/progress.db`, defines schema (`tasks`, `dependencies`, `task_logs`, `features` tables). Schema v2 adds `features` table and extends `tasks` with `feature_id`, `task_type`, `retry_count`, `max_retries`, `verification_status`.
 - **ids.rs**: Generates task IDs (`t-{6 hex}`) and feature IDs (`f-{6 hex}`) from SHA-256 of timestamp+counter.
 - **tasks.rs**: `compute_parent_status()` derives parent status from children (any failed -> failed, all done -> done). `get_task_status()` returns derived status for a task considering its children.
 - **transitions.rs**: Status transitions (`pending`→`in_progress`→`done`/`failed`) with auto-transitions: completing a task unblocks dependents; completing all children auto-completes parent; failing a child auto-fails parent
 - **dependencies.rs**: Dependency management with BFS cycle detection
-- **crud.rs**: Task CRUD operations (`create_task`, `create_task_with_feature`, `get_task`, `update_task`, `delete_task`, `add_log`)
+- **crud.rs**: Task CRUD operations (`create_task`, `create_task_with_feature`, `get_task`, `update_task`, `delete_task`, `add_log`, `get_task_logs`, `get_task_blockers`, `get_tasks_blocked_by`, `get_all_tasks_for_feature`, `get_all_tasks`). Defines `LogEntry` struct.
 
 ### Feature Management (`src/feature.rs`)
 CRUD operations for features: `create_feature`, `get_feature` (by name), `get_feature_by_id`, `list_features`, `update_feature_status/spec_path/plan_path`, `ensure_feature_dirs`, `read_spec`, `read_plan`, `feature_exists`.
@@ -43,7 +43,7 @@ Spawns a read-only Claude session to verify completed tasks. Uses restricted too
 
 ### Claude Integration (`src/claude/`)
 - **client.rs**: Spawns `claude` CLI with `--output-format stream-json` and `--model <model>`, handles both direct and sandboxed execution. Builds the system prompt with DAG task assignment instructions, spec/plan content, retry info, skills summary, and learning instructions. Defines `TaskInfo`, `ParentContext`, `BlockerContext`, `RetryInfo`, `IterationContext` structs. `build_task_context()` renders task assignment markdown.
-- **interactive.rs**: `run_interactive()` spawns Claude with inherited stdio for interactive sessions. `run_streaming()` spawns Claude in print mode with NDJSON streaming and no tools for plan decomposition. Contains `extract_plan_json()` for parsing build output.
+- **interactive.rs**: `run_interactive()` spawns Claude with inherited stdio for interactive sessions (used by spec, plan, build, and task create commands).
 - **events.rs**: Typed event structs for NDJSON parsing. Parses sigils from result text: `<task-done>`, `<task-failed>`, `<next-model>`, `<promise>COMPLETE/FAILURE</promise>`
 - **parser.rs**: Deserializes raw JSON into typed events
 
@@ -107,10 +107,22 @@ Ralph uses a nested subcommand architecture:
 ralph init                        # Initialize project (.ralph.toml, .ralph/ dirs)
 ralph feature spec <name>         # Interactive: craft a specification
 ralph feature plan <name>         # Interactive: create implementation plan from spec
-ralph feature build <name>        # Decompose plan into task DAG
+ralph feature build <name>        # Decompose plan into task DAG (interactive CLI-based)
 ralph feature list                # List features and status
-ralph task new                    # Interactive: create standalone task
-ralph task list                   # List standalone tasks
+ralph task add <TITLE> [flags]     # Non-interactive task creation (scriptable)
+ralph task create [--model M]     # Interactive Claude-assisted task creation
+ralph task show <ID> [--json]     # Full task details
+ralph task list [filters] [--json] # List tasks (feature-scoped, filterable)
+ralph task update <ID> [flags]    # Update task fields
+ralph task delete <ID>            # Delete a task
+ralph task done <ID>              # Mark done (auto-transitions)
+ralph task fail <ID> [-r reason]  # Mark failed
+ralph task reset <ID>             # Reset to pending
+ralph task log <ID> [-m msg]      # Add or view log entries
+ralph task deps add <A> <B>       # A must complete before B
+ralph task deps rm <A> <B>        # Remove dependency
+ralph task deps list <ID>         # Show blockers and dependents
+ralph task tree <ID> [--json]     # Indented tree with status colors
 ralph run <target>                # Execute scoped work (feature name or task ID)
   --once                          # Single iteration
   --limit=N                       # Max iterations (0=unlimited)
