@@ -95,7 +95,6 @@ Claude's output is scanned for:
 - `.ralph/features/<name>/spec.md` - Feature specifications
 - `.ralph/features/<name>/plan.md` - Feature implementation plans
 - `.ralph/skills/<name>/SKILL.md` - Reusable agent skills with YAML frontmatter
-- `.ralph/specs/` - Specification documents (legacy)
 - `.ralph/prompts/` - Prompt files
 - `prompt` (default) - Task description file read by Claude each iteration
 
@@ -136,6 +135,19 @@ ralph run <target>                # Execute scoped work (feature name or task ID
 ```
 
 Environment variables: `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RALPH_ITERATION`, `RALPH_TOTAL`.
+
+## Documentation (`docs/`)
+
+The `docs/` directory contains detailed prose documentation. Consult these when working on or near the relevant subsystem — they have context beyond what this file covers.
+
+- **architecture.md** — Full system design: module structure, data model, schema, execution modes, sandbox. Read when adding a new subsystem or understanding how pieces connect.
+- **agent-loop.md** — The ten-step iteration lifecycle inside `run_loop.rs`: context assembly, model selection, sigil parsing, outcome handling. Read when debugging loop behavior or modifying prompt construction.
+- **task-management.md** — Task data model, SQLite schema, status state machine, parent-child hierarchies, dependency edges, cycle detection, ready queries, retries. Read when changing task internals or query logic.
+- **interactive-flows.md** — Three Claude spawning modes (interactive, streaming, loop iteration), their CLI arguments, and output handling. Read when working on `feature spec/plan/build` or output formatting.
+- **specs-plans-tasks.md** — The four-phase feature workflow (spec → plan → build → run), decomposition rules, how context flows from spec through execution. Read when modifying the feature pipeline.
+- **oneshot-vs-features.md** — Tradeoffs between one-shot tasks and the feature workflow. Read when changing how run targets are resolved or adding new execution modes.
+- **memory-and-learning.md** — Skills (SKILL.md), CLAUDE.md updates, discovery, system prompt integration, `--no-learn`. Read when working on skill creation or context persistence.
+- **getting-started.md** — User-facing walkthrough of install, init, features, tasks, and running. Read when changing CLI UX or onboarding behavior.
 
 ## Nix Development
 
