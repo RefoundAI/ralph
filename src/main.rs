@@ -206,6 +206,34 @@ mod tests {
             let msg = build_initial_message_task_new();
             assert!(msg.contains("Start the task creation interview"));
         }
+
+        #[test]
+        fn test_system_prompt_includes_context() {
+            let test_context = "## Project Context\n\n### Test Section\n\nThis is test context.";
+
+            // Test feature spec prompt
+            let spec_prompt = build_feature_spec_system_prompt("test-feature", "/tmp/spec.md", test_context);
+            assert!(spec_prompt.contains(test_context));
+            assert!(spec_prompt.contains("## Guidelines"));
+            assert!(spec_prompt.contains("## Output"));
+
+            // Test feature plan prompt
+            let plan_prompt = build_feature_plan_system_prompt(
+                "test-feature",
+                "Test spec content",
+                "/tmp/plan.md",
+                test_context
+            );
+            assert!(plan_prompt.contains(test_context));
+            assert!(plan_prompt.contains("## Guidelines"));
+            assert!(plan_prompt.contains("## Output"));
+
+            // Test task new prompt
+            let task_prompt = build_task_new_system_prompt(test_context);
+            assert!(task_prompt.contains(test_context));
+            assert!(task_prompt.contains("## Guidelines"));
+            assert!(task_prompt.contains("## Output"));
+        }
     }
 }
 
