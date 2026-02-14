@@ -26,7 +26,7 @@ pub enum Command {
         #[command(subcommand)]
         action: FeatureAction,
     },
-    /// Manage standalone tasks (new, list)
+    /// Manage tasks (add, show, list, update, delete, done, fail, reset, log, deps, tree)
     Task {
         #[command(subcommand)]
         action: TaskAction,
@@ -115,14 +115,172 @@ pub enum FeatureAction {
 /// Task subcommands.
 #[derive(Subcommand, Debug)]
 pub enum TaskAction {
-    /// Interactively create a new standalone task
-    New {
+    /// Add a new task (non-interactive, scriptable)
+    Add {
+        /// Task title
+        #[arg(value_name = "TITLE")]
+        title: String,
+
+        /// Task description
+        #[arg(short, long, value_name = "DESC")]
+        description: Option<String>,
+
+        /// Parent task ID
+        #[arg(long, value_name = "ID")]
+        parent: Option<String>,
+
+        /// Feature ID to associate with
+        #[arg(long, value_name = "ID")]
+        feature: Option<String>,
+
+        /// Priority (lower = higher priority)
+        #[arg(long, default_value = "0")]
+        priority: i32,
+
+        /// Maximum retries for this task
+        #[arg(long, value_name = "N", default_value = "3")]
+        max_retries: i32,
+    },
+    /// Interactively create a new standalone task (Claude-assisted)
+    Create {
         /// Model to use: opus (default), sonnet, haiku
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
     },
-    /// List standalone tasks
-    List,
+    /// Show full task details
+    Show {
+        /// Task ID
+        #[arg(value_name = "ID")]
+        id: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// List tasks
+    List {
+        /// Filter by feature name
+        #[arg(long, value_name = "NAME")]
+        feature: Option<String>,
+
+        /// Filter by status
+        #[arg(long, value_name = "STATUS")]
+        status: Option<String>,
+
+        /// Show only ready-to-execute tasks
+        #[arg(long)]
+        ready: bool,
+
+        /// Show all tasks
+        #[arg(long)]
+        all: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Update task fields
+    Update {
+        /// Task ID
+        #[arg(value_name = "ID")]
+        id: String,
+
+        /// New title
+        #[arg(long, value_name = "TITLE")]
+        title: Option<String>,
+
+        /// New description
+        #[arg(short, long, value_name = "DESC")]
+        description: Option<String>,
+
+        /// New priority
+        #[arg(long, value_name = "N")]
+        priority: Option<i32>,
+    },
+    /// Delete a task
+    Delete {
+        /// Task ID
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// Mark a task as done
+    Done {
+        /// Task ID
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// Mark a task as failed
+    Fail {
+        /// Task ID
+        #[arg(value_name = "ID")]
+        id: String,
+
+        /// Failure reason
+        #[arg(short = 'r', long, value_name = "REASON")]
+        reason: Option<String>,
+    },
+    /// Reset a task to pending
+    Reset {
+        /// Task ID
+        #[arg(value_name = "ID")]
+        id: String,
+    },
+    /// Add or view task log entries
+    Log {
+        /// Task ID
+        #[arg(value_name = "ID")]
+        id: String,
+
+        /// Log message to add
+        #[arg(short = 'm', long, value_name = "MSG")]
+        message: Option<String>,
+    },
+    /// Manage task dependencies
+    Deps {
+        #[command(subcommand)]
+        action: DepsAction,
+    },
+    /// Show task tree with status colors
+    Tree {
+        /// Root task ID
+        #[arg(value_name = "ID")]
+        id: String,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Dependency subcommands.
+#[derive(Subcommand, Debug)]
+pub enum DepsAction {
+    /// Add a dependency: A must complete before B
+    Add {
+        /// Blocker task ID (must complete first)
+        #[arg(value_name = "BLOCKER")]
+        blocker: String,
+
+        /// Blocked task ID (depends on blocker)
+        #[arg(value_name = "BLOCKED")]
+        blocked: String,
+    },
+    /// Remove a dependency
+    Rm {
+        /// Blocker task ID
+        #[arg(value_name = "BLOCKER")]
+        blocker: String,
+
+        /// Blocked task ID
+        #[arg(value_name = "BLOCKED")]
+        blocked: String,
+    },
+    /// List dependencies for a task
+    List {
+        /// Task ID
+        #[arg(value_name = "ID")]
+        id: String,
+    },
 }
 
 /// Valid model names.
