@@ -136,6 +136,40 @@ mod tests {
         }
 
         #[test]
+        fn test_gather_context_with_features() {
+            let temp_dir = TempDir::new().unwrap();
+            let db_path = temp_dir.path().join("progress.db");
+            let db = dag::open_db(db_path.to_str().unwrap()).unwrap();
+
+            // Create features in the database with different statuses
+            let _feat1 = feature::create_feature(&db, "feature-one").unwrap();
+            let feat2 = feature::create_feature(&db, "feature-two").unwrap();
+
+            // Update one feature to have spec and plan paths
+            feature::update_feature_spec_path(&db, &feat2.id, "spec.md").unwrap();
+            feature::update_feature_plan_path(&db, &feat2.id, "plan.md").unwrap();
+            feature::update_feature_status(&db, &feat2.id, "ready").unwrap();
+
+            let project = project::ProjectConfig {
+                root: temp_dir.path().to_path_buf(),
+                config: project::RalphConfig::default(),
+            };
+
+            let context = gather_project_context(&project, &db, false);
+
+            // Verify the context contains the feature table
+            assert!(context.contains("## Project Context"));
+            assert!(context.contains("### Existing Features"));
+            assert!(context.contains("| Name | Status | Has Spec | Has Plan |"));
+            assert!(context.contains("feature-one"));
+            assert!(context.contains("feature-two"));
+            assert!(context.contains("draft"));
+            assert!(context.contains("ready"));
+            // Verify checkmarks for spec/plan
+            assert!(context.contains("✓"));
+        }
+
+        #[test]
         fn test_initial_message_spec_start() {
             let msg = build_initial_message_spec("my-feature", false);
             assert!(msg.contains("Start"));
