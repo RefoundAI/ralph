@@ -30,18 +30,12 @@ fn is_valid_transition(from: &str, to: &str) -> bool {
 /// 1. Validates the transition is allowed
 /// 2. Updates the task status
 /// 3. Runs auto-transitions for dependent/parent tasks
-pub fn set_task_status(
-    conn: &Connection,
-    task_id: &str,
-    new_status: &str,
-) -> Result<()> {
+pub fn set_task_status(conn: &Connection, task_id: &str, new_status: &str) -> Result<()> {
     // Get current status
     let current_status: String = conn
-        .query_row(
-            "SELECT status FROM tasks WHERE id = ?",
-            [task_id],
-            |row| row.get(0),
-        )
+        .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
+            row.get(0)
+        })
         .context("Failed to get current task status")?;
 
     // Validate transition
@@ -79,9 +73,7 @@ pub fn set_task_status(
 /// should transition from 'blocked' to 'pending'.
 fn auto_unblock_tasks(conn: &Connection, blocker_id: &str) -> Result<()> {
     // Find all tasks blocked by this task
-    let mut stmt = conn.prepare(
-        "SELECT blocked_id FROM dependencies WHERE blocker_id = ?",
-    )?;
+    let mut stmt = conn.prepare("SELECT blocked_id FROM dependencies WHERE blocker_id = ?")?;
 
     let blocked_ids: Vec<String> = stmt
         .query_map([blocker_id], |row| row.get(0))?
@@ -211,11 +203,9 @@ fn auto_fail_parent(conn: &Connection, task_id: &str) -> Result<()> {
 /// If already done, this is a no-op.
 pub fn force_complete_task(conn: &Connection, task_id: &str) -> Result<()> {
     let current_status: String = conn
-        .query_row(
-            "SELECT status FROM tasks WHERE id = ?",
-            [task_id],
-            |row| row.get(0),
-        )
+        .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
+            row.get(0)
+        })
         .context(format!("Task '{}' not found", task_id))?;
 
     match current_status.as_str() {
@@ -247,11 +237,9 @@ pub fn force_complete_task(conn: &Connection, task_id: &str) -> Result<()> {
 /// If already failed, this is a no-op.
 pub fn force_fail_task(conn: &Connection, task_id: &str) -> Result<()> {
     let current_status: String = conn
-        .query_row(
-            "SELECT status FROM tasks WHERE id = ?",
-            [task_id],
-            |row| row.get(0),
-        )
+        .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
+            row.get(0)
+        })
         .context(format!("Task '{}' not found", task_id))?;
 
     match current_status.as_str() {
@@ -284,11 +272,9 @@ pub fn force_fail_task(conn: &Connection, task_id: &str) -> Result<()> {
 /// Force a task back to "pending" status, regardless of current state.
 pub fn force_reset_task(conn: &Connection, task_id: &str) -> Result<()> {
     let current_status: String = conn
-        .query_row(
-            "SELECT status FROM tasks WHERE id = ?",
-            [task_id],
-            |row| row.get(0),
-        )
+        .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
+            row.get(0)
+        })
         .context(format!("Task '{}' not found", task_id))?;
 
     match current_status.as_str() {
@@ -452,10 +438,7 @@ mod tests {
         let conn = db.conn();
 
         create_task(conn, "t-task", "Task", None);
-        conn.execute(
-            "UPDATE tasks SET status = 'failed' WHERE id = 't-task'",
-            [],
-        )?;
+        conn.execute("UPDATE tasks SET status = 'failed' WHERE id = 't-task'", [])?;
         set_task_status(conn, "t-task", "pending")?;
 
         let status: String =

@@ -92,7 +92,10 @@ pub fn build_task_context(task: &TaskInfo) -> String {
     // Add specs directory references
     if !task.specs_dirs.is_empty() {
         output.push_str("\n### Reference Specs\n");
-        output.push_str(&format!("Read all files in: {}\n", task.specs_dirs.join(", ")));
+        output.push_str(&format!(
+            "Read all files in: {}\n",
+            task.specs_dirs.join(", ")
+        ));
     }
 
     output
@@ -129,7 +132,11 @@ fn build_claude_args(config: &Config, context: Option<&IterationContext>) -> Vec
 
 /// Run Claude with the given config and stream output.
 /// Returns the final result event, if any.
-pub fn run(config: &Config, log_file: Option<&str>, context: Option<&IterationContext>) -> Result<Option<ResultEvent>> {
+pub fn run(
+    config: &Config,
+    log_file: Option<&str>,
+    context: Option<&IterationContext>,
+) -> Result<Option<ResultEvent>> {
     let args = build_claude_args(config, context);
 
     if config.use_sandbox {
@@ -140,7 +147,10 @@ pub fn run(config: &Config, log_file: Option<&str>, context: Option<&IterationCo
 }
 
 /// Run Claude directly with custom args (used by verification agent).
-pub fn run_direct_with_args(args: &[String], log_file: Option<&str>) -> Result<Option<ResultEvent>> {
+pub fn run_direct_with_args(
+    args: &[String],
+    log_file: Option<&str>,
+) -> Result<Option<ResultEvent>> {
     run_direct(args, log_file)
 }
 
@@ -165,7 +175,11 @@ fn run_direct(args: &[String], log_file: Option<&str>) -> Result<Option<ResultEv
         if stderr_output.is_empty() {
             anyhow::bail!("claude exited with status: {}", status);
         } else {
-            anyhow::bail!("claude exited with status: {}\nstderr: {}", status, stderr_output);
+            anyhow::bail!(
+                "claude exited with status: {}\nstderr: {}",
+                status,
+                stderr_output
+            );
         }
     } else if !stderr_output.is_empty() {
         eprintln!("{}", stderr_output);
@@ -174,7 +188,11 @@ fn run_direct(args: &[String], log_file: Option<&str>) -> Result<Option<ResultEv
     Ok(result)
 }
 
-fn run_sandboxed(args: &[String], log_file: Option<&str>, config: &Config) -> Result<Option<ResultEvent>> {
+fn run_sandboxed(
+    args: &[String],
+    log_file: Option<&str>,
+    config: &Config,
+) -> Result<Option<ResultEvent>> {
     let sandbox_profile = sandbox::profile::generate(config);
     let profile_path = write_temp_profile(&sandbox_profile)?;
 
@@ -214,14 +232,20 @@ fn run_sandboxed(args: &[String], log_file: Option<&str>, config: &Config) -> Re
     // Clean up temp profile
     let _ = std::fs::remove_file(&profile_path);
 
-    let status = child.wait().context("Failed to wait for sandbox-exec process")?;
+    let status = child
+        .wait()
+        .context("Failed to wait for sandbox-exec process")?;
     let stderr_output = stderr_thread.join().unwrap_or_default();
 
     if !status.success() {
         if stderr_output.is_empty() {
             anyhow::bail!("sandbox-exec exited with status: {}", status);
         } else {
-            anyhow::bail!("sandbox-exec exited with status: {}\nstderr: {}", status, stderr_output);
+            anyhow::bail!(
+                "sandbox-exec exited with status: {}\nstderr: {}",
+                status,
+                stderr_output
+            );
         }
     } else if !stderr_output.is_empty() {
         eprintln!("{}", stderr_output);
@@ -293,7 +317,8 @@ pub(crate) fn drain_stderr(mut stderr: std::process::ChildStderr) -> thread::Joi
 fn build_system_prompt(_config: &Config, context: Option<&IterationContext>) -> String {
     let mut prompt = String::new();
 
-    prompt.push_str(r#"You are operating in a Ralph loop - an autonomous, iterative coding workflow.
+    prompt.push_str(
+        r#"You are operating in a Ralph loop - an autonomous, iterative coding workflow.
 
 ## Your Task
 
@@ -355,7 +380,8 @@ Rules:
 - The hint applies to the NEXT iteration only; it is not persistent
 - Valid values are exactly: `opus`, `sonnet`, `haiku`
 - If omitted, Ralph's configured model strategy decides automatically
-- Use this when you can tell the next task is trivial (hint haiku) or complex (hint opus)"#);
+- Use this when you can tell the next task is trivial (hint haiku) or complex (hint opus)"#,
+    );
 
     // Append iteration context if provided
     if let Some(ctx) = context {
@@ -380,7 +406,9 @@ Rules:
                 "**This is retry attempt {} of {}.**\n\n",
                 retry.attempt, retry.max_retries
             ));
-            prompt.push_str("The previous attempt failed verification with the following reason:\n\n");
+            prompt.push_str(
+                "The previous attempt failed verification with the following reason:\n\n",
+            );
             prompt.push_str(&format!("> {}\n\n", retry.previous_failure_reason));
             prompt.push_str("Fix the issues identified above before marking the task as done.\n");
         }
@@ -398,7 +426,9 @@ Rules:
         if ctx.learn {
             prompt.push_str("\n## Learning\n\n");
             prompt.push_str("When you discover reusable patterns or encounter gotchas:\n\n");
-            prompt.push_str("1. **Agent Skills**: Create `.ralph/skills/<skill-name>/SKILL.md` with:\n");
+            prompt.push_str(
+                "1. **Agent Skills**: Create `.ralph/skills/<skill-name>/SKILL.md` with:\n",
+            );
             prompt.push_str("   ```\n");
             prompt.push_str("   ---\n");
             prompt.push_str("   name: <skill-name>\n");
@@ -406,7 +436,9 @@ Rules:
             prompt.push_str("   ---\n");
             prompt.push_str("   <step-by-step instructions>\n");
             prompt.push_str("   ```\n\n");
-            prompt.push_str("2. **CLAUDE.md**: Add project-specific knowledge that helps future agents.\n");
+            prompt.push_str(
+                "2. **CLAUDE.md**: Add project-specific knowledge that helps future agents.\n",
+            );
         }
     }
 
@@ -428,7 +460,9 @@ fn rand_simple() -> u32 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     // Mix nanoseconds for pseudo-randomness
-    (duration.as_nanos() as u32).wrapping_mul(1103515245).wrapping_add(12345)
+    (duration.as_nanos() as u32)
+        .wrapping_mul(1103515245)
+        .wrapping_add(12345)
 }
 
 fn detect_git_dir() -> String {
@@ -452,15 +486,19 @@ fn detect_git_dir() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig, PromptsConfig};
+    use crate::project::{ProjectConfig, PromptsConfig, RalphConfig, SpecsConfig};
     use std::path::PathBuf;
 
     fn test_config() -> Config {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
-                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
-                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                specs: SpecsConfig {
+                    dirs: vec![".ralph/specs".to_string()],
+                },
+                prompts: PromptsConfig {
+                    dir: ".ralph/prompts".to_string(),
+                },
                 ..Default::default()
             },
         };
@@ -608,7 +646,8 @@ mod tests {
         let args = build_claude_args(&config, None);
         let model_idx = args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
-            args[model_idx + 1], config.current_model,
+            args[model_idx + 1],
+            config.current_model,
             "args --model should be followed by the current model name"
         );
     }
@@ -618,8 +657,12 @@ mod tests {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
-                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
-                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                specs: SpecsConfig {
+                    dirs: vec![".ralph/specs".to_string()],
+                },
+                prompts: PromptsConfig {
+                    dir: ".ralph/prompts".to_string(),
+                },
                 ..Default::default()
             },
         };
@@ -641,7 +684,8 @@ mod tests {
         let cli_args = build_claude_args(&config, None);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
-            cli_args[model_idx + 1], "opus",
+            cli_args[model_idx + 1],
+            "opus",
             "fixed strategy with --model=opus should pass opus to claude CLI"
         );
     }
@@ -651,8 +695,12 @@ mod tests {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
-                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
-                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                specs: SpecsConfig {
+                    dirs: vec![".ralph/specs".to_string()],
+                },
+                prompts: PromptsConfig {
+                    dir: ".ralph/prompts".to_string(),
+                },
                 ..Default::default()
             },
         };
@@ -674,7 +722,8 @@ mod tests {
         let cli_args = build_claude_args(&config, None);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
-            cli_args[model_idx + 1], "haiku",
+            cli_args[model_idx + 1],
+            "haiku",
             "escalate strategy should initially pass haiku to claude CLI"
         );
     }
@@ -684,8 +733,12 @@ mod tests {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
-                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
-                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                specs: SpecsConfig {
+                    dirs: vec![".ralph/specs".to_string()],
+                },
+                prompts: PromptsConfig {
+                    dir: ".ralph/prompts".to_string(),
+                },
                 ..Default::default()
             },
         };
@@ -707,7 +760,8 @@ mod tests {
         let cli_args = build_claude_args(&config, None);
         let model_idx = cli_args.iter().position(|a| a == "--model").unwrap();
         assert_eq!(
-            cli_args[model_idx + 1], "opus",
+            cli_args[model_idx + 1],
+            "opus",
             "plan-then-execute strategy should initially pass opus to claude CLI"
         );
     }
@@ -772,8 +826,14 @@ mod tests {
         assert!(output.contains("## Assigned Task"));
         assert!(output.contains("**ID:** t-xyz789"));
         assert!(output.contains("**Title:** Standalone task"));
-        assert!(!output.contains("### Parent Context"), "Should not contain parent section");
-        assert!(!output.contains("**Parent:**"), "Should not contain parent field");
+        assert!(
+            !output.contains("### Parent Context"),
+            "Should not contain parent section"
+        );
+        assert!(
+            !output.contains("**Parent:**"),
+            "Should not contain parent field"
+        );
     }
 
     #[test]
@@ -795,7 +855,10 @@ mod tests {
         assert!(output.contains("## Assigned Task"));
         assert!(output.contains("**ID:** t-def456"));
         assert!(output.contains("### Parent Context"));
-        assert!(!output.contains("### Completed Prerequisites"), "Should not contain prerequisites section");
+        assert!(
+            !output.contains("### Completed Prerequisites"),
+            "Should not contain prerequisites section"
+        );
     }
 
     #[test]

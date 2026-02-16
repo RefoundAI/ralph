@@ -93,7 +93,8 @@ fn build_verification_prompt(
         prompt.push_str("\n\n");
     }
 
-    prompt.push_str(r#"## Instructions
+    prompt.push_str(
+        r#"## Instructions
 
 1. Read the relevant source files to check if the task was implemented correctly
 2. Run any applicable tests (cargo test, etc.)
@@ -106,7 +107,8 @@ After verification, emit exactly one of these sigils:
 
 - `<verify-pass/>` — The task was implemented correctly
 - `<verify-fail>reason</verify-fail>` — The task has issues (explain why)
-"#);
+"#,
+    );
 
     prompt
 }

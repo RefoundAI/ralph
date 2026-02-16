@@ -13,16 +13,22 @@ use anyhow::Result;
 use serde::Serialize;
 
 #[allow(unused_imports)]
-pub use crud::{add_log, create_task, create_task_with_feature, delete_task, get_task, get_task_tree, update_task, TaskUpdate};
+pub use crud::{
+    add_log, create_task, create_task_with_feature, delete_task, get_task, get_task_tree,
+    update_task, TaskUpdate,
+};
+#[allow(unused_imports)]
+pub use crud::{
+    get_all_tasks, get_all_tasks_for_feature, get_task_blockers, get_task_logs,
+    get_tasks_blocked_by, LogEntry,
+};
 pub use db::{init_db, Db};
 #[allow(unused_imports)]
 pub use dependencies::{add_dependency, remove_dependency};
 #[allow(unused_imports)]
-pub use ids::{generate_task_id, generate_feature_id, generate_and_insert_task_id};
+pub use ids::{generate_and_insert_task_id, generate_feature_id, generate_task_id};
 #[allow(unused_imports)]
 pub use tasks::{compute_parent_status, get_task_status};
-#[allow(unused_imports)]
-pub use crud::{get_task_logs, get_task_blockers, get_tasks_blocked_by, get_all_tasks_for_feature, get_all_tasks, LogEntry};
 pub use transitions::{force_complete_task, force_fail_task, force_reset_task};
 
 /// A task in the DAG.
@@ -72,7 +78,9 @@ pub(crate) fn task_from_row(row: &rusqlite::Row) -> rusqlite::Result<Task> {
         status: row.get(3)?,
         parent_id: row.get(4)?,
         feature_id: row.get(5)?,
-        task_type: row.get::<_, Option<String>>(6)?.unwrap_or_else(|| "feature".to_string()),
+        task_type: row
+            .get::<_, Option<String>>(6)?
+            .unwrap_or_else(|| "feature".to_string()),
         priority: row.get::<_, Option<i32>>(7)?.unwrap_or(0),
         retry_count: row.get::<_, Option<i32>>(8)?.unwrap_or(0),
         max_retries: row.get::<_, Option<i32>>(9)?.unwrap_or(3),
@@ -176,10 +184,8 @@ pub fn complete_task(db: &Db, task_id: &str) -> Result<()> {
     // Transition to done (auto-transitions handled in set_task_status)
     transitions::set_task_status(db.conn(), task_id, "done")?;
     // Clear claimed_by
-    db.conn().execute(
-        "UPDATE tasks SET claimed_by = NULL WHERE id = ?",
-        [task_id],
-    )?;
+    db.conn()
+        .execute("UPDATE tasks SET claimed_by = NULL WHERE id = ?", [task_id])?;
     Ok(())
 }
 
@@ -188,10 +194,8 @@ pub fn fail_task(db: &Db, task_id: &str, reason: &str) -> Result<()> {
     // Transition to failed (auto-transitions handled in set_task_status)
     transitions::set_task_status(db.conn(), task_id, "failed")?;
     // Clear claimed_by
-    db.conn().execute(
-        "UPDATE tasks SET claimed_by = NULL WHERE id = ?",
-        [task_id],
-    )?;
+    db.conn()
+        .execute("UPDATE tasks SET claimed_by = NULL WHERE id = ?", [task_id])?;
     // Log the failure reason
     let timestamp = chrono::Utc::now().to_rfc3339();
     db.conn().execute(
@@ -308,18 +312,16 @@ pub fn retry_task(db: &Db, task_id: &str) -> Result<()> {
 /// Release the claim on a task (set to pending if in_progress).
 pub fn release_claim(db: &Db, task_id: &str) -> Result<()> {
     // Only release if currently in_progress
-    let status: String = db
-        .conn()
-        .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
-            row.get(0)
-        })?;
+    let status: String =
+        db.conn()
+            .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
+                row.get(0)
+            })?;
 
     if status == "in_progress" {
         transitions::set_task_status(db.conn(), task_id, "pending")?;
-        db.conn().execute(
-            "UPDATE tasks SET claimed_by = NULL WHERE id = ?",
-            [task_id],
-        )?;
+        db.conn()
+            .execute("UPDATE tasks SET claimed_by = NULL WHERE id = ?", [task_id])?;
     }
 
     Ok(())
@@ -379,7 +381,10 @@ mod tests {
 
     fn set_task_status(db: &Db, id: &str, status: &str) {
         db.conn()
-            .execute("UPDATE tasks SET status = ? WHERE id = ?", rusqlite::params![status, id])
+            .execute(
+                "UPDATE tasks SET status = ? WHERE id = ?",
+                rusqlite::params![status, id],
+            )
             .unwrap();
     }
 

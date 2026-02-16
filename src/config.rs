@@ -1,11 +1,11 @@
 //! Configuration struct and validation.
 
 use anyhow::{bail, Result};
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fmt;
-use std::path::PathBuf;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli;
@@ -13,8 +13,18 @@ use crate::project::{ProjectConfig, RalphConfig};
 
 /// Default allowed tools when not using sandbox.
 const DEFAULT_ALLOWED_TOOLS: &[&str] = &[
-    "Bash", "Edit", "Write", "Read", "Glob", "Grep", "Task",
-    "TodoWrite", "NotebookEdit", "WebFetch", "WebSearch", "mcp__*",
+    "Bash",
+    "Edit",
+    "Write",
+    "Read",
+    "Glob",
+    "Grep",
+    "Task",
+    "TodoWrite",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+    "mcp__*",
 ];
 
 /// Target for the `ralph run` command.
@@ -140,8 +150,8 @@ impl Config {
         }
 
         // Resolve model strategy early
-        let (strategy_str, model) = cli::resolve_model_strategy(&model, &model_strategy)
-            .map_err(|e| anyhow::anyhow!(e))?;
+        let (strategy_str, model) =
+            cli::resolve_model_strategy(&model, &model_strategy).map_err(|e| anyhow::anyhow!(e))?;
 
         let model_strategy = ModelStrategy::from_str(&strategy_str)?;
 
@@ -174,7 +184,10 @@ impl Config {
 
         let use_sandbox = !no_sandbox;
 
-        let allowed_tools = DEFAULT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect();
+        let allowed_tools = DEFAULT_ALLOWED_TOOLS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let execution = &project.config.execution;
         let max_retries = max_retries_override.unwrap_or(execution.max_retries);
@@ -220,15 +233,19 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig, PromptsConfig};
+    use crate::project::{ProjectConfig, PromptsConfig, RalphConfig, SpecsConfig};
 
     /// Helper to build a test ProjectConfig.
     fn test_project() -> ProjectConfig {
         ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
-                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
-                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                specs: SpecsConfig {
+                    dirs: vec![".ralph/specs".to_string()],
+                },
+                prompts: PromptsConfig {
+                    dir: ".ralph/prompts".to_string(),
+                },
                 ..Default::default()
             },
         }
@@ -310,15 +327,30 @@ mod tests {
         assert_eq!(ModelStrategy::Fixed.to_string(), "fixed");
         assert_eq!(ModelStrategy::CostOptimized.to_string(), "cost-optimized");
         assert_eq!(ModelStrategy::Escalate.to_string(), "escalate");
-        assert_eq!(ModelStrategy::PlanThenExecute.to_string(), "plan-then-execute");
+        assert_eq!(
+            ModelStrategy::PlanThenExecute.to_string(),
+            "plan-then-execute"
+        );
     }
 
     #[test]
     fn model_strategy_from_str_valid() {
-        assert_eq!(ModelStrategy::from_str("fixed").unwrap(), ModelStrategy::Fixed);
-        assert_eq!(ModelStrategy::from_str("cost-optimized").unwrap(), ModelStrategy::CostOptimized);
-        assert_eq!(ModelStrategy::from_str("escalate").unwrap(), ModelStrategy::Escalate);
-        assert_eq!(ModelStrategy::from_str("plan-then-execute").unwrap(), ModelStrategy::PlanThenExecute);
+        assert_eq!(
+            ModelStrategy::from_str("fixed").unwrap(),
+            ModelStrategy::Fixed
+        );
+        assert_eq!(
+            ModelStrategy::from_str("cost-optimized").unwrap(),
+            ModelStrategy::CostOptimized
+        );
+        assert_eq!(
+            ModelStrategy::from_str("escalate").unwrap(),
+            ModelStrategy::Escalate
+        );
+        assert_eq!(
+            ModelStrategy::from_str("plan-then-execute").unwrap(),
+            ModelStrategy::PlanThenExecute
+        );
     }
 
     #[test]
@@ -338,7 +370,11 @@ mod tests {
         let config = config_from_run(None, None).unwrap();
         // Format: agent-{8 hex chars}
         assert_eq!(config.agent_id.len(), 14); // "agent-" (6) + 8 hex chars
-        assert!(config.agent_id.chars().skip(6).all(|c| c.is_ascii_hexdigit()));
+        assert!(config
+            .agent_id
+            .chars()
+            .skip(6)
+            .all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]

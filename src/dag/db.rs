@@ -28,8 +28,8 @@ pub fn init_db(path: &str) -> Result<Db> {
     }
 
     // Open or create database
-    let conn = Connection::open(path)
-        .with_context(|| format!("Failed to open database at {}", path))?;
+    let conn =
+        Connection::open(path).with_context(|| format!("Failed to open database at {}", path))?;
 
     // Enable WAL mode
     conn.pragma_update(None, "journal_mode", "WAL")
@@ -170,11 +170,21 @@ mod tests {
         // Create two tasks
         db.conn().execute(
             "INSERT INTO tasks (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            ["t-abc123", "Task A", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+            [
+                "t-abc123",
+                "Task A",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            ],
         )?;
         db.conn().execute(
             "INSERT INTO tasks (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            ["t-def456", "Task B", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+            [
+                "t-def456",
+                "Task B",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            ],
         )?;
 
         // Insert dependency
@@ -201,7 +211,12 @@ mod tests {
         // Create a task
         db.conn().execute(
             "INSERT INTO tasks (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            ["t-abc123", "Task A", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+            [
+                "t-abc123",
+                "Task A",
+                "2024-01-01T00:00:00Z",
+                "2024-01-01T00:00:00Z",
+            ],
         )?;
 
         // Try to insert self-dependency

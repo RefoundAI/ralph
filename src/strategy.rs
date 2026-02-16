@@ -65,11 +65,7 @@ pub fn select_model(config: &mut Config, next_model_hint: Option<&str>) -> Model
 ///
 /// Called when Claude's hint disagrees with the strategy's choice.
 /// Appends a line to the progress file documenting the override.
-pub fn log_model_override(
-    progress_file: &str,
-    iteration: u32,
-    selection: &ModelSelection,
-) {
+pub fn log_model_override(progress_file: &str, iteration: u32, selection: &ModelSelection) {
     use std::fs::OpenOptions;
     use std::io::Write;
 
@@ -248,7 +244,7 @@ fn assess_escalation_need(content: &str) -> u8 {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig, PromptsConfig};
+    use crate::project::{ProjectConfig, PromptsConfig, RalphConfig, SpecsConfig};
     use std::path::PathBuf;
 
     /// Helper to build a Config with fixed strategy.
@@ -256,8 +252,12 @@ mod tests {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
-                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
-                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                specs: SpecsConfig {
+                    dirs: vec![".ralph/specs".to_string()],
+                },
+                prompts: PromptsConfig {
+                    dir: ".ralph/prompts".to_string(),
+                },
                 ..Default::default()
             },
         };
@@ -404,8 +404,12 @@ mod tests {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
-                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
-                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                specs: SpecsConfig {
+                    dirs: vec![".ralph/specs".to_string()],
+                },
+                prompts: PromptsConfig {
+                    dir: ".ralph/prompts".to_string(),
+                },
                 ..Default::default()
             },
         };
@@ -434,8 +438,12 @@ mod tests {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
-                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
-                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                specs: SpecsConfig {
+                    dirs: vec![".ralph/specs".to_string()],
+                },
+                prompts: PromptsConfig {
+                    dir: ".ralph/prompts".to_string(),
+                },
                 ..Default::default()
             },
         };
@@ -484,7 +492,10 @@ mod tests {
             assess_escalation_need("Stuck on a regression in the build system"),
             2
         );
-        assert_eq!(assess_escalation_need("Cannot proceed, broken dependency"), 2);
+        assert_eq!(
+            assess_escalation_need("Cannot proceed, broken dependency"),
+            2
+        );
         assert_eq!(assess_escalation_need("Unable to resolve the panic"), 2);
     }
 
@@ -498,8 +509,8 @@ mod tests {
         // but escalation_level should stay at 1
         let result = assess_escalation_need("");
         assert_eq!(result, 0); // need is 0
-        // But select_escalate keeps max(current, needed)
-        // We can't call select_escalate directly (reads file), so test the logic:
+                               // But select_escalate keeps max(current, needed)
+                               // We can't call select_escalate directly (reads file), so test the logic:
         let new_level = std::cmp::max(config.escalation_level, result);
         assert_eq!(new_level, 1); // stays at 1, not de-escalated to 0
         assert_eq!(level_to_model(new_level), "sonnet");
@@ -569,8 +580,12 @@ mod tests {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
             config: RalphConfig {
-                specs: SpecsConfig { dirs: vec![".ralph/specs".to_string()] },
-                prompts: PromptsConfig { dir: ".ralph/prompts".to_string() },
+                specs: SpecsConfig {
+                    dirs: vec![".ralph/specs".to_string()],
+                },
+                prompts: PromptsConfig {
+                    dir: ".ralph/prompts".to_string(),
+                },
                 ..Default::default()
             },
         };
@@ -620,7 +635,7 @@ mod tests {
     fn plan_then_execute_hint_overrides_to_haiku() {
         let mut config = plan_then_execute_config();
         config = config.next_iteration(); // iteration 2
-        // Hint to haiku for simple cleanup
+                                          // Hint to haiku for simple cleanup
         assert_eq!(select_model(&mut config, Some("haiku")).model, "haiku");
     }
 
@@ -629,7 +644,7 @@ mod tests {
         let mut config = plan_then_execute_config();
         config = config.next_iteration(); // iteration 2
         config = config.next_iteration(); // iteration 3
-        // Hint to opus for a hard sub-task
+                                          // Hint to opus for a hard sub-task
         assert_eq!(select_model(&mut config, Some("opus")).model, "opus");
     }
 
@@ -704,8 +719,7 @@ mod tests {
 
     /// Helper to create a unique temp file path for testing.
     fn temp_progress_file(suffix: &str) -> String {
-        let path = std::env::temp_dir()
-            .join(format!("ralph_test_override_{}", suffix));
+        let path = std::env::temp_dir().join(format!("ralph_test_override_{}", suffix));
         // Clean up any leftover from previous test runs
         let _ = std::fs::remove_file(&path);
         path.to_string_lossy().to_string()

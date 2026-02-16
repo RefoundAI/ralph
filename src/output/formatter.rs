@@ -55,9 +55,7 @@ fn format_event_inner(
         Event::ToolErrors(errors) => {
             for error in errors {
                 let tool_info = tool_calls.get(&error.tool_use_id);
-                let tool_name = tool_info
-                    .map(|t| t.name.as_str())
-                    .unwrap_or("unknown");
+                let tool_name = tool_info.map(|t| t.name.as_str()).unwrap_or("unknown");
 
                 println!("{}", format!("✗ {} failed", tool_name).red());
 
@@ -179,7 +177,11 @@ pub fn print_iteration_info(config: &Config) {
 
 /// Print sandbox modification info.
 #[allow(dead_code)]
-pub fn print_sandbox_mods(allow_rules: &[String], readonly_dirs: &[String], writeable_dirs: &[String]) {
+pub fn print_sandbox_mods(
+    allow_rules: &[String],
+    readonly_dirs: &[String],
+    writeable_dirs: &[String],
+) {
     if !allow_rules.is_empty() {
         println!("{} {}", "+allow:".green(), allow_rules.join(" "));
 
@@ -336,10 +338,7 @@ fn terminal_width() -> usize {
         .ok()
         .and_then(|out| {
             if out.status.success() {
-                String::from_utf8_lossy(&out.stdout)
-                    .trim()
-                    .parse()
-                    .ok()
+                String::from_utf8_lossy(&out.stdout).trim().parse().ok()
             } else {
                 None
             }

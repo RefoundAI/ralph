@@ -345,7 +345,8 @@ mod tests {
     fn model_alone_implies_fixed() {
         let model = Some("opus".to_string());
         let strategy = None;
-        let (resolved_strategy, resolved_model) = resolve_model_strategy(&model, &strategy).unwrap();
+        let (resolved_strategy, resolved_model) =
+            resolve_model_strategy(&model, &strategy).unwrap();
         assert_eq!(resolved_strategy, "fixed");
         assert_eq!(resolved_model, Some("opus".to_string()));
     }
@@ -363,7 +364,8 @@ mod tests {
     fn default_is_cost_optimized() {
         let model = None;
         let strategy = None;
-        let (resolved_strategy, resolved_model) = resolve_model_strategy(&model, &strategy).unwrap();
+        let (resolved_strategy, resolved_model) =
+            resolve_model_strategy(&model, &strategy).unwrap();
         assert_eq!(resolved_strategy, "cost-optimized");
         assert_eq!(resolved_model, None);
     }
@@ -419,7 +421,8 @@ mod tests {
     fn fixed_with_model_works() {
         let model = Some("haiku".to_string());
         let strategy = Some("fixed".to_string());
-        let (resolved_strategy, resolved_model) = resolve_model_strategy(&model, &strategy).unwrap();
+        let (resolved_strategy, resolved_model) =
+            resolve_model_strategy(&model, &strategy).unwrap();
         assert_eq!(resolved_strategy, "fixed");
         assert_eq!(resolved_model, Some("haiku".to_string()));
     }
@@ -428,7 +431,8 @@ mod tests {
     fn non_fixed_strategy_with_model_works() {
         let model = Some("opus".to_string());
         let strategy = Some("escalate".to_string());
-        let (resolved_strategy, resolved_model) = resolve_model_strategy(&model, &strategy).unwrap();
+        let (resolved_strategy, resolved_model) =
+            resolve_model_strategy(&model, &strategy).unwrap();
         assert_eq!(resolved_strategy, "escalate");
         assert_eq!(resolved_model, Some("opus".to_string()));
     }

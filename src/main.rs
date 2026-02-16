@@ -1,14 +1,14 @@
 //! Ralph - Autonomous agent loop harness for Claude Code
 
+mod claude;
 mod cli;
 mod config;
-mod claude;
 mod dag;
 mod feature;
-mod sandbox;
 mod output;
 mod project;
 mod run_loop;
+mod sandbox;
 mod strategy;
 mod verification;
 
@@ -212,7 +212,8 @@ mod tests {
             let test_context = "## Project Context\n\n### Test Section\n\nThis is test context.";
 
             // Test feature spec prompt
-            let spec_prompt = build_feature_spec_system_prompt("test-feature", "/tmp/spec.md", test_context);
+            let spec_prompt =
+                build_feature_spec_system_prompt("test-feature", "/tmp/spec.md", test_context);
             assert!(spec_prompt.contains(test_context));
             assert!(spec_prompt.contains("## Guidelines"));
             assert!(spec_prompt.contains("## Output"));
@@ -222,7 +223,7 @@ mod tests {
                 "test-feature",
                 "Test spec content",
                 "/tmp/plan.md",
-                test_context
+                test_context,
             );
             assert!(plan_prompt.contains(test_context));
             assert!(plan_prompt.contains("## Guidelines"));
@@ -316,7 +317,9 @@ fn run() -> Result<ExitCode> {
                     Ok(ExitCode::from(2))
                 }
                 run_loop::Outcome::NoPlan => {
-                    eprintln!("No plan: DAG is empty. Run 'ralph feature build <name>' to create tasks");
+                    eprintln!(
+                        "No plan: DAG is empty. Run 'ralph feature build <name>' to create tasks"
+                    );
                     Ok(ExitCode::from(3))
                 }
             }
@@ -346,7 +349,11 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             // Ensure directory structure
             feature::ensure_feature_dirs(&project.root, &name)?;
 
-            let spec_path = project.root.join(".ralph/features").join(&name).join("spec.md");
+            let spec_path = project
+                .root
+                .join(".ralph/features")
+                .join(&name)
+                .join("spec.md");
             let spec_path_str = spec_path.to_string_lossy().to_string();
 
             // Detect existing spec for resume
@@ -358,7 +365,8 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
 
             // If resuming, append existing spec content
             if let Some(spec_content) = existing_spec {
-                let truncated = truncate_context(&spec_content, MAX_CONTEXT_FILE_CHARS, &spec_path_str);
+                let truncated =
+                    truncate_context(&spec_content, MAX_CONTEXT_FILE_CHARS, &spec_path_str);
                 context.push_str(&format!("\n\n## Existing Spec (Resume)\n\n{}", truncated));
             }
 
@@ -367,7 +375,11 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             let initial_message = build_initial_message_spec(&name, resuming);
 
             // Launch interactive session
-            claude::interactive::run_interactive(&system_prompt, &initial_message, model.as_deref())?;
+            claude::interactive::run_interactive(
+                &system_prompt,
+                &initial_message,
+                model.as_deref(),
+            )?;
 
             // Update feature with spec path
             feature::update_feature_spec_path(&db, &feat.id, &spec_path_str)?;
@@ -381,14 +393,19 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             if feat.spec_path.is_none() {
                 anyhow::bail!(
                     "Feature '{}' has no spec. Run 'ralph feature spec {}' first.",
-                    name, name
+                    name,
+                    name
                 );
             }
 
             // Read spec content
             let spec_content = feature::read_spec(&project.root, &name)?;
 
-            let plan_path = project.root.join(".ralph/features").join(&name).join("plan.md");
+            let plan_path = project
+                .root
+                .join(".ralph/features")
+                .join(&name)
+                .join("plan.md");
             let plan_path_str = plan_path.to_string_lossy().to_string();
 
             // Detect existing plan for resume
@@ -400,16 +417,22 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
 
             // If resuming, append existing plan content
             if let Some(plan_content) = existing_plan {
-                let truncated = truncate_context(&plan_content, MAX_CONTEXT_FILE_CHARS, &plan_path_str);
+                let truncated =
+                    truncate_context(&plan_content, MAX_CONTEXT_FILE_CHARS, &plan_path_str);
                 context.push_str(&format!("\n\n## Existing Plan (Resume)\n\n{}", truncated));
             }
 
             // Build system prompt and initial message
-            let system_prompt = build_feature_plan_system_prompt(&name, &spec_content, &plan_path_str, &context);
+            let system_prompt =
+                build_feature_plan_system_prompt(&name, &spec_content, &plan_path_str, &context);
             let initial_message = build_initial_message_plan(&name, resuming);
 
             // Launch interactive session
-            claude::interactive::run_interactive(&system_prompt, &initial_message, model.as_deref())?;
+            claude::interactive::run_interactive(
+                &system_prompt,
+                &initial_message,
+                model.as_deref(),
+            )?;
 
             // Update feature with plan path and status
             feature::update_feature_plan_path(&db, &feat.id, &plan_path_str)?;
@@ -424,13 +447,15 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             if feat.spec_path.is_none() {
                 anyhow::bail!(
                     "Feature '{}' has no spec. Run 'ralph feature spec {}' first.",
-                    name, name
+                    name,
+                    name
                 );
             }
             if feat.plan_path.is_none() {
                 anyhow::bail!(
                     "Feature '{}' has no plan. Run 'ralph feature plan {}' first.",
-                    name, name
+                    name,
+                    name
                 );
             }
 
@@ -453,9 +478,8 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             eprintln!("Created root task: {} Feature: {}", root.id, name);
 
             // Build system prompt for non-interactive DAG creation
-            let system_prompt = build_feature_build_system_prompt(
-                &spec_content, &plan_content, &root.id, &feat.id,
-            );
+            let system_prompt =
+                build_feature_build_system_prompt(&spec_content, &plan_content, &root.id, &feat.id);
 
             // Launch Claude in streaming mode — it autonomously creates the task DAG
             // via `ralph task add` and `ralph task deps add` CLI commands.
@@ -535,7 +559,11 @@ fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
             priority,
             max_retries,
         } => {
-            let task_type = if feature.is_some() { "feature" } else { "standalone" };
+            let task_type = if feature.is_some() {
+                "feature"
+            } else {
+                "standalone"
+            };
             let task = dag::create_task_with_feature(
                 &db,
                 &title,
@@ -559,7 +587,11 @@ fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
             let initial_message = build_initial_message_task_new();
 
             // Launch interactive session
-            claude::interactive::run_interactive(&system_prompt, &initial_message, model.as_deref())?;
+            claude::interactive::run_interactive(
+                &system_prompt,
+                &initial_message,
+                model.as_deref(),
+            )?;
             println!("Task creation session complete.");
             Ok(ExitCode::SUCCESS)
         }
@@ -673,7 +705,10 @@ fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
         cli::TaskAction::Deps { action } => match action {
             cli::DepsAction::Add { blocker, blocked } => {
                 dag::add_dependency(&db, &blocker, &blocked)?;
-                println!("Added dependency: {} must complete before {}", blocker, blocked);
+                println!(
+                    "Added dependency: {} must complete before {}",
+                    blocker, blocked
+                );
                 Ok(ExitCode::SUCCESS)
             }
             cli::DepsAction::Rm { blocker, blocked } => {
@@ -807,7 +842,10 @@ fn print_task_tree(tree: &[dag::Task], current_id: &str, prefix: &str, is_last: 
     }
 
     // Find children
-    let children: Vec<&dag::Task> = tree.iter().filter(|t| t.parent_id.as_deref() == Some(current_id)).collect();
+    let children: Vec<&dag::Task> = tree
+        .iter()
+        .filter(|t| t.parent_id.as_deref() == Some(current_id))
+        .collect();
 
     for (i, child) in children.iter().enumerate() {
         let is_last_child = i == children.len() - 1;
@@ -875,7 +913,12 @@ Include sections for:
     )
 }
 
-fn build_feature_plan_system_prompt(name: &str, spec_content: &str, plan_path: &str, context: &str) -> String {
+fn build_feature_plan_system_prompt(
+    name: &str,
+    spec_content: &str,
+    plan_path: &str,
+    context: &str,
+) -> String {
     format!(
         r#"You are helping the user create an implementation plan for feature "{name}".
 
@@ -912,7 +955,12 @@ The plan should include:
     )
 }
 
-fn build_feature_build_system_prompt(spec_content: &str, plan_content: &str, root_id: &str, feature_id: &str) -> String {
+fn build_feature_build_system_prompt(
+    spec_content: &str,
+    plan_content: &str,
+    root_id: &str,
+    feature_id: &str,
+) -> String {
     format!(
         r#"You are a planning agent for Ralph, an autonomous AI agent loop that drives Claude Code.
 
@@ -1078,7 +1126,10 @@ fn gather_project_context(
     // Read .ralph.toml
     let config_path = project.root.join(".ralph.toml");
     if let Ok(config_content) = fs::read_to_string(&config_path) {
-        sections.push(format!("### Configuration (.ralph.toml)\n\n```toml\n{}\n```", config_content));
+        sections.push(format!(
+            "### Configuration (.ralph.toml)\n\n```toml\n{}\n```",
+            config_content
+        ));
     }
 
     // List existing features
@@ -1104,7 +1155,10 @@ fn gather_project_context(
         if !tasks.is_empty() {
             let mut task_list = String::from("### Existing Standalone Tasks\n\n");
             for task in tasks {
-                task_list.push_str(&format!("- **{}** ({}): {}\n", task.id, task.status, task.title));
+                task_list.push_str(&format!(
+                    "- **{}** ({}): {}\n",
+                    task.id, task.status, task.title
+                ));
             }
             sections.push(task_list);
         }

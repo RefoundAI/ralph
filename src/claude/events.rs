@@ -37,9 +37,17 @@ pub struct Assistant {
 /// Content block types.
 #[derive(Debug)]
 pub enum ContentBlock {
-    Text { text: String },
-    Thinking { thinking: String },
-    ToolUse { id: String, name: String, input: HashMap<String, serde_json::Value> },
+    Text {
+        text: String,
+    },
+    Thinking {
+        thinking: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: HashMap<String, serde_json::Value>,
+    },
     Unknown,
 }
 

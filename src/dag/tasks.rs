@@ -26,9 +26,11 @@ pub fn compute_parent_status(conn: &Connection, parent_id: &str) -> Result<Strin
     if child_ids.is_empty() {
         // No children - return the parent's own status
         return conn
-            .query_row("SELECT status FROM tasks WHERE id = ?", [parent_id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT status FROM tasks WHERE id = ?",
+                [parent_id],
+                |row| row.get(0),
+            )
             .context("Failed to get parent status");
     }
 

@@ -59,12 +59,7 @@ pub fn collect_blocked_binaries(allow_rules: &[String]) -> Vec<String> {
     all_rules
         .into_iter()
         .filter(|rule| !allow_rules.iter().any(|r| r == *rule))
-        .flat_map(|rule| {
-            binaries()
-                .get(rule)
-                .cloned()
-                .unwrap_or_default()
-        })
+        .flat_map(|rule| binaries().get(rule).cloned().unwrap_or_default())
         .filter_map(resolve_binary)
         .collect()
 }
@@ -79,10 +74,7 @@ fn expand_home(path: &str, home: &str) -> String {
 
 fn resolve_binary(name: &str) -> Option<String> {
     // Find executable in PATH
-    let which_output = Command::new("which")
-        .arg(name)
-        .output()
-        .ok()?;
+    let which_output = Command::new("which").arg(name).output().ok()?;
 
     if !which_output.status.success() {
         return None;
@@ -93,10 +85,7 @@ fn resolve_binary(name: &str) -> Option<String> {
         .to_string();
 
     // Resolve symlinks
-    let readlink_output = Command::new("readlink")
-        .args(["-f", &path])
-        .output()
-        .ok()?;
+    let readlink_output = Command::new("readlink").args(["-f", &path]).output().ok()?;
 
     if readlink_output.status.success() {
         Some(

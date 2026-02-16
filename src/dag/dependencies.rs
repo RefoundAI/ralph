@@ -30,12 +30,7 @@ pub fn add_dependency(db: &Db, blocker_id: &str, blocked_id: &str) -> Result<()>
             "INSERT INTO dependencies (blocker_id, blocked_id) VALUES (?, ?)",
             params![blocker_id, blocked_id],
         )
-        .with_context(|| {
-            format!(
-                "Failed to add dependency {} -> {}",
-                blocker_id, blocked_id
-            )
-        })?;
+        .with_context(|| format!("Failed to add dependency {} -> {}", blocker_id, blocked_id))?;
 
     Ok(())
 }
@@ -75,9 +70,9 @@ fn would_create_cycle(db: &Db, blocker_id: &str, blocked_id: &str) -> Result<boo
 
     while let Some(current) = queue.pop_front() {
         // Get all tasks that current blocks (i.e., tasks that depend on current)
-        let mut stmt = db.conn().prepare(
-            "SELECT blocked_id FROM dependencies WHERE blocker_id = ?",
-        )?;
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT blocked_id FROM dependencies WHERE blocker_id = ?")?;
         let dependents: Vec<String> = stmt
             .query_map([&current], |row| row.get(0))?
             .collect::<Result<_, _>>()?;

@@ -6,7 +6,11 @@ use std::process::{Command, Stdio};
 /// Build the command for launching Claude in interactive mode.
 ///
 /// Returns a `Command` ready to execute. Extracted for testability.
-fn build_interactive_command(system_prompt: &str, initial_message: &str, model: Option<&str>) -> Command {
+fn build_interactive_command(
+    system_prompt: &str,
+    initial_message: &str,
+    model: Option<&str>,
+) -> Command {
     let mut cmd = Command::new("claude");
     cmd.arg("--system-prompt").arg(system_prompt);
 
@@ -23,7 +27,11 @@ fn build_interactive_command(system_prompt: &str, initial_message: &str, model: 
 /// The `initial_message` is passed as a positional argument to `claude`,
 /// causing Claude to respond immediately when the session opens.
 /// The `model` is optional -- when provided, passed as `--model <model>`.
-pub fn run_interactive(system_prompt: &str, initial_message: &str, model: Option<&str>) -> Result<()> {
+pub fn run_interactive(
+    system_prompt: &str,
+    initial_message: &str,
+    model: Option<&str>,
+) -> Result<()> {
     let status = build_interactive_command(system_prompt, initial_message, model)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -46,7 +54,11 @@ pub fn run_interactive(system_prompt: &str, initial_message: &str, model: Option
 ///
 /// Used by `feature build` to let Claude autonomously create a task DAG via
 /// `ralph task add` and `ralph task deps add` CLI commands.
-pub fn run_streaming(system_prompt: &str, initial_message: &str, model: Option<&str>) -> Result<()> {
+pub fn run_streaming(
+    system_prompt: &str,
+    initial_message: &str,
+    model: Option<&str>,
+) -> Result<()> {
     let mut cmd = Command::new("claude");
     cmd.arg("--print")
         .arg("--verbose")
@@ -62,8 +74,7 @@ pub fn run_streaming(system_prompt: &str, initial_message: &str, model: Option<&
 
     cmd.arg(initial_message);
 
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = cmd
         .spawn()
@@ -102,10 +113,7 @@ mod tests {
     #[test]
     fn test_build_interactive_command_basic() {
         let cmd = build_interactive_command("test prompt", "hello", None);
-        let args: Vec<&str> = cmd
-            .get_args()
-            .map(|s| s.to_str().unwrap())
-            .collect();
+        let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().unwrap()).collect();
 
         assert_eq!(args, ["--system-prompt", "test prompt", "hello"]);
     }
@@ -113,11 +121,11 @@ mod tests {
     #[test]
     fn test_build_interactive_command_with_model() {
         let cmd = build_interactive_command("test prompt", "hello", Some("opus"));
-        let args: Vec<&str> = cmd
-            .get_args()
-            .map(|s| s.to_str().unwrap())
-            .collect();
+        let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().unwrap()).collect();
 
-        assert_eq!(args, ["--system-prompt", "test prompt", "--model", "opus", "hello"]);
+        assert_eq!(
+            args,
+            ["--system-prompt", "test prompt", "--model", "opus", "hello"]
+        );
     }
 }

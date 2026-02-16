@@ -144,34 +144,42 @@ pub fn update_feature_plan_path(db: &Db, id: &str, plan_path: &str) -> Result<()
 /// Creates `.ralph/features/<name>/` if it doesn't exist.
 pub fn ensure_feature_dirs(project_root: &Path, name: &str) -> Result<()> {
     let feature_dir = project_root.join(".ralph/features").join(name);
-    std::fs::create_dir_all(&feature_dir)
-        .with_context(|| format!("Failed to create feature directory: {}", feature_dir.display()))?;
+    std::fs::create_dir_all(&feature_dir).with_context(|| {
+        format!(
+            "Failed to create feature directory: {}",
+            feature_dir.display()
+        )
+    })?;
     Ok(())
 }
 
 /// Read the spec file for a feature.
 pub fn read_spec(project_root: &Path, name: &str) -> Result<String> {
-    let spec_path = project_root.join(".ralph/features").join(name).join("spec.md");
+    let spec_path = project_root
+        .join(".ralph/features")
+        .join(name)
+        .join("spec.md");
     std::fs::read_to_string(&spec_path)
         .with_context(|| format!("Failed to read spec: {}", spec_path.display()))
 }
 
 /// Read the plan file for a feature.
 pub fn read_plan(project_root: &Path, name: &str) -> Result<String> {
-    let plan_path = project_root.join(".ralph/features").join(name).join("plan.md");
+    let plan_path = project_root
+        .join(".ralph/features")
+        .join(name)
+        .join("plan.md");
     std::fs::read_to_string(&plan_path)
         .with_context(|| format!("Failed to read plan: {}", plan_path.display()))
 }
 
 /// Check if a feature name exists in the database.
 pub fn feature_exists(db: &Db, name: &str) -> Result<bool> {
-    let exists: bool = db
-        .conn()
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM features WHERE name = ?)",
-            [name],
-            |row| row.get(0),
-        )?;
+    let exists: bool = db.conn().query_row(
+        "SELECT EXISTS(SELECT 1 FROM features WHERE name = ?)",
+        [name],
+        |row| row.get(0),
+    )?;
     Ok(exists)
 }
 

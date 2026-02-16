@@ -43,7 +43,10 @@ fn generate_writeable_rules(dirs: &[String]) -> String {
         .map(|d| format!("(allow file-write* (subpath \"{}\"))", d))
         .collect();
 
-    format!("\n;; Extra write rules from --allow\n{}\n", rules.join("\n"))
+    format!(
+        "\n;; Extra write rules from --allow\n{}\n",
+        rules.join("\n")
+    )
 }
 
 fn generate_blocked_binary_rules(binaries: &[String]) -> String {

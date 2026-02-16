@@ -59,11 +59,7 @@ fn parse_event(raw: RawEvent) -> Event {
                 .and_then(super::events::parse_task_failed);
 
             // If both task_done and task_failed are present, task_done wins (optimistic)
-            let final_task_done = if task_done.is_some() {
-                task_done
-            } else {
-                None
-            };
+            let final_task_done = if task_done.is_some() { task_done } else { None };
             let final_task_failed = if final_task_done.is_none() {
                 task_failed
             } else {

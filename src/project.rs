@@ -167,7 +167,6 @@ pub fn init() -> Result<()> {
 /// Internal implementation of init that accepts a target directory.
 /// This allows for testing without changing the current directory.
 fn init_in_dir(cwd: &Path) -> Result<()> {
-
     // 1. Check if .ralph.toml exists
     let config_path = cwd.join(".ralph.toml");
     if config_path.exists() {
@@ -180,8 +179,7 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
 [prompts]
 # dir = ".ralph/prompts"
 "#;
-        fs::write(&config_path, default_config)
-            .context("Failed to create .ralph.toml")?;
+        fs::write(&config_path, default_config).context("Failed to create .ralph.toml")?;
         println!("Created .ralph.toml");
     }
 
@@ -192,24 +190,18 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
     let features_dir = ralph_dir.join("features");
     let skills_dir = ralph_dir.join("skills");
 
-    fs::create_dir_all(&ralph_dir)
-        .context("Failed to create .ralph/ directory")?;
-    fs::create_dir_all(&prompts_dir)
-        .context("Failed to create .ralph/prompts/ directory")?;
-    fs::create_dir_all(&specs_dir)
-        .context("Failed to create .ralph/specs/ directory")?;
-    fs::create_dir_all(&features_dir)
-        .context("Failed to create .ralph/features/ directory")?;
-    fs::create_dir_all(&skills_dir)
-        .context("Failed to create .ralph/skills/ directory")?;
+    fs::create_dir_all(&ralph_dir).context("Failed to create .ralph/ directory")?;
+    fs::create_dir_all(&prompts_dir).context("Failed to create .ralph/prompts/ directory")?;
+    fs::create_dir_all(&specs_dir).context("Failed to create .ralph/specs/ directory")?;
+    fs::create_dir_all(&features_dir).context("Failed to create .ralph/features/ directory")?;
+    fs::create_dir_all(&skills_dir).context("Failed to create .ralph/skills/ directory")?;
 
     println!("Created .ralph/ directory structure");
 
     // 4. Create .ralph/progress.db (empty file)
     let progress_db = ralph_dir.join("progress.db");
     if !progress_db.exists() {
-        fs::write(&progress_db, "")
-            .context("Failed to create .ralph/progress.db")?;
+        fs::write(&progress_db, "").context("Failed to create .ralph/progress.db")?;
         println!("Created .ralph/progress.db");
     }
 
@@ -218,24 +210,24 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
     let gitignore_entry = ".ralph/progress.db\n";
 
     if gitignore_path.exists() {
-        let content = fs::read_to_string(&gitignore_path)
-            .context("Failed to read .gitignore")?;
+        let content = fs::read_to_string(&gitignore_path).context("Failed to read .gitignore")?;
 
         // Check if entry already exists
-        if !content.lines().any(|line| line.trim() == ".ralph/progress.db") {
+        if !content
+            .lines()
+            .any(|line| line.trim() == ".ralph/progress.db")
+        {
             let mut new_content = content;
             if !new_content.ends_with('\n') {
                 new_content.push('\n');
             }
             new_content.push_str(gitignore_entry);
 
-            fs::write(&gitignore_path, new_content)
-                .context("Failed to update .gitignore")?;
+            fs::write(&gitignore_path, new_content).context("Failed to update .gitignore")?;
             println!("Added .ralph/progress.db to .gitignore");
         }
     } else {
-        fs::write(&gitignore_path, gitignore_entry)
-            .context("Failed to create .gitignore")?;
+        fs::write(&gitignore_path, gitignore_entry).context("Failed to create .gitignore")?;
         println!("Created .gitignore with .ralph/progress.db");
     }
 
@@ -288,7 +280,11 @@ mod tests {
         let result = discover_from(tmp.path());
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("ralph init"), "Error should mention 'ralph init', got: {}", err_msg);
+        assert!(
+            err_msg.contains("ralph init"),
+            "Error should mention 'ralph init', got: {}",
+            err_msg
+        );
     }
 
     #[test]

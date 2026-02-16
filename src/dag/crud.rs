@@ -22,7 +22,16 @@ pub fn create_task(
     parent_id: Option<&str>,
     priority: i32,
 ) -> Result<Task> {
-    create_task_with_feature(db, title, description, parent_id, priority, None, "feature", 3)
+    create_task_with_feature(
+        db,
+        title,
+        description,
+        parent_id,
+        priority,
+        None,
+        "feature",
+        3,
+    )
 }
 
 /// Create a new task with feature association and task type.

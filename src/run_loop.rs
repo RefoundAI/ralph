@@ -4,9 +4,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 use crate::claude;
-use crate::claude::client::{
-    BlockerContext, IterationContext, ParentContext, RetryInfo, TaskInfo,
-};
+use crate::claude::client::{BlockerContext, IterationContext, ParentContext, RetryInfo, TaskInfo};
 use crate::config::{Config, RunTarget};
 use crate::dag::{self, Db, Task};
 use crate::feature;
@@ -74,8 +72,7 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         let task_id = task.id.clone();
 
         // Claim the task
-        dag::claim_task(&db, &task_id, &config.agent_id)
-            .context("Failed to claim task")?;
+        dag::claim_task(&db, &task_id, &config.agent_id).context("Failed to claim task")?;
 
         // Print iteration info with colors (task ID in cyan)
         formatter::print_task_working(config.iteration, &task_id, &task.title);
@@ -106,9 +103,7 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         formatter::hyperlink(&log_file);
 
         // Extract model hint before checking completion/failure
-        let next_model_hint = result
-            .as_ref()
-            .and_then(|r| r.next_model_hint.clone());
+        let next_model_hint = result.as_ref().and_then(|r| r.next_model_hint.clone());
 
         // Check for FAILURE sigil - this short-circuits before DAG update
         if let Some(ref r) = result {
@@ -121,7 +116,14 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         if let Some(ref r) = result {
             if let Some(ref done_id) = r.task_done {
                 if done_id == &task_id {
-                    handle_task_done(&db, &config, task, spec_content.as_deref(), plan_content.as_deref(), &log_file)?;
+                    handle_task_done(
+                        &db,
+                        &config,
+                        task,
+                        spec_content.as_deref(),
+                        plan_content.as_deref(),
+                        &log_file,
+                    )?;
                 } else {
                     eprintln!(
                         "Warning: task-done sigil ID {} does not match assigned task {}",
@@ -141,8 +143,7 @@ pub fn run(mut config: Config) -> Result<Outcome> {
                 }
             } else {
                 // No sigil - release the claim and treat as incomplete
-                dag::release_claim(&db, &task_id)
-                    .context("Failed to release task claim")?;
+                dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
             }
         }
@@ -209,11 +210,7 @@ fn resolve_feature_context(
 }
 
 /// Get ready tasks scoped to the run target.
-fn get_scoped_ready_tasks(
-    config: &Config,
-    db: &Db,
-    feature_id: Option<&str>,
-) -> Result<Vec<Task>> {
+fn get_scoped_ready_tasks(config: &Config, db: &Db, feature_id: Option<&str>) -> Result<Vec<Task>> {
     match &config.run_target {
         Some(RunTarget::Feature(_)) => {
             if let Some(fid) = feature_id {
@@ -404,7 +401,8 @@ fn handle_task_done(
         // Run verification agent
         formatter::print_verification_start(config.iteration, task_id);
 
-        let v_result = verification::verify_task(config, task, spec_content, plan_content, log_file)?;
+        let v_result =
+            verification::verify_task(config, task, spec_content, plan_content, log_file)?;
 
         if v_result.passed {
             // Verification passed — complete the task
@@ -419,17 +417,33 @@ fn handle_task_done(
             formatter::print_verification_failed(config.iteration, task_id, &v_result.reason);
 
             // Log the failure
-            dag::add_log(db, task_id, &format!("Verification failed: {}", v_result.reason))?;
+            dag::add_log(
+                db,
+                task_id,
+                &format!("Verification failed: {}", v_result.reason),
+            )?;
 
             let max_retries = config.max_retries as i32;
             if task.retry_count < max_retries {
                 // Retry: transition failed → pending, increment retry_count
                 dag::retry_task(db, task_id).context("Failed to retry task")?;
-                formatter::print_retry(config.iteration, task_id, task.retry_count + 1, max_retries);
+                formatter::print_retry(
+                    config.iteration,
+                    task_id,
+                    task.retry_count + 1,
+                    max_retries,
+                );
             } else {
                 // Max retries exhausted — fail the task
-                dag::fail_task(db, task_id, &format!("Verification failed after {} retries: {}", max_retries, v_result.reason))
-                    .context("Failed to fail task")?;
+                dag::fail_task(
+                    db,
+                    task_id,
+                    &format!(
+                        "Verification failed after {} retries: {}",
+                        max_retries, v_result.reason
+                    ),
+                )
+                .context("Failed to fail task")?;
                 formatter::print_max_retries_exhausted(config.iteration, task_id);
             }
         }
