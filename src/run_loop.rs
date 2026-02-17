@@ -1,13 +1,14 @@
 //! Main iteration loop.
 
 use anyhow::{Context, Result};
-use std::path::Path;
 
 use crate::claude;
 use crate::claude::client::{BlockerContext, IterationContext, ParentContext, RetryInfo, TaskInfo};
 use crate::config::{Config, RunTarget};
 use crate::dag::{self, Db, Task};
 use crate::feature;
+use crate::journal;
+use crate::knowledge;
 use crate::output::{formatter, logger};
 use crate::strategy;
 use crate::verification;
@@ -148,6 +149,63 @@ pub fn run(mut config: Config) -> Result<Outcome> {
             }
         }
 
+        // Post-iteration: write journal entry and knowledge files (FR-2.3, FR-3.3)
+        if let Some(ref r) = result {
+            // Determine outcome by comparing retry_count before/after handle_task_done
+            let updated_task = dag::get_task(&db, &task_id).ok();
+            let outcome = if let Some(ref t) = updated_task {
+                if t.retry_count > task.retry_count {
+                    "retried"
+                } else if r.task_done.is_some() {
+                    "done"
+                } else if r.task_failed.is_some() {
+                    "failed"
+                } else {
+                    "blocked"
+                }
+            } else if r.task_done.is_some() {
+                "done"
+            } else if r.task_failed.is_some() {
+                "failed"
+            } else {
+                "blocked"
+            };
+
+            let journal_entry = journal::JournalEntry {
+                id: 0, // ignored on insert (AUTOINCREMENT)
+                run_id: config.run_id.clone(),
+                iteration: config.iteration,
+                task_id: Some(task_id.clone()),
+                feature_id: task.feature_id.clone(),
+                outcome: outcome.to_string(),
+                model: Some(config.current_model.clone()),
+                duration_secs: r.duration_ms as f64 / 1000.0,
+                cost_usd: r.total_cost_usd,
+                files_modified: r.files_modified.clone(),
+                notes: r.journal_notes.clone(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            };
+            if let Err(e) = journal::insert_journal_entry(&db, &journal_entry) {
+                eprintln!("Warning: failed to write journal entry: {}", e);
+            }
+
+            // Write knowledge entries emitted by Claude (FR-3.3)
+            for sigil in &r.knowledge_entries {
+                let feature_name = match &config.run_target {
+                    Some(RunTarget::Feature(name)) => Some(name.as_str()),
+                    _ => None,
+                };
+                match knowledge::write_knowledge_entry(&config.project_root, sigil, feature_name) {
+                    Ok(path) => {
+                        eprintln!("  Knowledge entry written: {}", path.display());
+                    }
+                    Err(e) => {
+                        eprintln!("  Warning: failed to write knowledge entry: {}", e);
+                    }
+                }
+            }
+        }
+
         // Check if all tasks are resolved
         if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
             return Ok(Outcome::Complete);
@@ -272,76 +330,46 @@ fn build_iteration_context(
         specs_dirs: config.ralph_config.specs.dirs.clone(),
     };
 
+    // Journal: smart-select entries for system prompt context (FR-5.1, FR-5.2)
+    let journal_entries = journal::select_journal_entries(
+        db,
+        &config.run_id,
+        &task.title,
+        &task.description,
+        5, // recent_limit
+        5, // fts_limit
+    )
+    .unwrap_or_default();
+    let journal_context = journal::render_journal_context(&journal_entries);
+
+    // Knowledge: discover and tag-match entries for system prompt context (FR-6.1-FR-6.4)
+    let all_knowledge = knowledge::discover_knowledge(&config.project_root);
+    let last_files: Vec<String> = journal_entries
+        .last()
+        .map(|e| e.files_modified.clone())
+        .unwrap_or_default();
+    let feature_name = match &config.run_target {
+        Some(RunTarget::Feature(name)) => Some(name.as_str()),
+        _ => None,
+    };
+    let matched_knowledge = knowledge::match_knowledge_entries(
+        &all_knowledge,
+        &task.title,
+        &task.description,
+        feature_name,
+        &last_files,
+    );
+    let knowledge_context = knowledge::render_knowledge_context(&matched_knowledge);
+
     Ok(IterationContext {
         task: task_info,
         spec_content: spec_content.map(|s| s.to_string()),
         plan_content: plan_content.map(|s| s.to_string()),
         retry_info,
         run_id: config.run_id.clone(),
-        journal_context: String::new(),
-        knowledge_context: String::new(),
+        journal_context,
+        knowledge_context,
     })
-}
-
-/// Discover available skills by scanning `.ralph/skills/*/SKILL.md`.
-///
-/// Returns a list of (name, description) tuples. Parses YAML frontmatter
-/// for the `description` field. Silently skips any files that can't be read or parsed.
-fn discover_skills(project_root: &Path) -> Vec<(String, String)> {
-    let skills_dir = project_root.join(".ralph/skills");
-    let mut skills = Vec::new();
-
-    let entries = match std::fs::read_dir(&skills_dir) {
-        Ok(entries) => entries,
-        Err(_) => return skills,
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let skill_file = path.join("SKILL.md");
-        if !skill_file.exists() {
-            continue;
-        }
-
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        if let Ok(content) = std::fs::read_to_string(&skill_file) {
-            let description = parse_skill_description(&content);
-            skills.push((name, description));
-        }
-    }
-
-    skills
-}
-
-/// Parse the `description` field from a SKILL.md frontmatter block.
-///
-/// Expects YAML frontmatter between `---` delimiters at the top of the file.
-fn parse_skill_description(content: &str) -> String {
-    let trimmed = content.trim();
-    if !trimmed.starts_with("---") {
-        return "No description".to_string();
-    }
-
-    // Find the closing ---
-    if let Some(end_idx) = trimmed[3..].find("---") {
-        let frontmatter = &trimmed[3..3 + end_idx];
-        for line in frontmatter.lines() {
-            let line = line.trim();
-            if let Some(desc) = line.strip_prefix("description:") {
-                return desc.trim().to_string();
-            }
-        }
-    }
-
-    "No description".to_string()
 }
 
 /// Get completed blockers (dependencies) for a task.
@@ -651,59 +679,4 @@ mod tests {
         assert_eq!(reason, "No failure reason recorded");
     }
 
-    #[test]
-    fn parse_skill_description_from_frontmatter() {
-        let content = "---\nname: test-skill\ndescription: A useful skill for testing\n---\n\nStep 1: Do something";
-        assert_eq!(
-            parse_skill_description(content),
-            "A useful skill for testing"
-        );
-    }
-
-    #[test]
-    fn parse_skill_description_missing_frontmatter() {
-        let content = "Just some markdown content";
-        assert_eq!(parse_skill_description(content), "No description");
-    }
-
-    #[test]
-    fn parse_skill_description_no_description_field() {
-        let content = "---\nname: test-skill\n---\nContent";
-        assert_eq!(parse_skill_description(content), "No description");
-    }
-
-    #[test]
-    fn discover_skills_empty_dir() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let skills_dir = temp_dir.path().join(".ralph/skills");
-        std::fs::create_dir_all(&skills_dir).unwrap();
-
-        let skills = discover_skills(temp_dir.path());
-        assert!(skills.is_empty());
-    }
-
-    #[test]
-    fn discover_skills_finds_skill() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let skill_dir = temp_dir.path().join(".ralph/skills/my-skill");
-        std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(
-            skill_dir.join("SKILL.md"),
-            "---\nname: my-skill\ndescription: Does cool things\n---\nInstructions here",
-        )
-        .unwrap();
-
-        let skills = discover_skills(temp_dir.path());
-        assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].0, "my-skill");
-        assert_eq!(skills[0].1, "Does cool things");
-    }
-
-    #[test]
-    fn discover_skills_nonexistent_dir() {
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        // Don't create .ralph/skills — should return empty, not error
-        let skills = discover_skills(temp_dir.path());
-        assert!(skills.is_empty());
-    }
 }
