@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod dag;
 mod feature;
+mod journal;
 mod output;
 mod project;
 mod run_loop;
