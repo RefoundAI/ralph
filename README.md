@@ -137,11 +137,14 @@ flowchart TD
     <name>/
       spec.md            # Feature specification
       plan.md            # Implementation plan
+  knowledge/             # Project knowledge entries
+    <entry-name>.md      # Tagged markdown knowledge file
+  specs/                 # Specification documents (legacy)
+  prompts/               # Prompt files
+.claude/
   skills/                # Reusable agent skills
     <name>/
       SKILL.md           # Skill definition with YAML frontmatter
-  specs/                 # Specification documents (legacy)
-  prompts/               # Prompt files
 ```
 
 ### Configuration
@@ -158,7 +161,6 @@ The `.ralph.toml` file controls project-level defaults:
 [execution]
 # max_retries = 3
 # verify = true
-# learn = true
 ```
 
 ### Task DAG
@@ -206,17 +208,22 @@ After each task completion, Ralph spawns a read-only Claude session that:
 Failed verifications trigger a retry (up to `--max-retries`). Disable
 verification with `--no-verify`.
 
-## Skills and Learning
+## Journal and Knowledge
 
-Ralph supports a skills system for reusable agent knowledge:
+Ralph maintains two complementary memory systems that feed context into each
+iteration's system prompt:
 
-- **Skills** are stored in `.ralph/skills/<name>/SKILL.md` with YAML frontmatter
-- Skills are discovered automatically each iteration and included in the agent's
-  context
-- When **learning mode** is enabled (default), Claude can create new skills and
-  update `CLAUDE.md` based on what it learns during execution
+- **Run Journal** -- Each iteration writes a journal entry to SQLite (outcome,
+  model, duration, cost, files modified, notes from `<journal>` sigils). Smart
+  selection combines recent entries from the current run with FTS5 full-text
+  search matches from prior runs, within a 3000-token budget.
+- **Project Knowledge** -- Reusable knowledge entries stored as tagged markdown
+  files in `.ralph/knowledge/`. Claude emits `<knowledge>` sigils to create
+  entries. Discovery scans the directory and scores entries by tag relevance to
+  the current task, feature, and recently modified files. Rendered within a
+  2000-token budget.
 
-Disable learning with `--no-learn`.
+Both systems are always active -- there is no toggle to disable them.
 
 ## Model Strategy
 
@@ -301,7 +308,6 @@ Options:
                           [default: cost-optimized]
       --max-retries <N>   Maximum retries for failed tasks
       --no-verify         Disable autonomous verification
-      --no-learn          Disable skill creation + CLAUDE.md updates
       --no-sandbox        Disable macOS sandbox
   -a, --allow <RULE>      Enable sandbox rule (e.g., aws)
   -h, --help              Print help

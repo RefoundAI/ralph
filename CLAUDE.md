@@ -19,16 +19,16 @@ Ralph is an autonomous agent loop harness that iteratively invokes Claude Code u
 ## Architecture
 
 ### Core Loop (`src/run_loop.rs`)
-DAG-driven loop: open `.ralph/progress.db`, get scoped ready tasks, claim one, build iteration context (parent, blockers, spec/plan, retry info, skills), run Claude, handle sigils, verify (if enabled), retry on failure, repeat. No async runtime — uses synchronous `std::process` with `BufReader::lines()` for streaming.
+DAG-driven loop: open `.ralph/progress.db`, get scoped ready tasks, claim one, build iteration context (parent, blockers, spec/plan, retry info, journal/knowledge context), run Claude, handle sigils, verify (if enabled), retry on failure, repeat. No async runtime — uses synchronous `std::process` with `BufReader::lines()` for streaming.
 
 **Outcome enum**: `Complete`, `Failure`, `LimitReached`, `Blocked` (no ready tasks but incomplete tasks remain), `NoPlan` (DAG is empty).
 
-**Key functions**: `resolve_feature_context()` loads spec/plan for feature targets. `get_scoped_ready_tasks()` filters by feature or task ID. `build_iteration_context()` assembles full context. `handle_task_done()` orchestrates verification + retry. `discover_skills()` scans `.ralph/skills/*/SKILL.md`.
+**Key functions**: `resolve_feature_context()` loads spec/plan for feature targets. `get_scoped_ready_tasks()` filters by feature or task ID. `build_iteration_context()` assembles full context including journal + knowledge. `handle_task_done()` orchestrates verification + retry. `journal::select_journal_entries()` picks relevant past iteration records. `knowledge::discover_knowledge()` and `knowledge::match_knowledge_entries()` find and score relevant project knowledge.
 
 ### DAG Task System (`src/dag/`)
-SQLite-based task management with WAL mode and foreign keys (schema v2):
+SQLite-based task management with WAL mode and foreign keys (schema v3):
 - **mod.rs**: Defines `Task` (with `status`, `priority`, `created_at`, `updated_at`, `claimed_by`, `task_type`, `feature_id`, `retry_count`, `max_retries`, `verification_status`) and `TaskCounts` structs. Provides `task_from_row()` helper and `TASK_COLUMNS` constant for consistent SQL queries. Re-exports main task operations. Implements scoped queries: `get_ready_tasks_for_feature()`, `get_standalone_tasks()`, `get_feature_task_counts()`, `retry_task()`. Force-transition functions: `force_complete_task()`, `force_fail_task()`, `force_reset_task()`.
-- **db.rs**: Opens/creates `.ralph/progress.db`, defines schema (`tasks`, `dependencies`, `task_logs`, `features` tables). Schema v2 adds `features` table and extends `tasks` with `feature_id`, `task_type`, `retry_count`, `max_retries`, `verification_status`.
+- **db.rs**: Opens/creates `.ralph/progress.db`, defines schema (`tasks`, `dependencies`, `task_logs`, `features`, `journal` tables). Schema v2 adds `features` table and extends `tasks` with `feature_id`, `task_type`, `retry_count`, `max_retries`, `verification_status`. Schema v3 adds `journal` table with FTS5 full-text search index for iteration history.
 - **ids.rs**: Generates task IDs (`t-{6 hex}`) and feature IDs (`f-{6 hex}`) from SHA-256 of timestamp+counter.
 - **tasks.rs**: `compute_parent_status()` derives parent status from children (any failed -> failed, all done -> done). `get_task_status()` returns derived status for a task considering its children.
 - **transitions.rs**: Status transitions (`pending`→`in_progress`→`done`/`failed`) with auto-transitions: completing a task unblocks dependents; completing all children auto-completes parent; failing a child auto-fails parent
@@ -42,21 +42,22 @@ CRUD operations for features: `create_feature`, `get_feature` (by name), `get_fe
 Spawns a read-only Claude session to verify completed tasks. Uses restricted tools (`Bash Read Glob Grep`). Parses `<verify-pass/>` and `<verify-fail>reason</verify-fail>` sigils.
 
 ### Claude Integration (`src/claude/`)
-- **client.rs**: Spawns `claude` CLI with `--output-format stream-json` and `--model <model>`, handles both direct and sandboxed execution. Builds the system prompt with DAG task assignment instructions, spec/plan content, retry info, skills summary, and learning instructions. Defines `TaskInfo`, `ParentContext`, `BlockerContext`, `RetryInfo`, `IterationContext` structs. `build_task_context()` renders task assignment markdown.
+- **client.rs**: Spawns `claude` CLI with `--output-format stream-json` and `--model <model>`, handles both direct and sandboxed execution. Builds the system prompt with DAG task assignment instructions, spec/plan content, retry info, journal/knowledge context sections, and Memory instructions (with `<journal>` and `<knowledge>` sigils). Defines `TaskInfo`, `ParentContext`, `BlockerContext`, `RetryInfo`, `IterationContext` (with `run_id`, `journal_context`, `knowledge_context`) structs. `build_task_context()` renders task assignment markdown.
 - **interactive.rs**: `run_interactive()` spawns Claude with inherited stdio for interactive sessions (used by spec, plan, build, and task create commands).
-- **events.rs**: Typed event structs for NDJSON parsing. Parses sigils from result text: `<task-done>`, `<task-failed>`, `<next-model>`, `<promise>COMPLETE/FAILURE</promise>`
+- **events.rs**: Typed event structs for NDJSON parsing. Parses sigils from result text: `<task-done>`, `<task-failed>`, `<next-model>`, `<promise>COMPLETE/FAILURE</promise>`, `<journal>`, `<knowledge>`. `ResultEvent` includes `journal_notes`, `knowledge_entries`, and `files_modified` fields.
 - **parser.rs**: Deserializes raw JSON into typed events
 
 ### Project Configuration (`src/project.rs`)
 - Discovers `.ralph.toml` by walking up directory tree from CWD
-- `ralph init` creates `.ralph.toml`, `.ralph/` directory structure (including `features/`, `skills/`), and empty `progress.db`
-- Config sections: `[specs]` (dirs), `[prompts]` (dir), `[execution]` (max_retries, verify, learn)
+- `ralph init` creates `.ralph.toml`, `.ralph/` directory structure (including `features/`, `knowledge/`), `.claude/skills/` directory, and empty `progress.db`. Includes backward-compat migration for legacy `.ralph/skills/` directories.
+- Config sections: `[specs]` (dirs), `[prompts]` (dir), `[execution]` (max_retries, verify)
 
 ### Config (`src/config.rs`)
-- Holds the `Config` struct: prompt file, limits, iteration counters, sandbox settings, model strategy, agent ID, project root, parsed `RalphConfig`, max_retries, verify, learn, run_target
+- Holds the `Config` struct: prompt file, limits, iteration counters, sandbox settings, model strategy, agent ID, run ID, project root, parsed `RalphConfig`, max_retries, verify, run_target
 - Defines the `ModelStrategy` enum: `Fixed`, `CostOptimized`, `Escalate`, `PlanThenExecute`
 - Defines the `RunTarget` enum: `Feature(String)`, `Task(String)`
 - Generates agent IDs: `agent-{8 hex}` from `DefaultHasher` over timestamp + PID
+- Generates run IDs: `run-{8 hex}` via `generate_run_id()` from SHA-256 of timestamp + counter
 - Default allowed tools list: `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep`, `Task`, `TodoWrite`, `NotebookEdit`, `WebFetch`, `WebSearch`, `mcp__*`
 
 ### Sandbox (`src/sandbox/`)
@@ -79,6 +80,12 @@ Selects which Claude model to use each iteration based on `--model-strategy`:
 
 Claude can override any strategy for the next iteration via `<next-model>opus|sonnet|haiku</next-model>`.
 
+### Journal (`src/journal.rs`)
+Persistent iteration records stored in SQLite with FTS5 full-text search. Each `JournalEntry` records `run_id`, `iteration`, `task_id`, `feature_id`, `outcome`, `model`, `duration_secs`, `cost_usd`, `files_modified`, and `notes` (from `<journal>` sigil). Smart selection combines recent entries from the current run with FTS-matched entries from prior runs. Rendered into the system prompt within a 3000-token budget.
+
+### Knowledge Base (`src/knowledge.rs`)
+Tag-based project knowledge stored as markdown files in `.ralph/knowledge/`. Each `KnowledgeEntry` has YAML frontmatter (`title`, `tags`, optional `feature`, `created_at`) and a body (max ~500 words). Discovery scans the directory; matching scores entries by tag relevance to the current task, feature, and recently modified files. Deduplication on write: exact title match replaces, >50% tag overlap merges, otherwise creates new. Rendered into the system prompt within a 2000-token budget.
+
 ### Sigils
 Claude's output is scanned for:
 - `<task-done>{task_id}</task-done>` - Mark assigned task as done
@@ -88,13 +95,16 @@ Claude's output is scanned for:
 - `<next-model>MODEL</next-model>` - Hint for next iteration's model
 - `<verify-pass/>` - Verification passed (emitted by verification agent)
 - `<verify-fail>reason</verify-fail>` - Verification failed (emitted by verification agent)
+- `<journal>notes</journal>` - Iteration notes for run journal
+- `<knowledge tags="..." title="...">body</knowledge>` - Reusable project knowledge entry
 
 ### Key Files
 - `.ralph.toml` - Project configuration (discovered by walking up directory tree)
 - `.ralph/progress.db` - SQLite DAG database (gitignored)
 - `.ralph/features/<name>/spec.md` - Feature specifications
 - `.ralph/features/<name>/plan.md` - Feature implementation plans
-- `.ralph/skills/<name>/SKILL.md` - Reusable agent skills with YAML frontmatter
+- `.claude/skills/<name>/SKILL.md` - Reusable agent skills with YAML frontmatter
+- `.ralph/knowledge/<name>.md` - Project knowledge entries with YAML frontmatter
 - `.ralph/prompts/` - Prompt files
 - `prompt` (default) - Task description file read by Claude each iteration
 
@@ -145,7 +155,7 @@ The `docs/` directory contains detailed prose documentation. Consult these when 
 - **interactive-flows.md** — Three Claude spawning modes (interactive, streaming, loop iteration), their CLI arguments, and output handling. Read when working on `feature spec/plan/build` or output formatting.
 - **specs-plans-tasks.md** — The four-phase feature workflow (spec → plan → build → run), decomposition rules, how context flows from spec through execution. Read when modifying the feature pipeline.
 - **oneshot-vs-features.md** — Tradeoffs between one-shot tasks and the feature workflow. Read when changing how run targets are resolved or adding new execution modes.
-- **memory-and-learning.md** — Skills (SKILL.md), CLAUDE.md updates, discovery, system prompt integration, `--no-learn`. Read when working on skill creation or context persistence.
+- **memory-and-learning.md** — Journal/knowledge system, skills (SKILL.md), discovery, system prompt integration. Read when working on journal entries, knowledge persistence, or skill creation.
 - **getting-started.md** — User-facing walkthrough of install, init, features, tasks, and running. Read when changing CLI UX or onboarding behavior.
 
 ## Nix Development
