@@ -288,8 +288,9 @@ pub(crate) fn stream_output<R: std::io::Read>(
                         if let super::events::ContentBlock::ToolUse { name, input, .. } = block {
                             if matches!(name.as_str(), "Edit" | "Write" | "NotebookEdit") {
                                 // Try to extract file_path or notebook_path from input
-                                if let Some(serde_json::Value::String(path)) =
-                                    input.get("file_path").or_else(|| input.get("notebook_path"))
+                                if let Some(serde_json::Value::String(path)) = input
+                                    .get("file_path")
+                                    .or_else(|| input.get("notebook_path"))
                                 {
                                     if !files_modified.contains(path) {
                                         files_modified.push(path.clone());
@@ -462,13 +463,18 @@ Rules:
         prompt.push_str("discoveries, and context that would help the next iteration:\n\n");
         prompt.push_str("```\n<journal>\nWhat you decided and why. What you discovered. What the next task should know.\n</journal>\n```\n\n");
         prompt.push_str("### Project Knowledge\n");
-        prompt.push_str("When you discover reusable project knowledge (patterns, gotchas, conventions,\n");
+        prompt.push_str(
+            "When you discover reusable project knowledge (patterns, gotchas, conventions,\n",
+        );
         prompt.push_str("environment quirks), emit a `<knowledge>` sigil:\n\n");
         prompt.push_str("```\n<knowledge tags=\"tag1,tag2\" title=\"Short descriptive title\">\nDetailed explanation of the knowledge. Maximum ~500 words.\n</knowledge>\n```\n\n");
-        prompt.push_str("Tags should be lowercase, relevant keywords. At least one tag is required.\n\n");
-        prompt.push_str("You should also continue to update CLAUDE.md with project-wide knowledge that\n");
+        prompt.push_str(
+            "Tags should be lowercase, relevant keywords. At least one tag is required.\n\n",
+        );
+        prompt.push_str(
+            "You should also continue to update CLAUDE.md with project-wide knowledge that\n",
+        );
         prompt.push_str("benefits all future Claude sessions (not just Ralph runs).\n");
-
     }
 
     prompt

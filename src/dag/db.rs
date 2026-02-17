@@ -332,11 +332,8 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE VIRTUAL TABLE test_fts USING fts5(content);")
             .unwrap();
-        conn.execute(
-            "INSERT INTO test_fts(content) VALUES (?1)",
-            ["hello world"],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO test_fts(content) VALUES (?1)", ["hello world"])
+            .unwrap();
         let count: i32 = conn
             .query_row(
                 "SELECT count(*) FROM test_fts WHERE test_fts MATCH 'hello'",
@@ -360,7 +357,10 @@ mod tests {
             .query_map([], |row| row.get(0))?
             .collect::<Result<_, _>>()?;
 
-        assert!(names.contains(&"journal".to_string()), "journal table missing");
+        assert!(
+            names.contains(&"journal".to_string()),
+            "journal table missing"
+        );
         assert!(
             names.contains(&"journal_fts".to_string()),
             "journal_fts virtual table missing"
@@ -471,8 +471,10 @@ mod tests {
         assert_eq!(new_count, 1, "FTS should match new text after update");
 
         // Delete the row
-        db.conn()
-            .execute("DELETE FROM journal WHERE id = ?1", rusqlite::params![row_id])?;
+        db.conn().execute(
+            "DELETE FROM journal WHERE id = ?1",
+            rusqlite::params![row_id],
+        )?;
 
         // FTS should be empty
         let after_delete: i32 = db.conn().query_row(

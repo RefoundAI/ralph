@@ -198,8 +198,7 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
     fs::create_dir_all(&specs_dir).context("Failed to create .ralph/specs/ directory")?;
     fs::create_dir_all(&features_dir).context("Failed to create .ralph/features/ directory")?;
     fs::create_dir_all(&knowledge_dir).context("Failed to create .ralph/knowledge/ directory")?;
-    fs::create_dir_all(&claude_skills_dir)
-        .context("Failed to create .claude/skills/ directory")?;
+    fs::create_dir_all(&claude_skills_dir).context("Failed to create .claude/skills/ directory")?;
 
     println!("Created .ralph/ directory structure");
 
@@ -458,7 +457,11 @@ mod tests {
         // Create a legacy .ralph/skills/ directory with a skill file inside
         let legacy_skill_dir = tmp.path().join(".ralph/skills/some-skill");
         fs::create_dir_all(&legacy_skill_dir).unwrap();
-        fs::write(legacy_skill_dir.join("SKILL.md"), "---\nname: some-skill\n---\nContent").unwrap();
+        fs::write(
+            legacy_skill_dir.join("SKILL.md"),
+            "---\nname: some-skill\n---\nContent",
+        )
+        .unwrap();
 
         // The condition check: legacy .ralph/skills/ is a dir and non-empty
         let ralph_dir = tmp.path().join(".ralph");

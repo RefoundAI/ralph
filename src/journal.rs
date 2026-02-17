@@ -124,7 +124,10 @@ pub fn query_journal_fts(
          ORDER BY rank
          LIMIT ?3",
     )?;
-    let rows = stmt.query_map(rusqlite::params![fts_query, exclude_run_id, limit], journal_from_row)?;
+    let rows = stmt.query_map(
+        rusqlite::params![fts_query, exclude_run_id, limit],
+        journal_from_row,
+    )?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -244,7 +247,10 @@ mod tests {
             duration_secs: 12.5,
             cost_usd: 0.0042,
             files_modified: vec!["src/main.rs".to_string(), "src/lib.rs".to_string()],
-            notes: Some(format!("Notes for iteration {} in run {}", iteration, run_id)),
+            notes: Some(format!(
+                "Notes for iteration {} in run {}",
+                iteration, run_id
+            )),
             created_at: format!("2026-02-18T10:{:02}:00Z", iteration),
         }
     }
@@ -271,7 +277,10 @@ mod tests {
         assert!((r.duration_secs - 12.5).abs() < f64::EPSILON);
         assert!((r.cost_usd - 0.0042).abs() < 1e-9);
         assert_eq!(r.files_modified, vec!["src/main.rs", "src/lib.rs"]);
-        assert_eq!(r.notes.as_deref(), Some("Notes for iteration 1 in run run-aabbccdd"));
+        assert_eq!(
+            r.notes.as_deref(),
+            Some("Notes for iteration 1 in run run-aabbccdd")
+        );
         assert_eq!(r.created_at, "2026-02-18T10:01:00Z");
     }
 
@@ -353,22 +362,20 @@ mod tests {
 
     #[test]
     fn test_render_journal_context_format() {
-        let entries = vec![
-            JournalEntry {
-                id: 1,
-                run_id: "run-test".to_string(),
-                iteration: 1,
-                task_id: Some("t-abc123".to_string()),
-                feature_id: None,
-                outcome: "done".to_string(),
-                model: Some("sonnet".to_string()),
-                duration_secs: 30.0,
-                cost_usd: 0.005,
-                files_modified: vec!["src/main.rs".to_string()],
-                notes: Some("Fixed the bug in parser".to_string()),
-                created_at: "2026-02-18T10:00:00Z".to_string(),
-            },
-        ];
+        let entries = vec![JournalEntry {
+            id: 1,
+            run_id: "run-test".to_string(),
+            iteration: 1,
+            task_id: Some("t-abc123".to_string()),
+            feature_id: None,
+            outcome: "done".to_string(),
+            model: Some("sonnet".to_string()),
+            duration_secs: 30.0,
+            cost_usd: 0.005,
+            files_modified: vec!["src/main.rs".to_string()],
+            notes: Some("Fixed the bug in parser".to_string()),
+            created_at: "2026-02-18T10:00:00Z".to_string(),
+        }];
 
         let rendered = render_journal_context(&entries);
         assert!(rendered.contains("## Run Journal"));
@@ -414,22 +421,20 @@ mod tests {
     /// Alias test required by task spec: test_render_journal_context.
     #[test]
     fn test_render_journal_context() {
-        let entries = vec![
-            JournalEntry {
-                id: 1,
-                run_id: "run-abc".to_string(),
-                iteration: 3,
-                task_id: Some("t-xyz789".to_string()),
-                feature_id: None,
-                outcome: "done".to_string(),
-                model: Some("opus".to_string()),
-                duration_secs: 60.5,
-                cost_usd: 0.0123,
-                files_modified: vec!["src/lib.rs".to_string(), "tests/test.rs".to_string()],
-                notes: Some("Implemented the core algorithm".to_string()),
-                created_at: "2026-02-18T11:00:00Z".to_string(),
-            },
-        ];
+        let entries = vec![JournalEntry {
+            id: 1,
+            run_id: "run-abc".to_string(),
+            iteration: 3,
+            task_id: Some("t-xyz789".to_string()),
+            feature_id: None,
+            outcome: "done".to_string(),
+            model: Some("opus".to_string()),
+            duration_secs: 60.5,
+            cost_usd: 0.0123,
+            files_modified: vec!["src/lib.rs".to_string(), "tests/test.rs".to_string()],
+            notes: Some("Implemented the core algorithm".to_string()),
+            created_at: "2026-02-18T11:00:00Z".to_string(),
+        }];
 
         let rendered = render_journal_context(&entries);
         // Must start with the section header
@@ -473,15 +478,20 @@ mod tests {
         let rendered = render_journal_context(&entries);
         // The output should be shorter than if all 6 entries were rendered
         // (6 * ~3200 chars = ~19200 chars >> 12000 char budget)
-        assert!(rendered.len() <= 12000 + 200, // header + small slack
-            "Budget should cap output: got {} chars", rendered.len());
+        assert!(
+            rendered.len() <= 12000 + 200, // header + small slack
+            "Budget should cap output: got {} chars",
+            rendered.len()
+        );
         // But it must have at least the header
         assert!(rendered.contains("## Run Journal"));
         // And at least one entry
         assert!(rendered.contains("### Iteration 1"));
         // But not all 6 entries
-        assert!(!rendered.contains("### Iteration 6"),
-            "Budget should prevent all 6 entries from being included");
+        assert!(
+            !rendered.contains("### Iteration 6"),
+            "Budget should prevent all 6 entries from being included"
+        );
     }
 
     /// test_query_journal_fts: FTS search returns correct entries and exclude_run_id works.
@@ -505,13 +515,21 @@ mod tests {
 
         // FTS search for "parser JSON" should return the first entry
         let results = query_journal_fts(&db, "parser JSON", "run-current", 10).unwrap();
-        assert_eq!(results.len(), 1, "FTS search for 'parser JSON' should return 1 result");
+        assert_eq!(
+            results.len(),
+            1,
+            "FTS search for 'parser JSON' should return 1 result"
+        );
         assert_eq!(results[0].run_id, "run-past1");
         assert!(results[0].notes.as_deref().unwrap().contains("parser"));
 
         // FTS search for "database migration" should return the third entry
         let results2 = query_journal_fts(&db, "database migration", "run-current", 10).unwrap();
-        assert_eq!(results2.len(), 1, "FTS search for 'database migration' should return 1 result");
+        assert_eq!(
+            results2.len(),
+            1,
+            "FTS search for 'database migration' should return 1 result"
+        );
         assert_eq!(results2[0].run_id, "run-past3");
 
         // exclude_run_id should exclude entries from that run
@@ -523,8 +541,10 @@ mod tests {
         // Search excluding run-past1 should not return either run-past1 entry
         let results3 = query_journal_fts(&db, "parser JSON", "run-past1", 10).unwrap();
         for r in &results3 {
-            assert_ne!(r.run_id, "run-past1",
-                "exclude_run_id should exclude run-past1 entries");
+            assert_ne!(
+                r.run_id, "run-past1",
+                "exclude_run_id should exclude run-past1 entries"
+            );
         }
 
         // Entries without notes should not appear in FTS results
@@ -535,7 +555,10 @@ mod tests {
         // Even a broad search should not return the entry with null notes
         let results4 = query_journal_fts(&db, "Notes iteration", "run-current-x", 10).unwrap();
         for r in &results4 {
-            assert!(r.notes.is_some(), "FTS results should never have NULL notes");
+            assert!(
+                r.notes.is_some(),
+                "FTS results should never have NULL notes"
+            );
         }
     }
 
@@ -574,15 +597,23 @@ mod tests {
             "implement migrations for the project",
             5, // recent_limit
             5, // fts_limit
-        ).unwrap();
+        )
+        .unwrap();
 
         // Should include current run entries (up to recent_limit=5, but only 3 exist)
         let current_entries: Vec<_> = results.iter().filter(|e| e.run_id == current_run).collect();
-        assert_eq!(current_entries.len(), 3, "Should include all 3 current run entries");
+        assert_eq!(
+            current_entries.len(),
+            3,
+            "Should include all 3 current run entries"
+        );
 
         // Should include FTS-matched entries from past runs (past1 and past3 should match)
         let past_entries: Vec<_> = results.iter().filter(|e| e.run_id != current_run).collect();
-        assert!(!past_entries.is_empty(), "Should include at least one FTS-matched past entry");
+        assert!(
+            !past_entries.is_empty(),
+            "Should include at least one FTS-matched past entry"
+        );
 
         // All past entries should not be from the current run
         for e in &past_entries {
@@ -590,8 +621,14 @@ mod tests {
         }
 
         // Total results: 3 recent + N FTS matches (at most 5)
-        assert!(results.len() >= 3, "Should have at least the 3 recent entries");
-        assert!(results.len() <= 8, "Should have at most 3 recent + 5 FTS matches");
+        assert!(
+            results.len() >= 3,
+            "Should have at least the 3 recent entries"
+        );
+        assert!(
+            results.len() <= 8,
+            "Should have at most 3 recent + 5 FTS matches"
+        );
     }
 
     /// test_build_fts_query: word splitting, short-word filtering, and 10-word cap.
@@ -607,11 +644,11 @@ mod tests {
 
         // Mixed lengths
         let q3 = build_fts_query("the fox jumped over");
-        assert!(q3.contains("the"));  // len 3, passes
-        assert!(q3.contains("fox"));  // len 3, passes
+        assert!(q3.contains("the")); // len 3, passes
+        assert!(q3.contains("fox")); // len 3, passes
         assert!(q3.contains("jumped")); // len 6, passes
         assert!(q3.contains("over")); // len 4, passes
-        // "a" would be excluded, but none here
+                                      // "a" would be excluded, but none here
 
         // 10-word cap: only first 10 words (by length > 2) are used
         let many_words = "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm";

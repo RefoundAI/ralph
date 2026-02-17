@@ -242,8 +242,7 @@ pub fn write_knowledge_entry(
     let default_path = kb_dir.join(format!("{}.md", slug));
 
     // FR-3.4: deduplication check
-    let final_path = find_dedup_target(&kb_dir, &sigil.title, &sigil.tags)
-        .unwrap_or(default_path);
+    let final_path = find_dedup_target(&kb_dir, &sigil.title, &sigil.tags).unwrap_or(default_path);
 
     // Merge tags if updating an existing file
     let merged_tags = if final_path.exists() {
@@ -335,8 +334,8 @@ fn find_dedup_target(kb_dir: &Path, title: &str, tags: &[String]) -> Option<Path
 
                 // >50% tag overlap + substring title match
                 let overlap = tag_overlap_ratio(&existing.tags, tags);
-                let title_match = title_lower.contains(&existing_lower)
-                    || existing_lower.contains(&title_lower);
+                let title_match =
+                    title_lower.contains(&existing_lower) || existing_lower.contains(&title_lower);
                 if overlap > 0.5 && title_match {
                     return Some(path);
                 }
@@ -423,7 +422,11 @@ mod tests {
         // 100-char title should be truncated to 80 chars without trailing hyphen
         let long_title = "a".repeat(85) + " extra"; // 92 chars
         let slug = slugify_title(&long_title);
-        assert!(slug.len() <= 80, "slug should be at most 80 chars, got {}", slug.len());
+        assert!(
+            slug.len() <= 80,
+            "slug should be at most 80 chars, got {}",
+            slug.len()
+        );
         assert!(!slug.ends_with('-'), "slug should not end with hyphen");
     }
 
@@ -543,7 +546,10 @@ Body content.
         fs::create_dir_all(&kb_dir).unwrap();
 
         let entries = discover_knowledge(temp.path());
-        assert!(entries.is_empty(), "empty knowledge dir should return empty vec");
+        assert!(
+            entries.is_empty(),
+            "empty knowledge dir should return empty vec"
+        );
     }
 
     #[test]
@@ -551,7 +557,10 @@ Body content.
         let temp = TempDir::new().unwrap();
         // Don't create the knowledge dir at all
         let entries = discover_knowledge(temp.path());
-        assert!(entries.is_empty(), "missing knowledge dir should return empty vec");
+        assert!(
+            entries.is_empty(),
+            "missing knowledge dir should return empty vec"
+        );
     }
 
     #[test]
@@ -577,7 +586,10 @@ Body content.
 
         // Check that file_path is set correctly
         for e in &entries {
-            assert!(e.file_path.exists(), "file_path should point to an existing file");
+            assert!(
+                e.file_path.exists(),
+                "file_path should point to an existing file"
+            );
         }
 
         // Check titles are parsed
@@ -605,7 +617,11 @@ Body content.
         .unwrap();
 
         let entries = discover_knowledge(temp.path());
-        assert_eq!(entries.len(), 1, "should skip malformed file and return 1 entry");
+        assert_eq!(
+            entries.len(),
+            1,
+            "should skip malformed file and return 1 entry"
+        );
         assert_eq!(entries[0].title, "Valid Entry");
     }
 
@@ -659,7 +675,10 @@ Body content.
         // "rust" in context_words -> +2
         // "testing" not in context_words
         // score = 2 for "Rust Testing Guide"
-        assert!(!matched.is_empty(), "should find entries matching 'rust' tag");
+        assert!(
+            !matched.is_empty(),
+            "should find entries matching 'rust' tag"
+        );
         assert_eq!(matched[0].0.title, "Rust Testing Guide");
         assert!(matched[0].1 >= 2, "score should be at least 2");
 
@@ -769,13 +788,8 @@ Body content.
             make_entry("High Score", &["rust", "testing", "implementation"]),
         ];
 
-        let matched = match_knowledge_entries(
-            &entries,
-            "rust implementation",
-            "testing rust",
-            None,
-            &[],
-        );
+        let matched =
+            match_knowledge_entries(&entries, "rust implementation", "testing rust", None, &[]);
 
         assert_eq!(matched.len(), 2);
         // High Score should come first (higher score)
@@ -799,7 +813,11 @@ Body content.
     #[test]
     fn test_write_knowledge_entry_new() {
         let temp = TempDir::new().unwrap();
-        let sigil = make_sigil("My New Entry", &["rust", "testing"], "Some body content here.");
+        let sigil = make_sigil(
+            "My New Entry",
+            &["rust", "testing"],
+            "Some body content here.",
+        );
 
         let path = write_knowledge_entry(temp.path(), &sigil, None).unwrap();
         assert!(path.exists(), "file should be created");
@@ -808,7 +826,10 @@ Body content.
         assert!(content.contains("title: \"My New Entry\""));
         assert!(content.contains("tags: [rust, testing]"));
         assert!(content.contains("Some body content here."));
-        assert!(!content.contains("feature:"), "no feature line when feature=None");
+        assert!(
+            !content.contains("feature:"),
+            "no feature line when feature=None"
+        );
 
         // Filename should be slug of title
         let filename = path.file_name().unwrap().to_str().unwrap();
@@ -868,24 +889,37 @@ Body content.
         let temp = TempDir::new().unwrap();
 
         // Write initial entry
-        let sigil1 = make_sigil("Rust Testing Patterns", &["rust", "testing", "patterns"], "First.");
+        let sigil1 = make_sigil(
+            "Rust Testing Patterns",
+            &["rust", "testing", "patterns"],
+            "First.",
+        );
         write_knowledge_entry(temp.path(), &sigil1, None).unwrap();
 
         // Write similar entry with >50% tag overlap and substring title
-        let sigil2 = make_sigil("Rust Testing", &["rust", "testing", "new-tag"], "Updated content.");
+        let sigil2 = make_sigil(
+            "Rust Testing",
+            &["rust", "testing", "new-tag"],
+            "Updated content.",
+        );
         let path2 = write_knowledge_entry(temp.path(), &sigil2, None).unwrap();
 
         // Should update the existing file (tag overlap > 0.5, title match)
         let kb_dir = temp.path().join(".ralph/knowledge");
         let count = fs::read_dir(&kb_dir).unwrap().count();
-        assert_eq!(count, 1, "should have exactly 1 file after dedup by tag overlap");
+        assert_eq!(
+            count, 1,
+            "should have exactly 1 file after dedup by tag overlap"
+        );
 
         // Tags should be merged
         let content = fs::read_to_string(&path2).unwrap();
         assert!(content.contains("rust"));
         assert!(content.contains("testing"));
-        assert!(content.contains("patterns") || content.contains("new-tag"),
-            "merged tags should contain both old and new tags");
+        assert!(
+            content.contains("patterns") || content.contains("new-tag"),
+            "merged tags should contain both old and new tags"
+        );
     }
 
     #[test]
@@ -900,7 +934,10 @@ Body content.
         let path = write_knowledge_entry(temp.path(), &sigil, None).unwrap();
 
         let content = fs::read_to_string(&path).unwrap();
-        assert!(content.contains("[truncated]"), "body > 500 words should be truncated");
+        assert!(
+            content.contains("[truncated]"),
+            "body > 500 words should be truncated"
+        );
 
         // Count the words in the body section (after frontmatter)
         let body_start = content.find("---\n\n").unwrap() + 5;

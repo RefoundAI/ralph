@@ -538,7 +538,8 @@ mod tests {
 
     #[test]
     fn test_parse_journal_sigil_with_context() {
-        let text = "Task done.\n<journal>Chose nom for parsing.</journal>\n<task-done>t-abc</task-done>";
+        let text =
+            "Task done.\n<journal>Chose nom for parsing.</journal>\n<task-done>t-abc</task-done>";
         assert_eq!(
             parse_journal_sigil(text),
             Some("Chose nom for parsing.".to_string())
@@ -634,9 +635,6 @@ mod tests {
     #[test]
     fn test_extract_attribute_empty_value() {
         let tag_content = r#"tags="" title="Some title""#;
-        assert_eq!(
-            extract_attribute(tag_content, "tags"),
-            Some("".to_string())
-        );
+        assert_eq!(extract_attribute(tag_content, "tags"), Some("".to_string()));
     }
 }

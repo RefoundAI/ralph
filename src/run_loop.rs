@@ -678,5 +678,4 @@ mod tests {
         let reason = get_last_failure_reason(&db, "t-nonexistent").unwrap();
         assert_eq!(reason, "No failure reason recorded");
     }
-
 }

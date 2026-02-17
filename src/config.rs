@@ -410,11 +410,7 @@ mod tests {
         assert!(config.run_id.starts_with("run-"));
         // Format: run-{8 hex chars}
         assert_eq!(config.run_id.len(), 12); // "run-" (4) + 8 hex chars
-        assert!(config
-            .run_id
-            .chars()
-            .skip(4)
-            .all(|c| c.is_ascii_hexdigit()));
+        assert!(config.run_id.chars().skip(4).all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
