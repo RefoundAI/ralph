@@ -190,15 +190,29 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
     let prompts_dir = ralph_dir.join("prompts");
     let specs_dir = ralph_dir.join("specs");
     let features_dir = ralph_dir.join("features");
-    let skills_dir = ralph_dir.join("skills");
+    let knowledge_dir = ralph_dir.join("knowledge");
+    let claude_skills_dir = cwd.join(".claude/skills");
 
     fs::create_dir_all(&ralph_dir).context("Failed to create .ralph/ directory")?;
     fs::create_dir_all(&prompts_dir).context("Failed to create .ralph/prompts/ directory")?;
     fs::create_dir_all(&specs_dir).context("Failed to create .ralph/specs/ directory")?;
     fs::create_dir_all(&features_dir).context("Failed to create .ralph/features/ directory")?;
-    fs::create_dir_all(&skills_dir).context("Failed to create .ralph/skills/ directory")?;
+    fs::create_dir_all(&knowledge_dir).context("Failed to create .ralph/knowledge/ directory")?;
+    fs::create_dir_all(&claude_skills_dir)
+        .context("Failed to create .claude/skills/ directory")?;
 
     println!("Created .ralph/ directory structure");
+
+    // Check for legacy .ralph/skills/ directory and print migration notice if non-empty
+    let legacy_skills_dir = ralph_dir.join("skills");
+    if legacy_skills_dir.is_dir() {
+        let is_non_empty = fs::read_dir(&legacy_skills_dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
+        if is_non_empty {
+            println!("Note: Skills have moved to .claude/skills/. See migration guide.");
+        }
+    }
 
     // 4. Create .ralph/progress.db (empty file)
     let progress_db = ralph_dir.join("progress.db");
@@ -405,5 +419,81 @@ mod tests {
         let gitignore2 = fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
         let count = gitignore2.matches(".ralph/progress.db").count();
         assert_eq!(count, 1, "Should not duplicate .ralph/progress.db entry");
+    }
+
+    #[test]
+    fn test_init_creates_claude_skills() {
+        let tmp = TempDir::new().unwrap();
+        super::init_in_dir(tmp.path()).unwrap();
+        assert!(
+            tmp.path().join(".claude/skills").is_dir(),
+            ".claude/skills/ should be created by init"
+        );
+    }
+
+    #[test]
+    fn test_init_creates_knowledge_dir() {
+        let tmp = TempDir::new().unwrap();
+        super::init_in_dir(tmp.path()).unwrap();
+        assert!(
+            tmp.path().join(".ralph/knowledge").is_dir(),
+            ".ralph/knowledge/ should be created by init"
+        );
+    }
+
+    #[test]
+    fn test_init_no_ralph_skills() {
+        let tmp = TempDir::new().unwrap();
+        super::init_in_dir(tmp.path()).unwrap();
+        assert!(
+            !tmp.path().join(".ralph/skills").exists(),
+            ".ralph/skills/ should NOT be created by init"
+        );
+    }
+
+    #[test]
+    fn test_init_legacy_skills_notice() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create a legacy .ralph/skills/ directory with a skill file inside
+        let legacy_skill_dir = tmp.path().join(".ralph/skills/some-skill");
+        fs::create_dir_all(&legacy_skill_dir).unwrap();
+        fs::write(legacy_skill_dir.join("SKILL.md"), "---\nname: some-skill\n---\nContent").unwrap();
+
+        // The condition check: legacy .ralph/skills/ is a dir and non-empty
+        let ralph_dir = tmp.path().join(".ralph");
+        let legacy_skills = ralph_dir.join("skills");
+        assert!(legacy_skills.is_dir(), "Legacy skills dir should exist");
+        let is_non_empty = fs::read_dir(&legacy_skills)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
+        assert!(is_non_empty, "Legacy skills dir should be non-empty");
+
+        // Running init should succeed (create_dir_all is safe)
+        super::init_in_dir(tmp.path()).unwrap();
+
+        // The new directories should still be created
+        assert!(tmp.path().join(".claude/skills").is_dir());
+        assert!(tmp.path().join(".ralph/knowledge").is_dir());
+    }
+
+    #[test]
+    fn test_init_existing_claude_dir() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create .claude/ before init (simulating a project that already has Claude config)
+        fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        fs::write(tmp.path().join(".claude/settings.json"), "{}").unwrap();
+
+        // Init should not error even though .claude/ already exists
+        super::init_in_dir(tmp.path()).unwrap();
+
+        // .claude/skills/ should be created inside the existing .claude/ dir
+        assert!(
+            tmp.path().join(".claude/skills").is_dir(),
+            ".claude/skills/ should be created even when .claude/ already exists"
+        );
+        // Existing file should be intact
+        assert!(tmp.path().join(".claude/settings.json").exists());
     }
 }
