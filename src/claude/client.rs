@@ -267,6 +267,7 @@ pub(crate) fn stream_output<R: std::io::Read>(
     let buf_reader = BufReader::new(reader);
     let mut tool_calls: HashMap<String, ToolCallInfo> = HashMap::new();
     let mut last_result: Option<ResultEvent> = None;
+    let mut files_modified: Vec<String> = Vec::new();
 
     for line in buf_reader.lines() {
         let line = line.context("Failed to read line from stdout")?;
@@ -279,6 +280,24 @@ pub(crate) fn stream_output<R: std::io::Read>(
         // Parse and format
         match parser::parse_line(&line) {
             Ok(Some(event)) => {
+                // Track file modifications from tool use events
+                if let super::events::Event::Assistant(ref assistant) = event {
+                    for block in &assistant.content {
+                        if let super::events::ContentBlock::ToolUse { name, input, .. } = block {
+                            if matches!(name.as_str(), "Edit" | "Write" | "NotebookEdit") {
+                                // Try to extract file_path or notebook_path from input
+                                if let Some(serde_json::Value::String(path)) =
+                                    input.get("file_path").or_else(|| input.get("notebook_path"))
+                                {
+                                    if !files_modified.contains(path) {
+                                        files_modified.push(path.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let Event::Result(result) = &event {
                     last_result = Some(ResultEvent {
                         result: result.result.clone(),
@@ -289,7 +308,7 @@ pub(crate) fn stream_output<R: std::io::Read>(
                         task_failed: result.task_failed.clone(),
                         journal_notes: result.journal_notes.clone(),
                         knowledge_entries: result.knowledge_entries.clone(),
-                        files_modified: Vec::new(), // populated during streaming, not parsing
+                        files_modified: Vec::new(), // populated after loop ends
                     });
                 }
                 if suppress_text {
@@ -303,6 +322,11 @@ pub(crate) fn stream_output<R: std::io::Read>(
                 // Ignore parse errors for non-JSON lines
             }
         }
+    }
+
+    // Merge accumulated files into the result
+    if let Some(ref mut result) = last_result {
+        result.files_modified = files_modified;
     }
 
     Ok(last_result)
