@@ -50,10 +50,12 @@ pub struct IterationContext {
     pub spec_content: Option<String>,
     pub plan_content: Option<String>,
     pub retry_info: Option<RetryInfo>,
-    /// Available skills (name, description) for the agent to reference.
-    pub skills_summary: Vec<(String, String)>,
     /// Unique run ID for this invocation (format: run-{8 hex chars}).
     pub run_id: String,
+    /// Pre-rendered markdown from journal::render_journal_context().
+    pub journal_context: String,
+    /// Pre-rendered markdown from knowledge::render_knowledge_context().
+    pub knowledge_context: String,
 }
 
 /// Build a task context block for the assigned task.
@@ -440,14 +442,32 @@ Rules:
             prompt.push_str("Fix the issues identified above before marking the task as done.\n");
         }
 
-        // Skills summary
-        if !ctx.skills_summary.is_empty() {
-            prompt.push_str("\n## Available Skills\n\n");
-            prompt.push_str("The following skills are available in `.ralph/skills/`. Read the full SKILL.md for details when relevant.\n\n");
-            for (name, description) in &ctx.skills_summary {
-                prompt.push_str(&format!("- **{}**: {}\n", name, description));
-            }
+        // Run Journal section (pre-rendered markdown from journal::render_journal_context)
+        if !ctx.journal_context.is_empty() {
+            prompt.push('\n');
+            prompt.push_str(&ctx.journal_context);
         }
+
+        // Project Knowledge section (pre-rendered markdown from knowledge::render_knowledge_context)
+        if !ctx.knowledge_context.is_empty() {
+            prompt.push('\n');
+            prompt.push_str(&ctx.knowledge_context);
+        }
+
+        // Memory Instructions section — always included
+        prompt.push_str("\n## Memory\n\n");
+        prompt.push_str("You have access to a persistent memory system. Use these sigils to record knowledge:\n\n");
+        prompt.push_str("### End-of-Task Journal\n");
+        prompt.push_str("At the end of your work on this task, emit a `<journal>` sigil summarizing key decisions,\n");
+        prompt.push_str("discoveries, and context that would help the next iteration:\n\n");
+        prompt.push_str("```\n<journal>\nWhat you decided and why. What you discovered. What the next task should know.\n</journal>\n```\n\n");
+        prompt.push_str("### Project Knowledge\n");
+        prompt.push_str("When you discover reusable project knowledge (patterns, gotchas, conventions,\n");
+        prompt.push_str("environment quirks), emit a `<knowledge>` sigil:\n\n");
+        prompt.push_str("```\n<knowledge tags=\"tag1,tag2\" title=\"Short descriptive title\">\nDetailed explanation of the knowledge. Maximum ~500 words.\n</knowledge>\n```\n\n");
+        prompt.push_str("Tags should be lowercase, relevant keywords. At least one tag is required.\n\n");
+        prompt.push_str("You should also continue to update CLAUDE.md with project-wide knowledge that\n");
+        prompt.push_str("benefits all future Claude sessions (not just Ralph runs).\n");
 
     }
 
@@ -911,5 +931,157 @@ mod tests {
         assert!(output.contains("**ID:** t-verbatim-123"));
         assert!(output.contains("**Title:** Special chars: <>&\"'"));
         assert!(output.contains("Description with\nnewlines and\ttabs."));
+    }
+
+    // --- Memory / Journal / Knowledge system prompt tests ---
+
+    fn test_iteration_context(journal_context: &str, knowledge_context: &str) -> IterationContext {
+        IterationContext {
+            task: TaskInfo {
+                task_id: "t-test01".to_string(),
+                title: "Test task".to_string(),
+                description: "Test description".to_string(),
+                parent: None,
+                completed_blockers: vec![],
+                specs_dirs: vec![],
+            },
+            spec_content: None,
+            plan_content: None,
+            retry_info: None,
+            run_id: "run-00000001".to_string(),
+            journal_context: journal_context.to_string(),
+            knowledge_context: knowledge_context.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_system_prompt_includes_journal() {
+        let config = test_config();
+        let journal_md = "## Run Journal\n\n### Iteration 1 [done]\n- **Task**: t-abc123\n- **Notes**: Did some work\n";
+        let ctx = test_iteration_context(journal_md, "");
+        let prompt = build_system_prompt(&config, Some(&ctx));
+        assert!(
+            prompt.contains("## Run Journal"),
+            "system prompt should include the Run Journal section when journal_context is non-empty"
+        );
+        assert!(
+            prompt.contains("Iteration 1 [done]"),
+            "system prompt should include journal entry content"
+        );
+    }
+
+    #[test]
+    fn test_system_prompt_no_journal_when_empty() {
+        let config = test_config();
+        let ctx = test_iteration_context("", "");
+        let prompt = build_system_prompt(&config, Some(&ctx));
+        assert!(
+            !prompt.contains("## Run Journal"),
+            "system prompt should NOT include Run Journal section when journal_context is empty"
+        );
+    }
+
+    #[test]
+    fn test_system_prompt_includes_knowledge() {
+        let config = test_config();
+        let knowledge_md = "## Project Knowledge\n\n### Cargo bench requires nightly toolchain\n_Tags: testing, cargo_\n\nSome knowledge content.\n\n";
+        let ctx = test_iteration_context("", knowledge_md);
+        let prompt = build_system_prompt(&config, Some(&ctx));
+        assert!(
+            prompt.contains("## Project Knowledge"),
+            "system prompt should include the Project Knowledge section when knowledge_context is non-empty"
+        );
+        assert!(
+            prompt.contains("Cargo bench requires nightly toolchain"),
+            "system prompt should include knowledge entry content"
+        );
+    }
+
+    #[test]
+    fn test_system_prompt_no_knowledge_when_empty() {
+        let config = test_config();
+        let ctx = test_iteration_context("", "");
+        let prompt = build_system_prompt(&config, Some(&ctx));
+        // The knowledge section header uses "## Project Knowledge" (2 hashes), not the
+        // "### Project Knowledge" (3 hashes) used inside the Memory Instructions.
+        // We check the prompt does not contain a standalone "## Project Knowledge" line.
+        assert!(
+            !prompt.contains("\n## Project Knowledge\n"),
+            "system prompt should NOT include a standalone '## Project Knowledge' section when knowledge_context is empty"
+        );
+    }
+
+    #[test]
+    fn test_system_prompt_includes_memory_instructions() {
+        let config = test_config();
+        let ctx = test_iteration_context("", "");
+        let prompt = build_system_prompt(&config, Some(&ctx));
+        assert!(
+            prompt.contains("## Memory"),
+            "system prompt should always include the Memory section"
+        );
+        assert!(
+            prompt.contains("<journal>"),
+            "system prompt Memory section should document the journal sigil"
+        );
+        assert!(
+            prompt.contains("<knowledge tags="),
+            "system prompt Memory section should document the knowledge sigil"
+        );
+        assert!(
+            prompt.contains("End-of-Task Journal"),
+            "system prompt should include journal instructions"
+        );
+        assert!(
+            prompt.contains("Project Knowledge"),
+            "system prompt should include knowledge instructions"
+        );
+        assert!(
+            prompt.contains("CLAUDE.md"),
+            "system prompt should mention CLAUDE.md updates"
+        );
+    }
+
+    #[test]
+    fn test_system_prompt_no_skills_section() {
+        let config = test_config();
+        // Test with no context
+        let prompt_no_ctx = build_system_prompt(&config, None);
+        assert!(
+            !prompt_no_ctx.contains("Available Skills"),
+            "system prompt should NOT contain 'Available Skills' section (removed in favor of native skill discovery)"
+        );
+        // Test with context
+        let ctx = test_iteration_context("", "");
+        let prompt_with_ctx = build_system_prompt(&config, Some(&ctx));
+        assert!(
+            !prompt_with_ctx.contains("Available Skills"),
+            "system prompt should NOT contain 'Available Skills' section even with context"
+        );
+    }
+
+    #[test]
+    fn test_system_prompt_no_learning_section() {
+        let config = test_config();
+        let ctx = test_iteration_context("", "");
+        let prompt = build_system_prompt(&config, Some(&ctx));
+        // The old "Learning" section had text about SKILL.md creation
+        assert!(
+            !prompt.contains("## Learning"),
+            "system prompt should NOT contain the old '## Learning' section"
+        );
+        assert!(
+            !prompt.contains("skill creation"),
+            "system prompt should NOT contain old skill creation instructions"
+        );
+    }
+
+    #[test]
+    fn test_iteration_context_fields_no_skills_summary() {
+        // Compile-time check: verify IterationContext has the new fields
+        let ctx = test_iteration_context("journal content", "knowledge content");
+        assert_eq!(ctx.run_id, "run-00000001");
+        assert_eq!(ctx.journal_context, "journal content");
+        assert_eq!(ctx.knowledge_context, "knowledge content");
     }
 }

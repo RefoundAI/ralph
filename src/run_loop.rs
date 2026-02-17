@@ -263,9 +263,6 @@ fn build_iteration_context(
         None
     };
 
-    // Discover available skills
-    let skills_summary = discover_skills(&config.project_root);
-
     let task_info = TaskInfo {
         task_id: task.id.clone(),
         title: task.title.clone(),
@@ -280,8 +277,9 @@ fn build_iteration_context(
         spec_content: spec_content.map(|s| s.to_string()),
         plan_content: plan_content.map(|s| s.to_string()),
         retry_info,
-        skills_summary,
         run_id: config.run_id.clone(),
+        journal_context: String::new(),
+        knowledge_context: String::new(),
     })
 }
 
