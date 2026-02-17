@@ -410,4 +410,219 @@ mod tests {
         assert!(rendered.contains("unknown")); // model = unknown
         assert!(rendered.contains("none")); // files = none
     }
+
+    /// Alias test required by task spec: test_render_journal_context.
+    #[test]
+    fn test_render_journal_context() {
+        let entries = vec![
+            JournalEntry {
+                id: 1,
+                run_id: "run-abc".to_string(),
+                iteration: 3,
+                task_id: Some("t-xyz789".to_string()),
+                feature_id: None,
+                outcome: "done".to_string(),
+                model: Some("opus".to_string()),
+                duration_secs: 60.5,
+                cost_usd: 0.0123,
+                files_modified: vec!["src/lib.rs".to_string(), "tests/test.rs".to_string()],
+                notes: Some("Implemented the core algorithm".to_string()),
+                created_at: "2026-02-18T11:00:00Z".to_string(),
+            },
+        ];
+
+        let rendered = render_journal_context(&entries);
+        // Must start with the section header
+        assert!(rendered.starts_with("## Run Journal\n\n"));
+        // Must contain the iteration header
+        assert!(rendered.contains("### Iteration 3 [done]"));
+        // Must contain task, model, duration, cost, files, notes fields
+        assert!(rendered.contains("**Task**: t-xyz789"));
+        assert!(rendered.contains("**Model**: opus"));
+        assert!(rendered.contains("60.5s"));
+        assert!(rendered.contains("$0.0123"));
+        assert!(rendered.contains("src/lib.rs, tests/test.rs"));
+        assert!(rendered.contains("Implemented the core algorithm"));
+    }
+
+    /// test_render_journal_context_budget: entries exceeding budget are truncated.
+    #[test]
+    fn test_render_journal_context_budget() {
+        // Each entry has a large notes field to consume budget quickly.
+        // Budget = 3000 tokens * 4 chars/token = 12000 chars.
+        // Create entries whose combined rendered size exceeds the budget.
+        let large_notes = "x".repeat(3000); // ~3000 chars per entry
+        let mut entries = Vec::new();
+        for i in 1..=6 {
+            entries.push(JournalEntry {
+                id: i,
+                run_id: "run-budget".to_string(),
+                iteration: i as u32,
+                task_id: None,
+                feature_id: None,
+                outcome: "done".to_string(),
+                model: Some("sonnet".to_string()),
+                duration_secs: 10.0,
+                cost_usd: 0.001,
+                files_modified: vec![],
+                notes: Some(large_notes.clone()),
+                created_at: format!("2026-02-18T10:{:02}:00Z", i),
+            });
+        }
+
+        let rendered = render_journal_context(&entries);
+        // The output should be shorter than if all 6 entries were rendered
+        // (6 * ~3200 chars = ~19200 chars >> 12000 char budget)
+        assert!(rendered.len() <= 12000 + 200, // header + small slack
+            "Budget should cap output: got {} chars", rendered.len());
+        // But it must have at least the header
+        assert!(rendered.contains("## Run Journal"));
+        // And at least one entry
+        assert!(rendered.contains("### Iteration 1"));
+        // But not all 6 entries
+        assert!(!rendered.contains("### Iteration 6"),
+            "Budget should prevent all 6 entries from being included");
+    }
+
+    /// test_query_journal_fts: FTS search returns correct entries and exclude_run_id works.
+    #[test]
+    fn test_query_journal_fts() {
+        let (_tmp, db) = open_test_db();
+
+        // Insert 3 entries with distinctly different notes across different runs
+        let mut entry1 = make_entry("run-past1", 1, "done");
+        entry1.notes = Some("implemented the parser for JSON data processing".to_string());
+
+        let mut entry2 = make_entry("run-past2", 1, "done");
+        entry2.notes = Some("fixed CSS layout bug in the frontend stylesheet".to_string());
+
+        let mut entry3 = make_entry("run-past3", 1, "done");
+        entry3.notes = Some("updated database migration schema changes".to_string());
+
+        insert_journal_entry(&db, &entry1).unwrap();
+        insert_journal_entry(&db, &entry2).unwrap();
+        insert_journal_entry(&db, &entry3).unwrap();
+
+        // FTS search for "parser JSON" should return the first entry
+        let results = query_journal_fts(&db, "parser JSON", "run-current", 10).unwrap();
+        assert_eq!(results.len(), 1, "FTS search for 'parser JSON' should return 1 result");
+        assert_eq!(results[0].run_id, "run-past1");
+        assert!(results[0].notes.as_deref().unwrap().contains("parser"));
+
+        // FTS search for "database migration" should return the third entry
+        let results2 = query_journal_fts(&db, "database migration", "run-current", 10).unwrap();
+        assert_eq!(results2.len(), 1, "FTS search for 'database migration' should return 1 result");
+        assert_eq!(results2[0].run_id, "run-past3");
+
+        // exclude_run_id should exclude entries from that run
+        // Insert an entry in run-past1 with matching notes
+        let mut entry4 = make_entry("run-past1", 2, "done");
+        entry4.notes = Some("improved the parser for better JSON handling".to_string());
+        insert_journal_entry(&db, &entry4).unwrap();
+
+        // Search excluding run-past1 should not return either run-past1 entry
+        let results3 = query_journal_fts(&db, "parser JSON", "run-past1", 10).unwrap();
+        for r in &results3 {
+            assert_ne!(r.run_id, "run-past1",
+                "exclude_run_id should exclude run-past1 entries");
+        }
+
+        // Entries without notes should not appear in FTS results
+        let mut no_notes_entry = make_entry("run-nonotes", 1, "done");
+        no_notes_entry.notes = None;
+        insert_journal_entry(&db, &no_notes_entry).unwrap();
+
+        // Even a broad search should not return the entry with null notes
+        let results4 = query_journal_fts(&db, "Notes iteration", "run-current-x", 10).unwrap();
+        for r in &results4 {
+            assert!(r.notes.is_some(), "FTS results should never have NULL notes");
+        }
+    }
+
+    /// test_select_journal_entries: combined recent + FTS results.
+    #[test]
+    fn test_select_journal_entries() {
+        let (_tmp, db) = open_test_db();
+
+        let current_run = "run-current";
+
+        // Insert 3 entries in the current run
+        for i in 1..=3 {
+            let mut entry = make_entry(current_run, i, "done");
+            entry.notes = Some(format!("current run iteration {}", i));
+            insert_journal_entry(&db, &entry).unwrap();
+        }
+
+        // Insert entries in past runs with notes that match the task title/description
+        let mut past1 = make_entry("run-past1", 1, "done");
+        past1.notes = Some("implemented database schema migrations for the project".to_string());
+        insert_journal_entry(&db, &past1).unwrap();
+
+        let mut past2 = make_entry("run-past2", 1, "done");
+        past2.notes = Some("fixed authentication token validation logic".to_string());
+        insert_journal_entry(&db, &past2).unwrap();
+
+        let mut past3 = make_entry("run-past3", 1, "done");
+        past3.notes = Some("updated schema migrations for database changes".to_string());
+        insert_journal_entry(&db, &past3).unwrap();
+
+        // select_journal_entries with task matching "database schema migrations"
+        let results = select_journal_entries(
+            &db,
+            current_run,
+            "database schema",
+            "implement migrations for the project",
+            5, // recent_limit
+            5, // fts_limit
+        ).unwrap();
+
+        // Should include current run entries (up to recent_limit=5, but only 3 exist)
+        let current_entries: Vec<_> = results.iter().filter(|e| e.run_id == current_run).collect();
+        assert_eq!(current_entries.len(), 3, "Should include all 3 current run entries");
+
+        // Should include FTS-matched entries from past runs (past1 and past3 should match)
+        let past_entries: Vec<_> = results.iter().filter(|e| e.run_id != current_run).collect();
+        assert!(!past_entries.is_empty(), "Should include at least one FTS-matched past entry");
+
+        // All past entries should not be from the current run
+        for e in &past_entries {
+            assert_ne!(e.run_id, current_run);
+        }
+
+        // Total results: 3 recent + N FTS matches (at most 5)
+        assert!(results.len() >= 3, "Should have at least the 3 recent entries");
+        assert!(results.len() <= 8, "Should have at most 3 recent + 5 FTS matches");
+    }
+
+    /// test_build_fts_query: word splitting, short-word filtering, and 10-word cap.
+    #[test]
+    fn test_build_fts_query() {
+        // Basic: words joined with OR
+        let q = build_fts_query("hello world foo");
+        assert_eq!(q, "hello OR world OR foo");
+
+        // Short word filtering: words <= 2 chars are excluded
+        let q2 = build_fts_query("a is it implement");
+        assert_eq!(q2, "implement", "words with len <= 2 should be filtered");
+
+        // Mixed lengths
+        let q3 = build_fts_query("the fox jumped over");
+        assert!(q3.contains("the"));  // len 3, passes
+        assert!(q3.contains("fox"));  // len 3, passes
+        assert!(q3.contains("jumped")); // len 6, passes
+        assert!(q3.contains("over")); // len 4, passes
+        // "a" would be excluded, but none here
+
+        // 10-word cap: only first 10 words (by length > 2) are used
+        let many_words = "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll mmm";
+        let q4 = build_fts_query(many_words);
+        let word_count = q4.split(" OR ").count();
+        assert_eq!(word_count, 10, "Should cap at 10 words, got: {}", q4);
+
+        // OR separator format
+        let q5 = build_fts_query("foo bar baz");
+        assert!(q5.contains(" OR "), "Words should be joined with ' OR '");
+        let parts: Vec<&str> = q5.split(" OR ").collect();
+        assert_eq!(parts, vec!["foo", "bar", "baz"]);
+    }
 }
