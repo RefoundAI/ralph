@@ -21,4 +21,14 @@ result-*
 # OS
 .DS_Store
 Thumbs.db
+
+# Ralph local state
+.ralph.toml
 .ralph/progress.db
+.ralph/features/
+.ralph/prompts/
+.ralph/specs/
+.ralph/skills/
+
+# Claude Code local config
+.claude/
