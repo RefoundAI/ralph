@@ -6,6 +6,7 @@ mod config;
 mod dag;
 mod feature;
 mod journal;
+mod knowledge;
 mod output;
 mod project;
 mod run_loop;
