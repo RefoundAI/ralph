@@ -281,7 +281,7 @@ fn build_iteration_context(
         plan_content: plan_content.map(|s| s.to_string()),
         retry_info,
         skills_summary,
-        learn: config.learn,
+        run_id: config.run_id.clone(),
     })
 }
 

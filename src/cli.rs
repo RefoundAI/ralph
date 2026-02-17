@@ -68,10 +68,6 @@ pub enum Command {
         /// Disable autonomous verification
         #[arg(long)]
         no_verify: bool,
-
-        /// Disable skill creation + CLAUDE.md updates
-        #[arg(long)]
-        no_learn: bool,
     },
 }
 

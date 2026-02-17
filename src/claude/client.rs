@@ -52,8 +52,8 @@ pub struct IterationContext {
     pub retry_info: Option<RetryInfo>,
     /// Available skills (name, description) for the agent to reference.
     pub skills_summary: Vec<(String, String)>,
-    /// Whether learning (skill creation + CLAUDE.md updates) is enabled.
-    pub learn: bool,
+    /// Unique run ID for this invocation (format: run-{8 hex chars}).
+    pub run_id: String,
 }
 
 /// Build a task context block for the assigned task.
@@ -422,24 +422,6 @@ Rules:
             }
         }
 
-        // Learning instructions
-        if ctx.learn {
-            prompt.push_str("\n## Learning\n\n");
-            prompt.push_str("When you discover reusable patterns or encounter gotchas:\n\n");
-            prompt.push_str(
-                "1. **Agent Skills**: Create `.ralph/skills/<skill-name>/SKILL.md` with:\n",
-            );
-            prompt.push_str("   ```\n");
-            prompt.push_str("   ---\n");
-            prompt.push_str("   name: <skill-name>\n");
-            prompt.push_str("   description: <when to use this skill>\n");
-            prompt.push_str("   ---\n");
-            prompt.push_str("   <step-by-step instructions>\n");
-            prompt.push_str("   ```\n\n");
-            prompt.push_str(
-                "2. **CLAUDE.md**: Add project-specific knowledge that helps future agents.\n",
-            );
-        }
     }
 
     prompt
@@ -513,7 +495,6 @@ mod tests {
             project,
             None,
             None,
-            false,
             false,
         )
         .unwrap()
@@ -678,7 +659,6 @@ mod tests {
             None,
             None,
             false,
-            false,
         )
         .unwrap();
         let cli_args = build_claude_args(&config, None);
@@ -716,7 +696,6 @@ mod tests {
             None,
             None,
             false,
-            false,
         )
         .unwrap();
         let cli_args = build_claude_args(&config, None);
@@ -753,7 +732,6 @@ mod tests {
             project,
             None,
             None,
-            false,
             false,
         )
         .unwrap();

@@ -131,7 +131,6 @@ ralph run <target>                # Execute scoped work (feature name or task ID
   --allow=RULE                    # Enable sandbox rule (e.g., aws)
   --max-retries=N                 # Maximum retries for failed tasks
   --no-verify                     # Disable autonomous verification
-  --no-learn                      # Disable skill creation + CLAUDE.md updates
 ```
 
 Environment variables: `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RALPH_ITERATION`, `RALPH_TOTAL`.

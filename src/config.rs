@@ -92,6 +92,16 @@ fn generate_agent_id() -> String {
     format!("agent-{:08x}", short_hash)
 }
 
+/// Generate a unique run ID: `run-{8 hex chars}`.
+/// Uses a hash of timestamp and process ID.
+fn generate_run_id() -> String {
+    let mut hasher = DefaultHasher::new();
+    SystemTime::now().hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    let hash = hasher.finish();
+    format!("run-{:08x}", hash as u32)
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub prompt_file: String,
@@ -121,8 +131,8 @@ pub struct Config {
     pub max_retries: u32,
     /// Whether to enable autonomous verification.
     pub verify: bool,
-    /// Whether to enable skill creation + CLAUDE.md updates.
-    pub learn: bool,
+    /// Unique run ID for this invocation (format: run-{8 hex chars}).
+    pub run_id: String,
     /// The target for this run (feature or standalone task).
     pub run_target: Option<RunTarget>,
 }
@@ -142,7 +152,6 @@ impl Config {
         run_target: Option<RunTarget>,
         max_retries_override: Option<u32>,
         no_verify: bool,
-        no_learn: bool,
     ) -> Result<Self> {
         // Check for mutually exclusive flags
         if once && limit.is_some() && limit.unwrap() > 0 {
@@ -192,7 +201,6 @@ impl Config {
         let execution = &project.config.execution;
         let max_retries = max_retries_override.unwrap_or(execution.max_retries);
         let verify = !no_verify && execution.verify;
-        let learn = !no_learn && execution.learn;
 
         Ok(Config {
             prompt_file,
@@ -211,7 +219,7 @@ impl Config {
             agent_id: generate_agent_id(),
             max_retries,
             verify,
-            learn,
+            run_id: generate_run_id(),
             run_target,
         })
     }
@@ -264,7 +272,6 @@ mod tests {
             test_project(),
             None,
             None,
-            false,
             false,
         )
     }
@@ -394,5 +401,35 @@ mod tests {
 
         let next = config.next_iteration();
         assert_eq!(next.agent_id, agent_id_1);
+    }
+
+    #[test]
+    fn test_config_has_run_id() {
+        let config = config_from_run(None, None).unwrap();
+        assert!(!config.run_id.is_empty());
+        assert!(config.run_id.starts_with("run-"));
+        // Format: run-{8 hex chars}
+        assert_eq!(config.run_id.len(), 12); // "run-" (4) + 8 hex chars
+        assert!(config
+            .run_id
+            .chars()
+            .skip(4)
+            .all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_execution_config_backward_compat() {
+        use crate::project::RalphConfig;
+        // TOML with learn = false should parse without error (backward compat)
+        let toml_content = r#"
+[execution]
+learn = false
+max_retries = 3
+verify = true
+"#;
+        let config: RalphConfig = toml::from_str(toml_content).unwrap();
+        // learn field is retained in ExecutionConfig for backward compat
+        assert_eq!(config.execution.max_retries, 3);
+        assert!(config.execution.verify);
     }
 }

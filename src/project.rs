@@ -38,6 +38,8 @@ pub struct ExecutionConfig {
     pub max_retries: u32,
     #[serde(default = "default_true")]
     pub verify: bool,
+    /// Deprecated: learning is always enabled. This field is retained for backward
+    /// compatibility with existing .ralph.toml files and is ignored at runtime.
     #[serde(default = "default_true")]
     pub learn: bool,
 }

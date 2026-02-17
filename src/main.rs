@@ -258,7 +258,6 @@ fn run() -> Result<ExitCode> {
             model,
             max_retries,
             no_verify,
-            no_learn,
         }) => {
             let project = project::discover()?;
 
@@ -294,7 +293,6 @@ fn run() -> Result<ExitCode> {
                 Some(run_target),
                 max_retries,
                 no_verify,
-                no_learn,
             )?;
 
             output::formatter::print_iteration_info(&config);

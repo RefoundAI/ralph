@@ -273,7 +273,6 @@ mod tests {
             None,
             None,
             false,
-            false,
         )
         .unwrap()
     }
@@ -425,7 +424,6 @@ mod tests {
             None,
             None,
             false,
-            false,
         )
         .unwrap();
         assert_eq!(select_model(&mut config, Some("haiku")).model, "haiku");
@@ -458,7 +456,6 @@ mod tests {
             project,
             None,
             None,
-            false,
             false,
         )
         .unwrap()
@@ -600,7 +597,6 @@ mod tests {
             project,
             None,
             None,
-            false,
             false,
         )
         .unwrap()
