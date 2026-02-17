@@ -57,6 +57,15 @@ fn parse_event(raw: RawEvent) -> Event {
                 .result
                 .as_deref()
                 .and_then(super::events::parse_task_failed);
+            let journal_notes = raw
+                .result
+                .as_deref()
+                .and_then(super::events::parse_journal_sigil);
+            let knowledge_entries = raw
+                .result
+                .as_deref()
+                .map(super::events::parse_knowledge_sigils)
+                .unwrap_or_default();
 
             // If both task_done and task_failed are present, task_done wins (optimistic)
             let final_task_done = if task_done.is_some() { task_done } else { None };
@@ -73,6 +82,9 @@ fn parse_event(raw: RawEvent) -> Event {
                 next_model_hint,
                 task_done: final_task_done,
                 task_failed: final_task_failed,
+                journal_notes,
+                knowledge_entries,
+                files_modified: Vec::new(), // populated during streaming, not parsing
             })
         }
         Some("stream_event") => {

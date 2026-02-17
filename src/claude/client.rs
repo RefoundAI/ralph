@@ -287,6 +287,9 @@ pub(crate) fn stream_output<R: std::io::Read>(
                         next_model_hint: result.next_model_hint.clone(),
                         task_done: result.task_done.clone(),
                         task_failed: result.task_failed.clone(),
+                        journal_notes: result.journal_notes.clone(),
+                        knowledge_entries: result.knowledge_entries.clone(),
+                        files_modified: Vec::new(), // populated during streaming, not parsing
                     });
                 }
                 if suppress_text {
