@@ -322,6 +322,72 @@ pub fn print_task_working(iteration: u32, task_id: &str, title: &str) {
     );
 }
 
+/// Print review loop start message.
+pub fn print_review_start(kind: &str, feature_name: &str) {
+    println!(
+        "\n{}",
+        format!("Reviewing {} for '{}'...", kind, feature_name).cyan()
+    );
+}
+
+/// Print review round start message.
+pub fn print_review_round(round: u32, max: u32, kind: &str) {
+    println!(
+        "  {} {}",
+        format!("{} review round {}/{}", kind, round, max).cyan(),
+        "→".dimmed()
+    );
+}
+
+/// Print review round result.
+pub fn print_review_result(round: u32, passed: bool, changes_summary: &str, kind: &str) {
+    let _ = round;
+    if passed {
+        println!(
+            "  {} {} review: {}",
+            "Pass".green(),
+            kind,
+            "no major issues found".dimmed()
+        );
+    } else {
+        println!(
+            "  {} {} review: {}",
+            "Changes".yellow(),
+            kind,
+            changes_summary.dimmed()
+        );
+    }
+}
+
+/// Print review complete message.
+pub fn print_review_complete(kind: &str, feature_name: &str, rounds: u32) {
+    let rounds_text = if rounds == 1 {
+        "1 round".to_string()
+    } else {
+        format!("{} rounds", rounds)
+    };
+    println!(
+        "{}",
+        format!(
+            "Review complete: '{}' {} finalized after {}.",
+            feature_name, kind, rounds_text
+        )
+        .green()
+    );
+}
+
+/// Print review max rounds reached message.
+pub fn print_review_max_rounds(kind: &str, feature_name: &str, max: u32) {
+    println!(
+        "{}",
+        format!(
+            "Review limit: '{}' {} stabilized after {} rounds.",
+            feature_name, kind, max
+        )
+        .yellow()
+    );
+}
+
 fn speak(message: &str) {
     if Command::new("which").arg("say").output().is_ok() {
         let msg = message.to_string();

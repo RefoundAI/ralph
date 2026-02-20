@@ -9,6 +9,7 @@ mod journal;
 mod knowledge;
 mod output;
 mod project;
+mod review;
 mod run_loop;
 mod sandbox;
 mod strategy;
@@ -374,13 +375,24 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             let system_prompt = build_feature_spec_system_prompt(&name, &spec_path_str, &context);
             let initial_message = build_initial_message_spec(&name, resuming);
 
-            // Launch interactive session (plan mode: explore before writing)
+            // Launch interactive session (plan mode, always opus)
             claude::interactive::run_interactive(
                 &system_prompt,
                 &initial_message,
-                model.as_deref(),
+                Some(model.as_deref().unwrap_or("opus")),
                 true,
             )?;
+
+            // Iterative review loop
+            if spec_path.exists() {
+                review::review_document(
+                    &spec_path_str,
+                    review::DocumentKind::Spec,
+                    &name,
+                    None,
+                    &context,
+                )?;
+            }
 
             // Update feature with spec path
             feature::update_feature_spec_path(&db, &feat.id, &spec_path_str)?;
@@ -428,13 +440,24 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 build_feature_plan_system_prompt(&name, &spec_content, &plan_path_str, &context);
             let initial_message = build_initial_message_plan(&name, resuming);
 
-            // Launch interactive session (plan mode: explore before writing)
+            // Launch interactive session (plan mode, always opus)
             claude::interactive::run_interactive(
                 &system_prompt,
                 &initial_message,
-                model.as_deref(),
+                Some(model.as_deref().unwrap_or("opus")),
                 true,
             )?;
+
+            // Iterative review loop
+            if plan_path.exists() {
+                review::review_document(
+                    &plan_path_str,
+                    review::DocumentKind::Plan,
+                    &name,
+                    Some(&spec_content),
+                    &context,
+                )?;
+            }
 
             // Update feature with plan path and status
             feature::update_feature_plan_path(&db, &feat.id, &plan_path_str)?;
