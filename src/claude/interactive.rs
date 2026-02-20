@@ -10,12 +10,17 @@ fn build_interactive_command(
     system_prompt: &str,
     initial_message: &str,
     model: Option<&str>,
+    plan_mode: bool,
 ) -> Command {
     let mut cmd = Command::new("claude");
     cmd.arg("--system-prompt").arg(system_prompt);
 
     if let Some(m) = model {
         cmd.arg("--model").arg(m);
+    }
+
+    if plan_mode {
+        cmd.arg("--permission-mode").arg("plan");
     }
 
     cmd.arg(initial_message);
@@ -31,8 +36,9 @@ pub fn run_interactive(
     system_prompt: &str,
     initial_message: &str,
     model: Option<&str>,
+    plan_mode: bool,
 ) -> Result<()> {
-    let status = build_interactive_command(system_prompt, initial_message, model)
+    let status = build_interactive_command(system_prompt, initial_message, model, plan_mode)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -112,7 +118,7 @@ mod tests {
 
     #[test]
     fn test_build_interactive_command_basic() {
-        let cmd = build_interactive_command("test prompt", "hello", None);
+        let cmd = build_interactive_command("test prompt", "hello", None, false);
         let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().unwrap()).collect();
 
         assert_eq!(args, ["--system-prompt", "test prompt", "hello"]);
@@ -120,12 +126,48 @@ mod tests {
 
     #[test]
     fn test_build_interactive_command_with_model() {
-        let cmd = build_interactive_command("test prompt", "hello", Some("opus"));
+        let cmd = build_interactive_command("test prompt", "hello", Some("opus"), false);
         let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().unwrap()).collect();
 
         assert_eq!(
             args,
             ["--system-prompt", "test prompt", "--model", "opus", "hello"]
+        );
+    }
+
+    #[test]
+    fn test_build_interactive_command_plan_mode() {
+        let cmd = build_interactive_command("test prompt", "hello", None, true);
+        let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().unwrap()).collect();
+
+        assert_eq!(
+            args,
+            [
+                "--system-prompt",
+                "test prompt",
+                "--permission-mode",
+                "plan",
+                "hello"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_interactive_command_plan_mode_with_model() {
+        let cmd = build_interactive_command("test prompt", "hello", Some("sonnet"), true);
+        let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().unwrap()).collect();
+
+        assert_eq!(
+            args,
+            [
+                "--system-prompt",
+                "test prompt",
+                "--model",
+                "sonnet",
+                "--permission-mode",
+                "plan",
+                "hello"
+            ]
         );
     }
 }

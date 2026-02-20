@@ -374,11 +374,12 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             let system_prompt = build_feature_spec_system_prompt(&name, &spec_path_str, &context);
             let initial_message = build_initial_message_spec(&name, resuming);
 
-            // Launch interactive session
+            // Launch interactive session (plan mode: explore before writing)
             claude::interactive::run_interactive(
                 &system_prompt,
                 &initial_message,
                 model.as_deref(),
+                true,
             )?;
 
             // Update feature with spec path
@@ -427,11 +428,12 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 build_feature_plan_system_prompt(&name, &spec_content, &plan_path_str, &context);
             let initial_message = build_initial_message_plan(&name, resuming);
 
-            // Launch interactive session
+            // Launch interactive session (plan mode: explore before writing)
             claude::interactive::run_interactive(
                 &system_prompt,
                 &initial_message,
                 model.as_deref(),
+                true,
             )?;
 
             // Update feature with plan path and status
@@ -591,6 +593,7 @@ fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
                 &system_prompt,
                 &initial_message,
                 model.as_deref(),
+                false,
             )?;
             println!("Task creation session complete.");
             Ok(ExitCode::SUCCESS)
