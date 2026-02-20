@@ -1,6 +1,6 @@
 [package]
 name = "ralph"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Autonomous agent loop harness for Claude Code"
 license = "MIT"
