@@ -402,9 +402,9 @@ Use this when:
 You can influence which model Ralph selects for the NEXT iteration by emitting a
 model hint sigil anywhere in your output:
 
-- `<next-model>opus</next-model>` — request the most capable (and expensive) model
-- `<next-model>sonnet</next-model>` — request the balanced model
-- `<next-model>haiku</next-model>` — request the fastest and cheapest model
+- `<next-model>opus</next-model>` — request Opus 4.6, the most capable (and expensive) model
+- `<next-model>sonnet</next-model>` — request Sonnet 4.6, the balanced model
+- `<next-model>haiku</next-model>` — request Haiku 4.5, the fastest and cheapest model
 
 Rules:
 - The hint applies to the NEXT iteration only; it is not persistent

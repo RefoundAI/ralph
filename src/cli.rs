@@ -57,7 +57,7 @@ pub enum Command {
         #[arg(long, value_name = "STRATEGY", env = "RALPH_MODEL_STRATEGY")]
         model_strategy: Option<String>,
 
-        /// Model for fixed strategy: opus, sonnet, haiku. Implies --model-strategy=fixed when used alone.
+        /// Model for fixed strategy: opus (4.6), sonnet (4.6), haiku (4.5). Implies --model-strategy=fixed when used alone.
         #[arg(long, value_name = "MODEL", env = "RALPH_MODEL")]
         model: Option<String>,
 
@@ -80,7 +80,7 @@ pub enum FeatureAction {
         #[arg(value_name = "NAME")]
         name: String,
 
-        /// Model to use: opus (default), sonnet, haiku
+        /// Model to use: opus 4.6 (default), sonnet 4.6, haiku 4.5
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
     },
@@ -90,7 +90,7 @@ pub enum FeatureAction {
         #[arg(value_name = "NAME")]
         name: String,
 
-        /// Model to use: opus (default), sonnet, haiku
+        /// Model to use: opus 4.6 (default), sonnet 4.6, haiku 4.5
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
     },
@@ -100,7 +100,7 @@ pub enum FeatureAction {
         #[arg(value_name = "NAME")]
         name: String,
 
-        /// Model to use: opus (default), sonnet, haiku
+        /// Model to use: opus 4.6 (default), sonnet 4.6, haiku 4.5
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
     },
@@ -139,7 +139,7 @@ pub enum TaskAction {
     },
     /// Interactively create a new standalone task (Claude-assisted)
     Create {
-        /// Model to use: opus (default), sonnet, haiku
+        /// Model to use: opus 4.6 (default), sonnet 4.6, haiku 4.5
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
     },
