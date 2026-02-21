@@ -11,3 +11,5 @@ pub mod sigils;
 pub mod streaming;
 pub mod tools;
 pub mod types;
+
+pub use types::*;
