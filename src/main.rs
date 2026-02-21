@@ -1,5 +1,6 @@
 //! Ralph - Autonomous agent loop harness for Claude Code
 
+mod acp;
 mod claude;
 mod cli;
 mod config;
@@ -904,11 +905,11 @@ fn print_task_tree(tree: &[dag::Task], current_id: &str, prefix: &str, is_last: 
 
 fn build_feature_spec_system_prompt(name: &str, spec_path: &str, context: &str) -> String {
     format!(
-        r#"You are helping the user craft a specification for a new project or feature. Their slug to describe this is "{name}".
+        r#"You are co-authoring a specification for a new project or feature with the user - "{name}".
 
 ## Your Role
 
-Interview the user to understand their requirements, then write a comprehensive specification document.
+Interview the user thoroughly to understand their requirements, then write a comprehensive specification document.
 
 ## Guidelines
 
@@ -920,7 +921,7 @@ Interview the user to understand their requirements, then write a comprehensive 
   - Dependencies and integration points
 
 - The spec should be:
-  - Detailed enough for an AI agent to implement without ambiguity
+  - Detailed & clear enough for one or more AI agents to implement without prior context
   - Structured with markdown sections
   - Concrete with examples and schemas
   - Testable with clear acceptance criteria

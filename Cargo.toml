@@ -18,6 +18,11 @@ toml = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 signal-hook = "0.3"
+agent-client-protocol = "0.9"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+async-trait = "0.1"
+shlex = "1"
 
 [dev-dependencies]
 tempfile = "3"
