@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 
+use crate::acp;
 use crate::config::Config;
 use crate::dag::Task;
 
@@ -14,61 +15,41 @@ pub struct VerificationResult {
 
 /// Verify a completed task against its spec and plan.
 ///
-/// Spawns a read-only Claude session that can run tests and inspect code
-/// but cannot modify the codebase.
-pub fn verify_task(
+/// Spawns a read-only ACP session that can run tests and inspect code
+/// but cannot modify the codebase (write_text_file is rejected).
+pub async fn verify_task(
     config: &Config,
     task: &Task,
     spec_content: Option<&str>,
     plan_content: Option<&str>,
-    log_file: &str,
+    _log_file: &str,
 ) -> Result<VerificationResult> {
     let system_prompt = build_verification_prompt(task, spec_content, plan_content);
 
-    // Spawn Claude with restricted tools (read-only + tests)
-    let args = vec![
-        "--print".to_string(),
-        "--verbose".to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--no-session-persistence".to_string(),
-        "--model".to_string(),
-        config.current_model.clone(),
-        "--allowed-tools".to_string(),
-        "Bash Read Glob Grep".to_string(),
-        "--system-prompt".to_string(),
-        system_prompt,
-        "Verify the task described in the system prompt.".to_string(),
-    ];
+    let result = acp::connection::run_autonomous(
+        &config.agent_command,
+        &config.project_root,
+        &system_prompt,
+        "Verify the task.",
+        true, // read_only = true
+        Some(&config.current_model),
+    )
+    .await?;
 
-    let run_result = crate::claude::client::run_direct_with_args(&args, Some(log_file))?;
+    let text = &result.full_text;
 
-    let result = match run_result {
-        crate::claude::client::RunResult::Completed(r) => r,
-        crate::claude::client::RunResult::Interrupted => {
-            return Ok(VerificationResult {
-                passed: false,
-                reason: "Verification interrupted by user".to_string(),
-            });
-        }
-    };
-
-    // Parse verification sigils from the result
-    if let Some(ref r) = result {
-        if let Some(ref text) = r.result {
-            if parse_verify_pass(text) {
-                return Ok(VerificationResult {
-                    passed: true,
-                    reason: "Verification passed".to_string(),
-                });
-            }
-            if let Some(reason) = parse_verify_fail(text) {
-                return Ok(VerificationResult {
-                    passed: false,
-                    reason,
-                });
-            }
-        }
+    // Parse verification sigils from the accumulated agent text
+    if parse_verify_pass(text) {
+        return Ok(VerificationResult {
+            passed: true,
+            reason: "Verification passed".to_string(),
+        });
+    }
+    if let Some(reason) = parse_verify_fail(text) {
+        return Ok(VerificationResult {
+            passed: false,
+            reason,
+        });
     }
 
     // No sigil found — treat as failure

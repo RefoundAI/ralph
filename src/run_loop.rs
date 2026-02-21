@@ -192,7 +192,8 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                         spec_content.as_deref(),
                         plan_content.as_deref(),
                         &log_file,
-                    )?;
+                    )
+                    .await?;
                 } else {
                     eprintln!(
                         "Warning: task-done sigil ID {} does not match assigned task {}",
@@ -480,7 +481,7 @@ fn get_last_failure_reason(db: &Db, task_id: &str) -> Result<String> {
 }
 
 /// Handle a task-done sigil: verify (if enabled) and complete or retry.
-fn handle_task_done(
+async fn handle_task_done(
     db: &Db,
     config: &Config,
     task: &Task,
@@ -495,7 +496,7 @@ fn handle_task_done(
         formatter::print_verification_start(config.iteration, task_id);
 
         let v_result =
-            verification::verify_task(config, task, spec_content, plan_content, log_file)?;
+            verification::verify_task(config, task, spec_content, plan_content, log_file).await?;
 
         if v_result.passed {
             // Verification passed — complete the task
