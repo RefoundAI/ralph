@@ -79,6 +79,22 @@ impl RalphClient {
         std::mem::take(&mut *files)
     }
 
+    /// Kill all active terminal sessions and remove them from the map.
+    ///
+    /// Called during cleanup to prevent orphaned subprocesses after an
+    /// iteration completes (or is interrupted). Each session's child process
+    /// is killed and its reader tasks are aborted.
+    pub async fn cleanup_all_terminals(&self) {
+        // Drain the map first so we don't hold the borrow across await points.
+        let sessions: Vec<tools::TerminalSession> = {
+            let mut terminals = self.terminals.borrow_mut();
+            terminals.drain().map(|(_, v)| v).collect()
+        };
+        for session in sessions {
+            tools::release_terminal(session).await;
+        }
+    }
+
     /// Generate a terminal ID string for a new terminal session.
     fn generate_terminal_id(&self) -> String {
         let id = self.next_terminal_id.get();
