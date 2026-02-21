@@ -19,7 +19,7 @@ Ralph is an autonomous agent loop harness that iteratively invokes Claude Code u
 ## Architecture
 
 ### Core Loop (`src/run_loop.rs`)
-DAG-driven loop: open `.ralph/progress.db`, get scoped ready tasks, claim one, build iteration context (parent, blockers, spec/plan, retry info, journal/knowledge context), run Claude, handle sigils, verify (if enabled), retry on failure, repeat. No async runtime — uses synchronous `std::process` with `BufReader::lines()` for streaming.
+DAG-driven async loop: open `.ralph/progress.db`, get scoped ready tasks, claim one, build iteration context (parent, blockers, spec/plan, retry info, journal/knowledge context), run ACP agent session, handle sigils, verify (if enabled), retry on failure, repeat. Uses tokio async runtime with `run_iteration()` driving the ACP connection lifecycle.
 
 **Outcome enum**: `Complete`, `Failure`, `LimitReached`, `Blocked` (no ready tasks but incomplete tasks remain), `NoPlan` (DAG is empty), `Interrupted` (user pressed Ctrl+C and chose not to continue).
 
@@ -39,36 +39,35 @@ SQLite-based task management with WAL mode and foreign keys (schema v3):
 CRUD operations for features: `create_feature`, `get_feature` (by name), `get_feature_by_id`, `list_features`, `update_feature_status/spec_path/plan_path`, `ensure_feature_dirs`, `read_spec`, `read_plan`, `feature_exists`.
 
 ### Verification Agent (`src/verification.rs`)
-Spawns a read-only Claude session to verify completed tasks. Uses restricted tools (`Bash Read Glob Grep`). Parses `<verify-pass/>` and `<verify-fail>reason</verify-fail>` sigils.
+Spawns a read-only ACP agent session to verify completed tasks. Uses `run_autonomous()` with `read_only=true` — the `RalphClient` rejects `fs/write_text_file` but permits terminal operations so the agent can run `cargo test`. Parses `<verify-pass/>` and `<verify-fail>reason</verify-fail>` sigils.
 
 ### Interrupt Handling (`src/interrupt.rs`)
 Graceful Ctrl+C support using `signal-hook`. Registers a SIGINT handler that sets an `AtomicBool` flag on first press and force-exits (`exit(130)`) on second press. The stream reader checks `is_interrupted()` each line and returns `StreamResult::Interrupted` early, which propagates up as `RunResult::Interrupted`. On interrupt the run loop: prints an interrupted banner, prompts the user for task feedback (multi-line, empty to skip), appends feedback to the task description as a `**User Guidance**` section, logs a journal entry with outcome `"interrupted"`, releases the task claim via `release_claim()`, and asks whether to continue. Key functions: `register_signal_handler()`, `is_interrupted()`, `clear_interrupt()`, `prompt_for_feedback()`, `append_feedback_to_description()`, `should_continue()`.
 
-### Claude Integration (`src/claude/`)
-- **client.rs**: Spawns `claude` CLI with `--output-format stream-json` and `--model <model>`, handles both direct and sandboxed execution. Builds the system prompt with DAG task assignment instructions, spec/plan content, retry info, journal/knowledge context sections, and Memory instructions (with `<journal>` and `<knowledge>` sigils). Defines `RunResult` (`Completed`/`Interrupted`) and `StreamResult` enums for interrupt-aware process management. Defines `TaskInfo`, `ParentContext`, `BlockerContext`, `RetryInfo`, `IterationContext` (with `run_id`, `journal_context`, `knowledge_context`) structs. `build_task_context()` renders task assignment markdown.
-- **interactive.rs**: `run_interactive()` spawns Claude with inherited stdio for interactive sessions (used by spec, plan, build, and task create commands).
-- **events.rs**: Typed event structs for NDJSON parsing. Parses sigils from result text: `<task-done>`, `<task-failed>`, `<next-model>`, `<promise>COMPLETE/FAILURE</promise>`, `<journal>`, `<knowledge>`. `ResultEvent` includes `journal_notes`, `knowledge_entries`, and `files_modified` fields.
-- **parser.rs**: Deserializes raw JSON into typed events
+### ACP Integration (`src/acp/`)
+Ralph communicates with AI agents via the Agent Client Protocol (ACP) — a JSON-RPC 2.0 standard over stdin/stdout. Ralph is the ACP client and tool provider; any ACP-compliant agent binary can be used.
+
+- **connection.rs**: Agent spawning, ACP connection lifecycle, `run_iteration()` (the main entry point for the agent loop), `run_autonomous()` (for verification, review, and feature build). Handles interrupt cancellation via `tokio::select!`, stop reason mapping, and process cleanup.
+- **client_impl.rs**: `RalphClient` implementing the ACP `Client` trait. Handles `session_notification` (accumulates text, renders output), `request_permission` (auto-approve normal / deny writes in read-only mode), and all tool calls delegated from the agent.
+- **tools.rs**: Terminal session management — `TerminalSession` struct with stdout/stderr reader tasks, `create_terminal`, `terminal_output`, `wait_for_terminal_exit`, `kill_terminal_command`, `release_terminal` handlers.
+- **prompt.rs**: Prompt text construction — `build_prompt_text()` concatenates system instructions and task context into a single `TextContent` block (ACP has no separate system prompt channel). Migrated from `claude/client.rs`.
+- **sigils.rs**: Sigil extraction — `extract_sigils()` combines all parsers into a `SigilResult`. Individual parsers: `parse_task_done()`, `parse_task_failed()`, `parse_next_model_hint()`, `parse_journal_sigil()`, `parse_knowledge_sigils()`.
+- **streaming.rs**: Session update rendering — maps ACP `SessionUpdate` variants to terminal output (text in bright white, thoughts in dim, tool calls in cyan/dimmed).
+- **interactive.rs**: `run_interactive()` — ACP-mediated interactive sessions where Ralph reads user input and sends it as prompts; `run_streaming()` — single autonomous prompt for feature build.
+- **types.rs**: `RunResult` (`Completed(StreamingResult)` / `Interrupted`), `StreamingResult` (full_text, files_modified, duration_ms, stop_reason), `SigilResult`, `IterationContext`, `TaskInfo`, `ParentContext`, `BlockerContext`, `RetryInfo`, `KnowledgeSigil`.
 
 ### Project Configuration (`src/project.rs`)
 - Discovers `.ralph.toml` by walking up directory tree from CWD
 - `ralph init` creates `.ralph.toml`, `.ralph/` directory structure (including `features/`, `knowledge/`), `.claude/skills/` directory, and empty `progress.db`. Includes backward-compat migration for legacy `.ralph/skills/` directories.
-- Config sections: `[execution]` (max_retries, verify)
+- Config sections: `[execution]` (max_retries, verify), `[agent]` (command, default: `"claude"`)
 
 ### Config (`src/config.rs`)
-- Holds the `Config` struct: prompt file, limits, iteration counters, sandbox settings, model strategy, agent ID, run ID, project root, parsed `RalphConfig`, max_retries, verify, run_target
+- Holds the `Config` struct: agent command, limits, iteration counters, model strategy, agent ID, run ID, project root, parsed `RalphConfig`, max_retries, verify, run_target
 - Defines the `ModelStrategy` enum: `Fixed`, `CostOptimized`, `Escalate`, `PlanThenExecute`
 - Defines the `RunTarget` enum: `Feature(String)`, `Task(String)`
 - Generates agent IDs: `agent-{8 hex}` from `DefaultHasher` over timestamp + PID
 - Generates run IDs: `run-{8 hex}` via `generate_run_id()` from SHA-256 of timestamp + counter
-- Default allowed tools list: `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep`, `Task`, `TodoWrite`, `NotebookEdit`, `WebFetch`, `WebSearch`, `mcp__*`
-
-### Sandbox (`src/sandbox/`)
-macOS `sandbox-exec` integration for filesystem write restrictions:
-- **profile.rs**: Generates sandbox.sb profiles dynamically
-- **rules.rs**: Defines allow rules (e.g., `--allow=aws` grants `~/.aws` write access)
-
-The sandbox denies all writes except: project directory, temp dirs, Claude state (`~/.claude`, `~/.config/claude`), `~/.cache`, `~/.local/state`, and git worktree roots. Also blocks `com.apple.systemevents` to prevent UI automation.
+- `agent_command` resolved via: `--agent` flag > `RALPH_AGENT` env > `[agent].command` in `.ralph.toml` > `"claude"`. Validated with `shlex::split()` — error on malformed input (e.g. unclosed quotes).
 
 ### Output (`src/output/`)
 - **formatter.rs**: Terminal output formatting with ANSI colors via `colored` crate. Renders streaming deltas (thinking in dim, text in bright white), tool use (cyan name, dimmed input), tool errors (red, first 5 lines), result summaries (duration + cost in green). Uses macOS `say` for audio notifications. Clickable file hyperlinks via terminal escape codes.
@@ -108,7 +107,6 @@ Claude's output is scanned for:
 - `.ralph/features/<name>/plan.md` - Feature implementation plans
 - `.claude/skills/<name>/SKILL.md` - Reusable agent skills with YAML frontmatter
 - `.ralph/knowledge/<name>.md` - Project knowledge entries with YAML frontmatter
-- `prompt` (default) - Task description file read by Claude each iteration
 
 ## CLI
 
@@ -118,10 +116,10 @@ Ralph uses a nested subcommand architecture:
 ralph init                        # Initialize project (.ralph.toml, .ralph/ dirs)
 ralph feature spec <name>         # Interactive: craft a specification
 ralph feature plan <name>         # Interactive: create implementation plan from spec
-ralph feature build <name>        # Decompose plan into task DAG (interactive CLI-based)
+ralph feature build <name>        # Decompose plan into task DAG (autonomous ACP session)
 ralph feature list                # List features and status
 ralph task add <TITLE> [flags]     # Non-interactive task creation (scriptable)
-ralph task create [--model M]     # Interactive Claude-assisted task creation
+ralph task create [--model M]     # Interactive ACP-assisted task creation
 ralph task show <ID> [--json]     # Full task details
 ralph task list [filters] [--json] # List tasks (feature-scoped, filterable)
 ralph task update <ID> [flags]    # Update task fields
@@ -139,19 +137,18 @@ ralph run <target>                # Execute scoped work (feature name or task ID
   --limit=N                       # Max iterations (0=unlimited)
   --model=MODEL                   # opus, sonnet, haiku (implies fixed strategy)
   --model-strategy=STRAT          # fixed, cost-optimized, escalate, plan-then-execute
-  --no-sandbox                    # Disable macOS sandbox
-  --allow=RULE                    # Enable sandbox rule (e.g., aws)
+  --agent=CMD                     # ACP agent command (env: RALPH_AGENT, default: claude)
   --max-retries=N                 # Maximum retries for failed tasks
   --no-verify                     # Disable autonomous verification
 ```
 
-Environment variables: `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RALPH_ITERATION`, `RALPH_TOTAL`.
+Environment variables: `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RALPH_ITERATION`, `RALPH_TOTAL`, `RALPH_AGENT`.
 
 ## Documentation (`docs/`)
 
 The `docs/` directory contains detailed prose documentation. Consult these when working on or near the relevant subsystem — they have context beyond what this file covers.
 
-- **architecture.md** — Full system design: module structure, data model, schema, execution modes, sandbox. Read when adding a new subsystem or understanding how pieces connect.
+- **architecture.md** — Full system design: module structure, data model, schema, execution modes, ACP protocol. Read when adding a new subsystem or understanding how pieces connect.
 - **agent-loop.md** — The ten-step iteration lifecycle inside `run_loop.rs`: context assembly, model selection, sigil parsing, outcome handling. Read when debugging loop behavior or modifying prompt construction.
 - **task-management.md** — Task data model, SQLite schema, status state machine, parent-child hierarchies, dependency edges, cycle detection, ready queries, retries. Read when changing task internals or query logic.
 - **interactive-flows.md** — Three Claude spawning modes (interactive, streaming, loop iteration), their CLI arguments, and output handling. Read when working on `feature spec/plan/build` or output formatting.
