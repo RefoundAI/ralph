@@ -6,6 +6,23 @@ description = "Autonomous agent loop harness for Claude Code"
 license = "MIT"
 authors = ["Ralph Contributors"]
 repository = "https://github.com/Studio-Sasquatch/ralph"
+# Disable auto-discovery of integration tests to avoid conflicts with mock agent binaries.
+autotests = false
+
+[features]
+# Build the mock ACP agent binaries used by integration tests.
+# Usage: cargo build --features test-mock-agents
+test-mock-agents = []
+
+[[bin]]
+name = "mock-agent"
+path = "tests/mock_agent.rs"
+required-features = ["test-mock-agents"]
+
+[[bin]]
+name = "mock-agent-tools"
+path = "tests/mock_agent_tools.rs"
+required-features = ["test-mock-agents"]
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
