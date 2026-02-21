@@ -33,7 +33,7 @@ pub enum Outcome {
 }
 
 /// Run the main loop until completion, failure, or limit.
-pub fn run(mut config: Config) -> Result<Outcome> {
+pub async fn run(mut config: Config) -> Result<Outcome> {
     // Register Ctrl+C signal handler for graceful interrupt
     crate::interrupt::register_signal_handler().context("Failed to register signal handler")?;
 

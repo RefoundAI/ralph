@@ -22,8 +22,9 @@ use clap::Parser;
 use colored::Colorize;
 use std::process::ExitCode;
 
-fn main() -> ExitCode {
-    match run() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
+    match run().await {
         Ok(result) => result,
         Err(e) => {
             eprintln!("Error: {e:#}");
@@ -244,7 +245,7 @@ mod tests {
     }
 }
 
-fn run() -> Result<ExitCode> {
+async fn run() -> Result<ExitCode> {
     let args = cli::Args::parse_args();
 
     match args.command {
@@ -252,8 +253,8 @@ fn run() -> Result<ExitCode> {
             project::init()?;
             Ok(ExitCode::SUCCESS)
         }
-        Some(cli::Command::Feature { action }) => handle_feature(action),
-        Some(cli::Command::Task { action }) => handle_task(action),
+        Some(cli::Command::Feature { action }) => handle_feature(action).await,
+        Some(cli::Command::Task { action }) => handle_task(action).await,
         Some(cli::Command::Run {
             target,
             once,
@@ -303,7 +304,7 @@ fn run() -> Result<ExitCode> {
 
             output::formatter::print_iteration_info(&config);
 
-            match run_loop::run(config)? {
+            match run_loop::run(config).await? {
                 run_loop::Outcome::Complete => {
                     output::formatter::print_complete();
                     Ok(ExitCode::SUCCESS)
@@ -340,7 +341,7 @@ fn run() -> Result<ExitCode> {
 }
 
 /// Handle `ralph feature <action>` subcommands.
-fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
+async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
     let project = project::discover()?;
     let db_path = project.root.join(".ralph/progress.db");
     let db = dag::open_db(db_path.to_str().unwrap())?;
@@ -577,7 +578,7 @@ fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
 }
 
 /// Handle `ralph task <action>` subcommands.
-fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
+async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
     let project = project::discover()?;
     let db_path = project.root.join(".ralph/progress.db");
     let db = dag::open_db(db_path.to_str().unwrap())?;
