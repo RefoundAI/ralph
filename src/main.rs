@@ -258,13 +258,12 @@ async fn run() -> Result<ExitCode> {
         Some(cli::Command::Run {
             target,
             once,
-            no_sandbox: _,
             limit,
-            allow: _,
             model_strategy,
             model,
             max_retries,
             no_verify,
+            agent,
         }) => {
             let project = project::discover()?;
 
@@ -297,7 +296,7 @@ async fn run() -> Result<ExitCode> {
                 Some(run_target),
                 max_retries,
                 no_verify,
-                None, // agent: resolved from RALPH_AGENT env or config file
+                agent,
             )?;
 
             output::formatter::print_iteration_info(&config);
@@ -345,7 +344,11 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
     let db = dag::open_db(db_path.to_str().unwrap())?;
 
     match action {
-        cli::FeatureAction::Spec { name, model } => {
+        cli::FeatureAction::Spec {
+            name,
+            model,
+            agent: _,
+        } => {
             // Create or get feature
             let feat = if feature::feature_exists(&db, &name)? {
                 feature::get_feature(&db, &name)?
@@ -406,7 +409,11 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             println!("Feature '{}' spec saved.", name);
             Ok(ExitCode::SUCCESS)
         }
-        cli::FeatureAction::Plan { name, model } => {
+        cli::FeatureAction::Plan {
+            name,
+            model,
+            agent: _,
+        } => {
             // Validate feature exists with spec
             let feat = feature::get_feature(&db, &name)?;
             if feat.spec_path.is_none() {
@@ -472,7 +479,11 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             println!("Feature '{}' plan saved.", name);
             Ok(ExitCode::SUCCESS)
         }
-        cli::FeatureAction::Build { name, model } => {
+        cli::FeatureAction::Build {
+            name,
+            model,
+            agent: _,
+        } => {
             // Validate feature has spec and plan
             let feat = feature::get_feature(&db, &name)?;
             if feat.spec_path.is_none() {
@@ -609,7 +620,7 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
             println!("{}", task.id);
             Ok(ExitCode::SUCCESS)
         }
-        cli::TaskAction::Create { model } => {
+        cli::TaskAction::Create { model, agent: _ } => {
             // Gather project context including standalone tasks
             let context = gather_project_context(&project, &db, true);
 

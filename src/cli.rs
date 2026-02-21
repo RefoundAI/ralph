@@ -41,17 +41,9 @@ pub enum Command {
         #[arg(short = 'o', long)]
         once: bool,
 
-        /// Disable sandbox-exec
-        #[arg(long)]
-        no_sandbox: bool,
-
         /// Maximum iterations; 0 = forever
         #[arg(long, value_name = "N", env = "RALPH_LIMIT")]
         limit: Option<u32>,
-
-        /// Enable rule set (e.g., --allow=aws)
-        #[arg(short = 'a', long = "allow", value_name = "RULE")]
-        allow: Vec<String>,
 
         /// Model strategy: fixed, cost-optimized, escalate, plan-then-execute
         #[arg(long, value_name = "STRATEGY", env = "RALPH_MODEL_STRATEGY")]
@@ -68,6 +60,10 @@ pub enum Command {
         /// Disable autonomous verification
         #[arg(long)]
         no_verify: bool,
+
+        /// Agent command to spawn
+        #[arg(long, env = "RALPH_AGENT")]
+        agent: Option<String>,
     },
 }
 
@@ -83,6 +79,10 @@ pub enum FeatureAction {
         /// Model to use: opus 4.6 (default), sonnet 4.6, haiku 4.5
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
+
+        /// Agent command to spawn
+        #[arg(long, env = "RALPH_AGENT")]
+        agent: Option<String>,
     },
     /// Interactively create an implementation plan from a spec
     Plan {
@@ -93,6 +93,10 @@ pub enum FeatureAction {
         /// Model to use: opus 4.6 (default), sonnet 4.6, haiku 4.5
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
+
+        /// Agent command to spawn
+        #[arg(long, env = "RALPH_AGENT")]
+        agent: Option<String>,
     },
     /// Decompose a plan into a task DAG
     Build {
@@ -103,6 +107,10 @@ pub enum FeatureAction {
         /// Model to use: opus 4.6 (default), sonnet 4.6, haiku 4.5
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
+
+        /// Agent command to spawn
+        #[arg(long, env = "RALPH_AGENT")]
+        agent: Option<String>,
     },
     /// List all features and their status
     List,
@@ -142,6 +150,10 @@ pub enum TaskAction {
         /// Model to use: opus 4.6 (default), sonnet 4.6, haiku 4.5
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
+
+        /// Agent command to spawn
+        #[arg(long, env = "RALPH_AGENT")]
+        agent: Option<String>,
     },
     /// Show full task details
     Show {
@@ -336,6 +348,63 @@ pub fn resolve_model_strategy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_agent_flag_parsed_on_run() {
+        let args = Args::try_parse_from(["ralph", "run", "feat", "--agent", "gemini-cli"]).unwrap();
+        match args.command {
+            Some(Command::Run { agent, target, .. }) => {
+                assert_eq!(agent, Some("gemini-cli".to_string()));
+                assert_eq!(target, "feat");
+            }
+            _ => panic!("expected Run command"),
+        }
+    }
+
+    #[test]
+    fn test_agent_flag_parsed_on_feature_spec() {
+        let args =
+            Args::try_parse_from(["ralph", "feature", "spec", "name", "--agent", "gemini-cli"])
+                .unwrap();
+        match args.command {
+            Some(Command::Feature {
+                action: FeatureAction::Spec { name, agent, .. },
+            }) => {
+                assert_eq!(agent, Some("gemini-cli".to_string()));
+                assert_eq!(name, "name");
+            }
+            _ => panic!("expected feature spec command"),
+        }
+    }
+
+    #[test]
+    fn test_agent_flag_parsed_on_feature_build() {
+        let args =
+            Args::try_parse_from(["ralph", "feature", "build", "name", "--agent", "gemini-cli"])
+                .unwrap();
+        match args.command {
+            Some(Command::Feature {
+                action: FeatureAction::Build { name, agent, .. },
+            }) => {
+                assert_eq!(agent, Some("gemini-cli".to_string()));
+                assert_eq!(name, "name");
+            }
+            _ => panic!("expected feature build command"),
+        }
+    }
+
+    #[test]
+    fn test_no_sandbox_flag_absent() {
+        let result = Args::try_parse_from(["ralph", "run", "feat", "--no-sandbox"]);
+        assert!(result.is_err(), "--no-sandbox should not be recognized");
+    }
+
+    #[test]
+    fn test_allow_flag_absent() {
+        let result = Args::try_parse_from(["ralph", "run", "feat", "--allow", "aws"]);
+        assert!(result.is_err(), "--allow should not be recognized");
+    }
 
     #[test]
     fn model_alone_implies_fixed() {
