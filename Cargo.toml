@@ -1,6 +1,6 @@
 [package]
 name = "ralph"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 description = "Autonomous agent loop harness for Claude Code"
 license = "MIT"
@@ -17,6 +17,7 @@ chrono = "0.4"
 toml = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
+signal-hook = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
