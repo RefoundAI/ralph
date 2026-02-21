@@ -202,19 +202,28 @@ fn render_single_entry(entry: &JournalEntry) -> String {
         entry.files_modified.join(", ")
     };
     let notes = entry.notes.as_deref().unwrap_or("No notes recorded");
+    // NFR-5.2: omit cost when zero (ACP iterations don't report cost)
+    let duration_cost = if entry.cost_usd < f64::EPSILON {
+        format!("{dur:.1}s", dur = entry.duration_secs)
+    } else {
+        format!(
+            "{dur:.1}s | **Cost**: ${cost:.4}",
+            dur = entry.duration_secs,
+            cost = entry.cost_usd
+        )
+    };
     format!(
         "### Iteration {} [{outcome}]\n\
          - **Task**: {task_id}\n\
          - **Model**: {model}\n\
-         - **Duration**: {dur:.1}s | **Cost**: ${cost:.4}\n\
+         - **Duration**: {duration_cost}\n\
          - **Files**: {files}\n\
          - **Notes**: {notes}\n",
         entry.iteration,
         outcome = entry.outcome,
         task_id = entry.task_id.as_deref().unwrap_or("none"),
         model = entry.model.as_deref().unwrap_or("unknown"),
-        dur = entry.duration_secs,
-        cost = entry.cost_usd,
+        duration_cost = duration_cost,
         files = files,
         notes = notes,
     )
@@ -448,6 +457,76 @@ mod tests {
         assert!(rendered.contains("$0.0123"));
         assert!(rendered.contains("src/lib.rs, tests/test.rs"));
         assert!(rendered.contains("Implemented the core algorithm"));
+    }
+
+    /// NFR-5.2: entries with cost_usd == 0.0 omit the Cost line entirely.
+    #[test]
+    fn test_render_single_entry_zero_cost_omits_cost_line() {
+        let entry = JournalEntry {
+            id: 1,
+            run_id: "run-acp".to_string(),
+            iteration: 10,
+            task_id: Some("t-d47476".to_string()),
+            feature_id: None,
+            outcome: "done".to_string(),
+            model: Some("sonnet".to_string()),
+            duration_secs: 42.0,
+            cost_usd: 0.0,
+            files_modified: vec!["src/acp/connection.rs".to_string()],
+            notes: Some("ACP iteration".to_string()),
+            created_at: "2026-02-22T09:00:00Z".to_string(),
+        };
+
+        let rendered = render_single_entry(&entry);
+        // Duration must be shown
+        assert!(
+            rendered.contains("42.0s"),
+            "duration should always be shown"
+        );
+        // Cost must NOT appear when cost_usd == 0.0
+        assert!(
+            !rendered.contains("Cost"),
+            "Cost label should be omitted when cost_usd is 0.0"
+        );
+        assert!(
+            !rendered.contains('$'),
+            "Dollar sign should be omitted when cost_usd is 0.0"
+        );
+    }
+
+    /// NFR-5.2: entries with non-zero cost_usd still show the Cost line.
+    #[test]
+    fn test_render_single_entry_nonzero_cost_shows_cost_line() {
+        let entry = JournalEntry {
+            id: 2,
+            run_id: "run-claude".to_string(),
+            iteration: 5,
+            task_id: Some("t-abc123".to_string()),
+            feature_id: None,
+            outcome: "done".to_string(),
+            model: Some("opus".to_string()),
+            duration_secs: 198.3,
+            cost_usd: 1.1155,
+            files_modified: vec![],
+            notes: None,
+            created_at: "2026-02-22T09:30:00Z".to_string(),
+        };
+
+        let rendered = render_single_entry(&entry);
+        // Duration must be shown
+        assert!(
+            rendered.contains("198.3s"),
+            "duration should always be shown"
+        );
+        // Cost must appear when non-zero
+        assert!(
+            rendered.contains("**Cost**"),
+            "Cost label should be shown when cost_usd > 0"
+        );
+        assert!(
+            rendered.contains("$1.1155"),
+            "cost value should be shown when cost_usd > 0"
+        );
     }
 
     /// test_render_journal_context_budget: entries exceeding budget are truncated.
