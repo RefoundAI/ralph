@@ -343,11 +343,12 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
     let db = dag::open_db(db_path.to_str().unwrap())?;
 
     match action {
-        cli::FeatureAction::Spec {
-            name,
-            model,
-            agent: _,
-        } => {
+        cli::FeatureAction::Spec { name, model, agent } => {
+            // Resolve agent command: --agent flag > RALPH_AGENT env > config > "claude"
+            let agent_command = agent
+                .or_else(|| std::env::var("RALPH_AGENT").ok())
+                .unwrap_or_else(|| project.config.agent.command.clone());
+
             // Create or get feature
             let feat = if feature::feature_exists(&db, &name)? {
                 feature::get_feature(&db, &name)?
@@ -399,7 +400,10 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                     &name,
                     None,
                     &context,
-                )?;
+                    &agent_command,
+                    &project.root,
+                )
+                .await?;
             }
 
             // Update feature with spec path
@@ -408,11 +412,12 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             println!("Feature '{}' spec saved.", name);
             Ok(ExitCode::SUCCESS)
         }
-        cli::FeatureAction::Plan {
-            name,
-            model,
-            agent: _,
-        } => {
+        cli::FeatureAction::Plan { name, model, agent } => {
+            // Resolve agent command: --agent flag > RALPH_AGENT env > config > "claude"
+            let agent_command = agent
+                .or_else(|| std::env::var("RALPH_AGENT").ok())
+                .unwrap_or_else(|| project.config.agent.command.clone());
+
             // Validate feature exists with spec
             let feat = feature::get_feature(&db, &name)?;
             if feat.spec_path.is_none() {
@@ -468,7 +473,10 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                     &name,
                     Some(&spec_content),
                     &context,
-                )?;
+                    &agent_command,
+                    &project.root,
+                )
+                .await?;
             }
 
             // Update feature with plan path and status

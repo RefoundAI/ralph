@@ -1,7 +1,10 @@
 //! Iterative review agent for spec and plan documents.
 
+use std::path::Path;
+
 use anyhow::Result;
 
+use crate::acp;
 use crate::output::formatter;
 
 /// Maximum number of review rounds before stopping.
@@ -25,15 +28,17 @@ impl DocumentKind {
 
 /// Run an iterative review loop on a spec or plan document.
 ///
-/// Spawns autonomous Claude sessions that review and improve the document
+/// Spawns autonomous ACP agent sessions that review and improve the document
 /// until either a review agent finds no major issues or the maximum number
 /// of rounds is reached.
-pub fn review_document(
+pub async fn review_document(
     document_path: &str,
     kind: DocumentKind,
     feature_name: &str,
     spec_content: Option<&str>,
     project_context: &str,
+    agent_command: &str,
+    project_root: &Path,
 ) -> Result<u32> {
     let label = kind.label();
 
@@ -49,7 +54,10 @@ pub fn review_document(
             spec_content,
             project_context,
             round,
-        )?;
+            agent_command,
+            project_root,
+        )
+        .await?;
 
         if result.passed {
             formatter::print_review_result(round, true, "", label);
@@ -71,13 +79,15 @@ struct ReviewResult {
 }
 
 /// Run a single review agent on the document.
-fn run_review_agent(
+async fn run_review_agent(
     document_path: &str,
     kind: DocumentKind,
     feature_name: &str,
     spec_content: Option<&str>,
     project_context: &str,
     round: u32,
+    agent_command: &str,
+    project_root: &Path,
 ) -> Result<ReviewResult> {
     let system_prompt = build_review_prompt(
         document_path,
@@ -88,31 +98,26 @@ fn run_review_agent(
         round,
     );
 
-    let args = vec![
-        "--print".to_string(),
-        "--verbose".to_string(),
-        "--output-format".to_string(),
-        "stream-json".to_string(),
-        "--no-session-persistence".to_string(),
-        "--model".to_string(),
-        "opus".to_string(),
-        "--allowed-tools".to_string(),
-        "Bash Edit Write Read Glob Grep".to_string(),
-        "--system-prompt".to_string(),
-        system_prompt,
-        format!(
-            "Review the {} at {} and improve it.",
-            kind.label(),
-            document_path
-        ),
-    ];
+    let message = format!(
+        "Review the {} at {} and improve it.",
+        kind.label(),
+        document_path
+    );
 
-    let run_result = crate::claude::client::run_direct_with_args(&args, None)?;
+    let result = acp::connection::run_autonomous(
+        agent_command,
+        project_root,
+        &system_prompt,
+        &message,
+        false,        // read_only = false (review agent can write)
+        Some("opus"), // matching current hardcoded --model opus behavior
+    )
+    .await;
 
-    let result = match run_result {
-        crate::claude::client::RunResult::Completed(r) => r,
-        crate::claude::client::RunResult::Interrupted => {
-            // Treat interrupt as pass to prevent infinite loops
+    let result = match result {
+        Ok(r) => r,
+        Err(_) => {
+            // On agent error, treat as pass to prevent infinite loops
             return Ok(ReviewResult {
                 passed: true,
                 changes_summary: String::new(),
@@ -120,21 +125,19 @@ fn run_review_agent(
         }
     };
 
-    if let Some(ref r) = result {
-        if let Some(ref text) = r.result {
-            if parse_review_pass(text) {
-                return Ok(ReviewResult {
-                    passed: true,
-                    changes_summary: String::new(),
-                });
-            }
-            if let Some(summary) = parse_review_changes(text) {
-                return Ok(ReviewResult {
-                    passed: false,
-                    changes_summary: summary,
-                });
-            }
-        }
+    let text = &result.full_text;
+
+    if parse_review_pass(text) {
+        return Ok(ReviewResult {
+            passed: true,
+            changes_summary: String::new(),
+        });
+    }
+    if let Some(summary) = parse_review_changes(text) {
+        return Ok(ReviewResult {
+            passed: false,
+            changes_summary: summary,
+        });
     }
 
     // No sigil found — treat as pass to prevent infinite loops
