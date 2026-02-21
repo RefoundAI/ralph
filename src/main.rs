@@ -384,13 +384,15 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             let system_prompt = build_feature_spec_system_prompt(&name, &spec_path_str, &context);
             let initial_message = build_initial_message_spec(&name, resuming);
 
-            // Launch interactive session (plan mode, always opus)
-            claude::interactive::run_interactive(
+            // Launch interactive session via ACP
+            acp::interactive::run_interactive(
+                &agent_command,
                 &system_prompt,
                 &initial_message,
+                &project.root,
                 Some(model.as_deref().unwrap_or("opus")),
-                true,
-            )?;
+            )
+            .await?;
 
             // Iterative review loop
             if spec_path.exists() {
@@ -457,13 +459,15 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 build_feature_plan_system_prompt(&name, &spec_content, &plan_path_str, &context);
             let initial_message = build_initial_message_plan(&name, resuming);
 
-            // Launch interactive session (plan mode, always opus)
-            claude::interactive::run_interactive(
+            // Launch interactive session via ACP
+            acp::interactive::run_interactive(
+                &agent_command,
                 &system_prompt,
                 &initial_message,
+                &project.root,
                 Some(model.as_deref().unwrap_or("opus")),
-                true,
-            )?;
+            )
+            .await?;
 
             // Iterative review loop
             if plan_path.exists() {
@@ -486,11 +490,12 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             println!("Feature '{}' plan saved.", name);
             Ok(ExitCode::SUCCESS)
         }
-        cli::FeatureAction::Build {
-            name,
-            model,
-            agent: _,
-        } => {
+        cli::FeatureAction::Build { name, model, agent } => {
+            // Resolve agent command: --agent flag > RALPH_AGENT env > config > "claude"
+            let agent_command = agent
+                .or_else(|| std::env::var("RALPH_AGENT").ok())
+                .unwrap_or_else(|| project.config.agent.command.clone());
+
             // Validate feature has spec and plan
             let feat = feature::get_feature(&db, &name)?;
             if feat.spec_path.is_none() {
@@ -530,13 +535,16 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             let system_prompt =
                 build_feature_build_system_prompt(&spec_content, &plan_content, &root.id, &feat.id);
 
-            // Launch Claude in streaming mode — it autonomously creates the task DAG
+            // Launch ACP streaming session — agent autonomously creates the task DAG
             // via `ralph task add` and `ralph task deps add` CLI commands.
-            claude::interactive::run_streaming(
+            acp::interactive::run_streaming(
+                &agent_command,
                 &system_prompt,
                 "Read the spec and plan, then create the task DAG. When done, stop.",
+                &project.root,
                 model.as_deref(),
-            )?;
+            )
+            .await?;
 
             // Read back from DB and print summary
             let tree = dag::get_task_tree(&db, &root.id)?;
@@ -627,7 +635,12 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
             println!("{}", task.id);
             Ok(ExitCode::SUCCESS)
         }
-        cli::TaskAction::Create { model, agent: _ } => {
+        cli::TaskAction::Create { model, agent } => {
+            // Resolve agent command: --agent flag > RALPH_AGENT env > config > "claude"
+            let agent_command = agent
+                .or_else(|| std::env::var("RALPH_AGENT").ok())
+                .unwrap_or_else(|| project.config.agent.command.clone());
+
             // Gather project context including standalone tasks
             let context = gather_project_context(&project, &db, true);
 
@@ -635,13 +648,15 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
             let system_prompt = build_task_new_system_prompt(&context);
             let initial_message = build_initial_message_task_new();
 
-            // Launch interactive session
-            claude::interactive::run_interactive(
+            // Launch interactive session via ACP
+            acp::interactive::run_interactive(
+                &agent_command,
                 &system_prompt,
                 &initial_message,
+                &project.root,
                 model.as_deref(),
-                false,
-            )?;
+            )
+            .await?;
             println!("Task creation session complete.");
             Ok(ExitCode::SUCCESS)
         }
