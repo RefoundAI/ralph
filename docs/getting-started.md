@@ -54,21 +54,15 @@ This creates:
 - `.ralph.toml` -- project configuration file
 - `.ralph/` -- working directory with subdirectories:
   - `features/` -- feature specifications and plans
-  - `skills/` -- reusable agent skills
-  - `prompts/` -- prompt files
-  - `specs/` -- specification documents (legacy)
+  - `knowledge/` -- project knowledge entries
 - `.ralph/progress.db` -- SQLite task database (gitignored)
 
-The `.ralph.toml` file has three configuration sections:
+The `.ralph.toml` file configures execution behavior:
 
 ```toml
-[specs]
-# dirs = [".ralph/specs"]
-
 [execution]
 # max_retries = 3    # Maximum retries for failed tasks
 # verify = true      # Enable autonomous verification
-# learn = true       # Enable skill creation + CLAUDE.md updates
 ```
 
 All fields have sensible defaults. You can leave the file as-is to start.
@@ -328,9 +322,7 @@ hint in its output. Hints apply to the next iteration only.
 .ralph/features/<name>/
   spec.md                    Feature specification
   plan.md                    Implementation plan
-.ralph/skills/<name>/
-  SKILL.md                   Reusable agent skill (YAML frontmatter + instructions)
-.ralph/specs/                Specification documents (legacy)
+.ralph/knowledge/<name>.md   Project knowledge entries (YAML frontmatter)
 ```
 
 ## Next Steps

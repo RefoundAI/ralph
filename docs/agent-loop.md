@@ -187,7 +187,6 @@ IterationContext
   |     |     +-- task_id
   |     |     +-- title
   |     |     +-- summary (last log entry or description)
-  |     +-- specs_dirs: Vec<String>
   +-- spec_content: Option<String>
   +-- plan_content: Option<String>
   +-- retry_info: Option<RetryInfo>
@@ -423,8 +422,6 @@ Built by `build_task_context()`:
 - **Parent Context** -- If the task has a parent: parent title and description.
 - **Completed Prerequisites** -- For each done blocker: task ID, title, and
   summary (most recent log entry or original description).
-- **Reference Specs** -- Directories listed in `[specs].dirs` from
-  `.ralph.toml`.
 
 ### Feature Specification (when feature-scoped)
 

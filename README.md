@@ -152,9 +152,6 @@ flowchart TD
 The `.ralph.toml` file controls project-level defaults:
 
 ```toml
-[specs]
-# dirs = [".ralph/specs"]
-
 [execution]
 # max_retries = 3
 # verify = true

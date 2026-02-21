@@ -559,13 +559,9 @@ Discovered by walking up the directory tree from the current working directory.
 Parsed into `RalphConfig` in `src/project.rs`:
 
 ```toml
-[specs]
-dirs = [".ralph/specs"]      # Directories containing reference specs
-
 [execution]
 max_retries = 3              # Maximum retries for failed tasks
 verify = true                # Enable autonomous verification
-learn = true                 # Enable skill creation + CLAUDE.md updates
 ```
 
 All sections and fields use `#[serde(default)]` so partial configs work.
@@ -718,7 +714,6 @@ On verification failure:
 | `.ralph/features/<name>/spec.md` | Feature specification document |
 | `.ralph/features/<name>/plan.md` | Feature implementation plan |
 | `.ralph/skills/<name>/SKILL.md` | Reusable agent skills with YAML frontmatter |
-| `.ralph/specs/` | Reference specification documents |
 | `$TMPDIR/ralph/logs/<project>/<timestamp>.log` | Raw NDJSON session logs |
 
 [clap]: https://docs.rs/clap/latest/clap/

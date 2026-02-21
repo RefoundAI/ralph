@@ -53,7 +53,7 @@ Graceful Ctrl+C support using `signal-hook`. Registers a SIGINT handler that set
 ### Project Configuration (`src/project.rs`)
 - Discovers `.ralph.toml` by walking up directory tree from CWD
 - `ralph init` creates `.ralph.toml`, `.ralph/` directory structure (including `features/`, `knowledge/`), `.claude/skills/` directory, and empty `progress.db`. Includes backward-compat migration for legacy `.ralph/skills/` directories.
-- Config sections: `[specs]` (dirs), `[execution]` (max_retries, verify)
+- Config sections: `[execution]` (max_retries, verify)
 
 ### Config (`src/config.rs`)
 - Holds the `Config` struct: prompt file, limits, iteration counters, sandbox settings, model strategy, agent ID, run ID, project root, parsed `RalphConfig`, max_retries, verify, run_target
