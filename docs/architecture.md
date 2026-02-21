@@ -562,9 +562,6 @@ Parsed into `RalphConfig` in `src/project.rs`:
 [specs]
 dirs = [".ralph/specs"]      # Directories containing reference specs
 
-[prompts]
-dir = ".ralph/prompts"       # Directory for prompt files
-
 [execution]
 max_retries = 3              # Maximum retries for failed tasks
 verify = true                # Enable autonomous verification
@@ -722,7 +719,6 @@ On verification failure:
 | `.ralph/features/<name>/plan.md` | Feature implementation plan |
 | `.ralph/skills/<name>/SKILL.md` | Reusable agent skills with YAML frontmatter |
 | `.ralph/specs/` | Reference specification documents |
-| `.ralph/prompts/` | Prompt files directory |
 | `$TMPDIR/ralph/logs/<project>/<timestamp>.log` | Raw NDJSON session logs |
 
 [clap]: https://docs.rs/clap/latest/clap/

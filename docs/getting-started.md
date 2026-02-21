@@ -65,9 +65,6 @@ The `.ralph.toml` file has three configuration sections:
 [specs]
 # dirs = [".ralph/specs"]
 
-[prompts]
-# dir = ".ralph/prompts"
-
 [execution]
 # max_retries = 3    # Maximum retries for failed tasks
 # verify = true      # Enable autonomous verification
@@ -334,7 +331,6 @@ hint in its output. Hints apply to the next iteration only.
 .ralph/skills/<name>/
   SKILL.md                   Reusable agent skill (YAML frontmatter + instructions)
 .ralph/specs/                Specification documents (legacy)
-.ralph/prompts/              Prompt files
 ```
 
 ## Next Steps

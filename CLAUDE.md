@@ -53,7 +53,7 @@ Graceful Ctrl+C support using `signal-hook`. Registers a SIGINT handler that set
 ### Project Configuration (`src/project.rs`)
 - Discovers `.ralph.toml` by walking up directory tree from CWD
 - `ralph init` creates `.ralph.toml`, `.ralph/` directory structure (including `features/`, `knowledge/`), `.claude/skills/` directory, and empty `progress.db`. Includes backward-compat migration for legacy `.ralph/skills/` directories.
-- Config sections: `[specs]` (dirs), `[prompts]` (dir), `[execution]` (max_retries, verify)
+- Config sections: `[specs]` (dirs), `[execution]` (max_retries, verify)
 
 ### Config (`src/config.rs`)
 - Holds the `Config` struct: prompt file, limits, iteration counters, sandbox settings, model strategy, agent ID, run ID, project root, parsed `RalphConfig`, max_retries, verify, run_target
@@ -108,7 +108,6 @@ Claude's output is scanned for:
 - `.ralph/features/<name>/plan.md` - Feature implementation plans
 - `.claude/skills/<name>/SKILL.md` - Reusable agent skills with YAML frontmatter
 - `.ralph/knowledge/<name>.md` - Project knowledge entries with YAML frontmatter
-- `.ralph/prompts/` - Prompt files
 - `prompt` (default) - Task description file read by Claude each iteration
 
 ## CLI

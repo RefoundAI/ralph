@@ -155,9 +155,6 @@ The `.ralph.toml` file controls project-level defaults:
 [specs]
 # dirs = [".ralph/specs"]
 
-[prompts]
-# dir = ".ralph/prompts"
-
 [execution]
 # max_retries = 3
 # verify = true
