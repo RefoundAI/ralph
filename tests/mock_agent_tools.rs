@@ -24,7 +24,7 @@ use agent_client_protocol::{
     Client, ContentBlock, ContentChunk, CreateTerminalRequest, Implementation, InitializeRequest,
     InitializeResponse, NewSessionRequest, NewSessionResponse, PromptRequest, PromptResponse,
     ReadTextFileRequest, SessionId, SessionNotification, SessionUpdate, StopReason, TextContent,
-    WriteTextFileRequest,
+    WaitForTerminalExitRequest, WriteTextFileRequest,
 };
 use async_trait::async_trait;
 use tokio::task::LocalSet;
@@ -101,13 +101,24 @@ impl Agent for MockAgentTools {
         }
 
         // ------------------------------------------------------------------ //
-        // 3. Spawn a terminal (terminal/create_terminal)                      //
+        // 3. Spawn a terminal (terminal/create_terminal) and wait for exit   //
         // ------------------------------------------------------------------ //
         // Pass the full shell command as the `command` field; Ralph's handler
         // wraps it with `sh -c`.
-        let _ = conn
+        let terminal_result = conn
             .create_terminal(CreateTerminalRequest::new(session_id.clone(), "echo hello"))
             .await;
+
+        // Wait for the terminal to exit — this exercises Ralph's wait_for_terminal_exit
+        // tool handler (used by test_terminal_wait_for_exit integration test).
+        if let Ok(terminal_resp) = terminal_result {
+            let _ = conn
+                .wait_for_terminal_exit(WaitForTerminalExitRequest::new(
+                    session_id.clone(),
+                    terminal_resp.terminal_id,
+                ))
+                .await;
+        }
 
         // ------------------------------------------------------------------ //
         // 4. Send the final text chunk back to Ralph                          //

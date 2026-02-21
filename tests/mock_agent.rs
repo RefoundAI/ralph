@@ -59,8 +59,18 @@ impl Agent for MockAgent {
     }
 
     async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse> {
-        let response_text =
+        let raw_response =
             std::env::var("MOCK_RESPONSE").unwrap_or_else(|_| "Mock response".to_string());
+
+        // Special sentinel: when MOCK_RESPONSE == "ECHO_RALPH_MODEL", the agent echoes
+        // the value of the RALPH_MODEL env var back to the client.  This is used by the
+        // test_iteration_model_env_passed integration test to verify that Ralph correctly
+        // sets RALPH_MODEL on the spawned agent process.
+        let response_text = if raw_response == "ECHO_RALPH_MODEL" {
+            std::env::var("RALPH_MODEL").unwrap_or_else(|_| "RALPH_MODEL_NOT_SET".to_string())
+        } else {
+            raw_response
+        };
 
         // Send an AgentMessageChunk notification back to Ralph.
         // The borrow is held across the .await but this is safe in ?Send / single-threaded context:

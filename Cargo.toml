@@ -24,6 +24,11 @@ name = "mock-agent-tools"
 path = "tests/mock_agent_tools.rs"
 required-features = ["test-mock-agents"]
 
+[[test]]
+name = "acp_integration"
+path = "tests/acp_integration.rs"
+required-features = ["test-mock-agents"]
+
 [dependencies]
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
