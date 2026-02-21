@@ -399,7 +399,6 @@ fn build_iteration_context(
         description: task.description.clone(),
         parent,
         completed_blockers,
-        specs_dirs: config.ralph_config.specs.dirs.clone(),
     };
 
     // Journal: smart-select entries for system prompt context (FR-5.1, FR-5.2)

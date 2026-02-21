@@ -36,7 +36,6 @@ pub struct TaskInfo {
     pub description: String,
     pub parent: Option<ParentContext>,
     pub completed_blockers: Vec<BlockerContext>,
-    pub specs_dirs: Vec<String>,
 }
 
 /// Context about a task's parent task.
@@ -76,7 +75,7 @@ pub struct IterationContext {
 /// Build a task context block for the assigned task.
 ///
 /// Returns a formatted markdown block with task details, parent context,
-/// completed prerequisites, and specs directory references.
+/// and completed prerequisites.
 pub fn build_task_context(task: &TaskInfo) -> String {
     let mut output = String::new();
 
@@ -104,15 +103,6 @@ pub fn build_task_context(task: &TaskInfo) -> String {
                 blocker.task_id, blocker.title, blocker.summary
             ));
         }
-    }
-
-    // Add specs directory references
-    if !task.specs_dirs.is_empty() {
-        output.push_str("\n### Reference Specs\n");
-        output.push_str(&format!(
-            "Read all files in: {}\n",
-            task.specs_dirs.join(", ")
-        ));
     }
 
     output
@@ -557,18 +547,13 @@ fn detect_git_dir() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig};
+    use crate::project::{ProjectConfig, RalphConfig};
     use std::path::PathBuf;
 
     fn test_config() -> Config {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
-            config: RalphConfig {
-                specs: SpecsConfig {
-                    dirs: vec![".ralph/specs".to_string()],
-                },
-                ..Default::default()
-            },
+            config: RalphConfig::default(),
         };
         Config::from_run_args(
             None,
@@ -723,12 +708,7 @@ mod tests {
     fn claude_args_model_reflects_fixed_strategy() {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
-            config: RalphConfig {
-                specs: SpecsConfig {
-                    dirs: vec![".ralph/specs".to_string()],
-                },
-                ..Default::default()
-            },
+            config: RalphConfig::default(),
         };
         let config = Config::from_run_args(
             None,
@@ -757,12 +737,7 @@ mod tests {
     fn claude_args_model_reflects_escalate_strategy() {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
-            config: RalphConfig {
-                specs: SpecsConfig {
-                    dirs: vec![".ralph/specs".to_string()],
-                },
-                ..Default::default()
-            },
+            config: RalphConfig::default(),
         };
         let config = Config::from_run_args(
             None,
@@ -791,12 +766,7 @@ mod tests {
     fn claude_args_model_reflects_plan_then_execute_strategy() {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
-            config: RalphConfig {
-                specs: SpecsConfig {
-                    dirs: vec![".ralph/specs".to_string()],
-                },
-                ..Default::default()
-            },
+            config: RalphConfig::default(),
         };
         let config = Config::from_run_args(
             None,
@@ -845,7 +815,6 @@ mod tests {
                     summary: "Installed required packages".to_string(),
                 },
             ],
-            specs_dirs: vec!["specs/api".to_string(), "specs/infra".to_string()],
         };
 
         let output = build_task_context(&task);
@@ -861,8 +830,6 @@ mod tests {
         assert!(output.contains("### Completed Prerequisites"));
         assert!(output.contains("- [t-prereq1] Setup foundation: Created the base structure"));
         assert!(output.contains("- [t-prereq2] Add dependencies: Installed required packages"));
-        assert!(output.contains("### Reference Specs"));
-        assert!(output.contains("Read all files in: specs/api, specs/infra"));
     }
 
     #[test]
@@ -873,7 +840,6 @@ mod tests {
             description: "A task with no parent.".to_string(),
             parent: None,
             completed_blockers: vec![],
-            specs_dirs: vec![".ralph/specs".to_string()],
         };
 
         let output = build_task_context(&task);
@@ -902,7 +868,6 @@ mod tests {
                 description: "Parent description.".to_string(),
             }),
             completed_blockers: vec![],
-            specs_dirs: vec![".ralph/specs".to_string()],
         };
 
         let output = build_task_context(&task);
@@ -935,7 +900,6 @@ mod tests {
                     summary: "Completed second".to_string(),
                 },
             ],
-            specs_dirs: vec![],
         };
 
         let output = build_task_context(&task);
@@ -953,7 +917,6 @@ mod tests {
             description: "Description with\nnewlines and\ttabs.".to_string(),
             parent: None,
             completed_blockers: vec![],
-            specs_dirs: vec![],
         };
 
         let output = build_task_context(&task);
@@ -973,7 +936,6 @@ mod tests {
                 description: "Test description".to_string(),
                 parent: None,
                 completed_blockers: vec![],
-                specs_dirs: vec![],
             },
             spec_content: None,
             plan_content: None,

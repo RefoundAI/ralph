@@ -244,19 +244,14 @@ fn assess_escalation_need(content: &str) -> u8 {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig};
+    use crate::project::{ProjectConfig, RalphConfig};
     use std::path::PathBuf;
 
     /// Helper to build a Config with fixed strategy.
     fn fixed_config(model: &str) -> Config {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
-            config: RalphConfig {
-                specs: SpecsConfig {
-                    dirs: vec![".ralph/specs".to_string()],
-                },
-                ..Default::default()
-            },
+            config: RalphConfig::default(),
         };
         Config::from_run_args(
             None,
@@ -399,12 +394,7 @@ mod tests {
         // the hint should win
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
-            config: RalphConfig {
-                specs: SpecsConfig {
-                    dirs: vec![".ralph/specs".to_string()],
-                },
-                ..Default::default()
-            },
+            config: RalphConfig::default(),
         };
         let mut config = Config::from_run_args(
             None,
@@ -429,12 +419,7 @@ mod tests {
     fn escalate_config() -> Config {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
-            config: RalphConfig {
-                specs: SpecsConfig {
-                    dirs: vec![".ralph/specs".to_string()],
-                },
-                ..Default::default()
-            },
+            config: RalphConfig::default(),
         };
         Config::from_run_args(
             None,
@@ -567,12 +552,7 @@ mod tests {
     fn plan_then_execute_config() -> Config {
         let project = ProjectConfig {
             root: PathBuf::from("/test"),
-            config: RalphConfig {
-                specs: SpecsConfig {
-                    dirs: vec![".ralph/specs".to_string()],
-                },
-                ..Default::default()
-            },
+            config: RalphConfig::default(),
         };
         Config::from_run_args(
             None,

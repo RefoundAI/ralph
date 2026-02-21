@@ -23,8 +23,6 @@ pub struct ProjectConfig {
 #[allow(dead_code)]
 pub struct RalphConfig {
     #[serde(default)]
-    pub specs: SpecsConfig,
-    #[serde(default)]
     pub execution: ExecutionConfig,
 }
 
@@ -58,26 +56,6 @@ fn default_max_retries() -> u32 {
 
 fn default_true() -> bool {
     true
-}
-
-/// Specs configuration section.
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-pub struct SpecsConfig {
-    #[serde(default = "default_specs_dirs")]
-    pub dirs: Vec<String>,
-}
-
-impl Default for SpecsConfig {
-    fn default() -> Self {
-        Self {
-            dirs: default_specs_dirs(),
-        }
-    }
-}
-
-fn default_specs_dirs() -> Vec<String> {
-    vec![".ralph/specs".to_string()]
 }
 
 /// Discover the project configuration by walking up from CWD.
@@ -132,7 +110,6 @@ fn load_config(path: &Path) -> Result<RalphConfig> {
 /// Creates:
 /// - `.ralph.toml` with commented defaults (if it doesn't exist)
 /// - `.ralph/` directory
-/// - `.ralph/specs/` directory
 /// - `.ralph/progress.db` file (empty)
 /// - `.gitignore` entry for `.ralph/progress.db`
 ///
@@ -152,8 +129,9 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
         println!(".ralph.toml already exists, skipping.");
     } else {
         // 2. Create .ralph.toml with commented defaults
-        let default_config = r#"[specs]
-# dirs = [".ralph/specs"]
+        let default_config = r#"[execution]
+# max_retries = 3
+# verify = true
 "#;
         fs::write(&config_path, default_config).context("Failed to create .ralph.toml")?;
         println!("Created .ralph.toml");
@@ -161,13 +139,11 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
 
     // 3. Create directories
     let ralph_dir = cwd.join(".ralph");
-    let specs_dir = ralph_dir.join("specs");
     let features_dir = ralph_dir.join("features");
     let knowledge_dir = ralph_dir.join("knowledge");
     let claude_skills_dir = cwd.join(".claude/skills");
 
     fs::create_dir_all(&ralph_dir).context("Failed to create .ralph/ directory")?;
-    fs::create_dir_all(&specs_dir).context("Failed to create .ralph/specs/ directory")?;
     fs::create_dir_all(&features_dir).context("Failed to create .ralph/features/ directory")?;
     fs::create_dir_all(&knowledge_dir).context("Failed to create .ralph/knowledge/ directory")?;
     fs::create_dir_all(&claude_skills_dir).context("Failed to create .claude/skills/ directory")?;
@@ -244,21 +220,21 @@ mod tests {
 
     #[test]
     fn discovers_config_in_cwd() {
-        let (_tmp, root) = temp_project("[specs]\ndirs = [\"custom\"]");
+        let (_tmp, root) = temp_project("[execution]\nmax_retries = 5");
         let result = discover_from(&root).unwrap();
         assert_eq!(result.root, root);
-        assert_eq!(result.config.specs.dirs, vec!["custom"]);
+        assert_eq!(result.config.execution.max_retries, 5);
     }
 
     #[test]
     fn discovers_config_two_directories_up() {
-        let (_tmp, root) = temp_project("[specs]\ndirs = [\"custom\"]");
+        let (_tmp, root) = temp_project("[execution]\nmax_retries = 5");
         let subdir = root.join("a").join("b");
         fs::create_dir_all(&subdir).unwrap();
 
         let result = discover_from(&subdir).unwrap();
         assert_eq!(result.root, root);
-        assert_eq!(result.config.specs.dirs, vec!["custom"]);
+        assert_eq!(result.config.execution.max_retries, 5);
     }
 
     #[test]
@@ -278,35 +254,36 @@ mod tests {
     fn empty_toml_parses_to_defaults() {
         let (_tmp, root) = temp_project("");
         let result = discover_from(&root).unwrap();
-        assert_eq!(result.config.specs.dirs, vec![".ralph/specs"]);
+        assert_eq!(result.config.execution.max_retries, 3);
     }
 
     #[test]
     fn partial_config_uses_defaults_for_missing_sections() {
-        let (_tmp, root) = temp_project("[specs]\ndirs = [\"custom\"]");
+        let (_tmp, root) = temp_project("[execution]\nmax_retries = 5");
         let result = discover_from(&root).unwrap();
-        assert_eq!(result.config.specs.dirs, vec!["custom"]);
+        assert_eq!(result.config.execution.max_retries, 5);
     }
 
     #[test]
     fn invalid_toml_returns_error() {
-        let (_tmp, root) = temp_project("[specs\ndirs = [\"custom");
+        let (_tmp, root) = temp_project("[execution\nmax_retries = 3");
         let result = discover_from(&root);
         assert!(result.is_err());
     }
 
     #[test]
     fn unknown_keys_ignored_for_forward_compat() {
-        let (_tmp, root) = temp_project("[foo]\nbar = 1\n[specs]\ndirs = [\"test\"]");
+        let (_tmp, root) = temp_project("[foo]\nbar = 1\n[execution]\nmax_retries = 7");
         let result = discover_from(&root).unwrap();
-        assert_eq!(result.config.specs.dirs, vec!["test"]);
+        assert_eq!(result.config.execution.max_retries, 7);
         // Should not error despite unknown [foo] section
     }
 
     #[test]
     fn ralph_config_default_values() {
         let config = RalphConfig::default();
-        assert_eq!(config.specs.dirs, vec![".ralph/specs"]);
+        assert_eq!(config.execution.max_retries, 3);
+        assert!(config.execution.verify);
     }
 
     #[test]
@@ -319,7 +296,6 @@ mod tests {
         // Verify all files/directories created
         assert!(tmp.path().join(".ralph.toml").exists());
         assert!(tmp.path().join(".ralph").is_dir());
-        assert!(tmp.path().join(".ralph/specs").is_dir());
         assert!(tmp.path().join(".ralph/progress.db").exists());
         assert!(tmp.path().join(".gitignore").exists());
 
@@ -329,7 +305,7 @@ mod tests {
 
         // Verify .ralph.toml has valid content
         let config_content = fs::read_to_string(tmp.path().join(".ralph.toml")).unwrap();
-        assert!(config_content.contains("[specs]"));
+        assert!(config_content.contains("[execution]"));
     }
 
     #[test]
@@ -349,7 +325,6 @@ mod tests {
 
         // All files should still exist
         assert!(tmp.path().join(".ralph.toml").exists());
-        assert!(tmp.path().join(".ralph/specs").is_dir());
         assert!(tmp.path().join(".ralph/progress.db").exists());
     }
 
