@@ -241,7 +241,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{ProjectConfig, PromptsConfig, RalphConfig, SpecsConfig};
+    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig};
 
     /// Helper to build a test ProjectConfig.
     fn test_project() -> ProjectConfig {
@@ -250,9 +250,6 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig {
                     dirs: vec![".ralph/specs".to_string()],
-                },
-                prompts: PromptsConfig {
-                    dir: ".ralph/prompts".to_string(),
                 },
                 ..Default::default()
             },

@@ -557,7 +557,7 @@ fn detect_git_dir() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::{ProjectConfig, PromptsConfig, RalphConfig, SpecsConfig};
+    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig};
     use std::path::PathBuf;
 
     fn test_config() -> Config {
@@ -566,9 +566,6 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig {
                     dirs: vec![".ralph/specs".to_string()],
-                },
-                prompts: PromptsConfig {
-                    dir: ".ralph/prompts".to_string(),
                 },
                 ..Default::default()
             },
@@ -730,9 +727,6 @@ mod tests {
                 specs: SpecsConfig {
                     dirs: vec![".ralph/specs".to_string()],
                 },
-                prompts: PromptsConfig {
-                    dir: ".ralph/prompts".to_string(),
-                },
                 ..Default::default()
             },
         };
@@ -767,9 +761,6 @@ mod tests {
                 specs: SpecsConfig {
                     dirs: vec![".ralph/specs".to_string()],
                 },
-                prompts: PromptsConfig {
-                    dir: ".ralph/prompts".to_string(),
-                },
                 ..Default::default()
             },
         };
@@ -803,9 +794,6 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig {
                     dirs: vec![".ralph/specs".to_string()],
-                },
-                prompts: PromptsConfig {
-                    dir: ".ralph/prompts".to_string(),
                 },
                 ..Default::default()
             },

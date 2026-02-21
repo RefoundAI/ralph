@@ -25,8 +25,6 @@ pub struct RalphConfig {
     #[serde(default)]
     pub specs: SpecsConfig,
     #[serde(default)]
-    pub prompts: PromptsConfig,
-    #[serde(default)]
     pub execution: ExecutionConfig,
 }
 
@@ -78,28 +76,8 @@ impl Default for SpecsConfig {
     }
 }
 
-/// Prompts configuration section.
-#[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
-pub struct PromptsConfig {
-    #[serde(default = "default_prompts_dir")]
-    pub dir: String,
-}
-
-impl Default for PromptsConfig {
-    fn default() -> Self {
-        Self {
-            dir: default_prompts_dir(),
-        }
-    }
-}
-
 fn default_specs_dirs() -> Vec<String> {
     vec![".ralph/specs".to_string()]
-}
-
-fn default_prompts_dir() -> String {
-    ".ralph/prompts".to_string()
 }
 
 /// Discover the project configuration by walking up from CWD.
@@ -154,7 +132,6 @@ fn load_config(path: &Path) -> Result<RalphConfig> {
 /// Creates:
 /// - `.ralph.toml` with commented defaults (if it doesn't exist)
 /// - `.ralph/` directory
-/// - `.ralph/prompts/` directory
 /// - `.ralph/specs/` directory
 /// - `.ralph/progress.db` file (empty)
 /// - `.gitignore` entry for `.ralph/progress.db`
@@ -177,9 +154,6 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
         // 2. Create .ralph.toml with commented defaults
         let default_config = r#"[specs]
 # dirs = [".ralph/specs"]
-
-[prompts]
-# dir = ".ralph/prompts"
 "#;
         fs::write(&config_path, default_config).context("Failed to create .ralph.toml")?;
         println!("Created .ralph.toml");
@@ -187,14 +161,12 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
 
     // 3. Create directories
     let ralph_dir = cwd.join(".ralph");
-    let prompts_dir = ralph_dir.join("prompts");
     let specs_dir = ralph_dir.join("specs");
     let features_dir = ralph_dir.join("features");
     let knowledge_dir = ralph_dir.join("knowledge");
     let claude_skills_dir = cwd.join(".claude/skills");
 
     fs::create_dir_all(&ralph_dir).context("Failed to create .ralph/ directory")?;
-    fs::create_dir_all(&prompts_dir).context("Failed to create .ralph/prompts/ directory")?;
     fs::create_dir_all(&specs_dir).context("Failed to create .ralph/specs/ directory")?;
     fs::create_dir_all(&features_dir).context("Failed to create .ralph/features/ directory")?;
     fs::create_dir_all(&knowledge_dir).context("Failed to create .ralph/knowledge/ directory")?;
@@ -303,21 +275,10 @@ mod tests {
     }
 
     #[test]
-    fn relative_paths_resolve_against_config_directory() {
-        let (_tmp, root) = temp_project("[prompts]\ndir = \"my_prompts\"");
-        let result = discover_from(&root).unwrap();
-        assert_eq!(result.root, root);
-        assert_eq!(result.config.prompts.dir, "my_prompts");
-        // The resolution of relative paths happens at usage time, not here.
-        // We just verify that the config stores the relative path as-is.
-    }
-
-    #[test]
     fn empty_toml_parses_to_defaults() {
         let (_tmp, root) = temp_project("");
         let result = discover_from(&root).unwrap();
         assert_eq!(result.config.specs.dirs, vec![".ralph/specs"]);
-        assert_eq!(result.config.prompts.dir, ".ralph/prompts");
     }
 
     #[test]
@@ -325,7 +286,6 @@ mod tests {
         let (_tmp, root) = temp_project("[specs]\ndirs = [\"custom\"]");
         let result = discover_from(&root).unwrap();
         assert_eq!(result.config.specs.dirs, vec!["custom"]);
-        assert_eq!(result.config.prompts.dir, ".ralph/prompts"); // default
     }
 
     #[test]
@@ -347,7 +307,6 @@ mod tests {
     fn ralph_config_default_values() {
         let config = RalphConfig::default();
         assert_eq!(config.specs.dirs, vec![".ralph/specs"]);
-        assert_eq!(config.prompts.dir, ".ralph/prompts");
     }
 
     #[test]
@@ -360,7 +319,6 @@ mod tests {
         // Verify all files/directories created
         assert!(tmp.path().join(".ralph.toml").exists());
         assert!(tmp.path().join(".ralph").is_dir());
-        assert!(tmp.path().join(".ralph/prompts").is_dir());
         assert!(tmp.path().join(".ralph/specs").is_dir());
         assert!(tmp.path().join(".ralph/progress.db").exists());
         assert!(tmp.path().join(".gitignore").exists());
@@ -372,7 +330,6 @@ mod tests {
         // Verify .ralph.toml has valid content
         let config_content = fs::read_to_string(tmp.path().join(".ralph.toml")).unwrap();
         assert!(config_content.contains("[specs]"));
-        assert!(config_content.contains("[prompts]"));
     }
 
     #[test]
@@ -392,7 +349,6 @@ mod tests {
 
         // All files should still exist
         assert!(tmp.path().join(".ralph.toml").exists());
-        assert!(tmp.path().join(".ralph/prompts").is_dir());
         assert!(tmp.path().join(".ralph/specs").is_dir());
         assert!(tmp.path().join(".ralph/progress.db").exists());
     }

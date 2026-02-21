@@ -244,7 +244,7 @@ fn assess_escalation_need(content: &str) -> u8 {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::project::{ProjectConfig, PromptsConfig, RalphConfig, SpecsConfig};
+    use crate::project::{ProjectConfig, RalphConfig, SpecsConfig};
     use std::path::PathBuf;
 
     /// Helper to build a Config with fixed strategy.
@@ -254,9 +254,6 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig {
                     dirs: vec![".ralph/specs".to_string()],
-                },
-                prompts: PromptsConfig {
-                    dir: ".ralph/prompts".to_string(),
                 },
                 ..Default::default()
             },
@@ -406,9 +403,6 @@ mod tests {
                 specs: SpecsConfig {
                     dirs: vec![".ralph/specs".to_string()],
                 },
-                prompts: PromptsConfig {
-                    dir: ".ralph/prompts".to_string(),
-                },
                 ..Default::default()
             },
         };
@@ -438,9 +432,6 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig {
                     dirs: vec![".ralph/specs".to_string()],
-                },
-                prompts: PromptsConfig {
-                    dir: ".ralph/prompts".to_string(),
                 },
                 ..Default::default()
             },
@@ -579,9 +570,6 @@ mod tests {
             config: RalphConfig {
                 specs: SpecsConfig {
                     dirs: vec![".ralph/specs".to_string()],
-                },
-                prompts: PromptsConfig {
-                    dir: ".ralph/prompts".to_string(),
                 },
                 ..Default::default()
             },
