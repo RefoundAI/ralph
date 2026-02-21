@@ -904,7 +904,7 @@ fn print_task_tree(tree: &[dag::Task], current_id: &str, prefix: &str, is_last: 
 
 fn build_feature_spec_system_prompt(name: &str, spec_path: &str, context: &str) -> String {
     format!(
-        r#"You are helping the user craft a specification for feature "{name}".
+        r#"You are helping the user craft a specification for a new project or feature. Their slug to describe this is "{name}".
 
 ## Your Role
 
