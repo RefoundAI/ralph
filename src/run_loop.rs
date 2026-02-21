@@ -1,9 +1,10 @@
 //! Main iteration loop.
 
+use agent_client_protocol::StopReason;
 use anyhow::{Context, Result};
 
-use crate::claude;
-use crate::claude::client::{
+use crate::acp;
+use crate::acp::types::{
     BlockerContext, IterationContext, ParentContext, RetryInfo, RunResult, TaskInfo,
 };
 use crate::config::{Config, RunTarget};
@@ -99,12 +100,13 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
             &config,
         )?;
 
-        // Run Claude with context
-        let run_result = claude::client::run(&config, Some(&log_file), Some(&iteration_context))
-            .context("Failed to run Claude")?;
+        // Run the ACP agent iteration
+        let run_result = acp::connection::run_iteration(&config, &iteration_context)
+            .await
+            .context("Failed to run agent")?;
 
         // Handle interrupt: prompt for feedback, reset task, optionally continue
-        let result = match run_result {
+        let streaming_result = match run_result {
             RunResult::Interrupted => {
                 formatter::print_interrupted(config.iteration, &task_id, &task.title);
 
@@ -165,76 +167,254 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     return Ok(Outcome::Interrupted);
                 }
             }
-            RunResult::Completed(result) => result,
+            RunResult::Completed(r) => r,
         };
 
         println!("Log available at: ");
         formatter::hyperlink(&log_file);
 
+        // Handle non-EndTurn stop reasons BEFORE sigil processing (FR-6.6).
+        //
+        // For MaxTokens/MaxTurnRequests/unknown: release claim, journal "blocked", continue.
+        // For Refusal: fail the task, journal "failed", continue.
+        // For Cancelled: should not reach here (handled by select! in connection.rs),
+        //                but treat as blocked if it does.
+        let sigils = match streaming_result.stop_reason {
+            StopReason::EndTurn => {
+                // Normal completion — extract sigils from accumulated text.
+                acp::sigils::extract_sigils(&streaming_result.full_text)
+            }
+            StopReason::Cancelled => {
+                // Unexpected: cancellation is normally caught in connection.rs.
+                eprintln!(
+                    "ralph: agent reported Cancelled stop reason (unexpected), releasing task claim"
+                );
+                dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
+                formatter::print_task_incomplete(config.iteration, &task_id);
+                let journal_entry = journal::JournalEntry {
+                    id: 0,
+                    run_id: config.run_id.clone(),
+                    iteration: config.iteration,
+                    task_id: Some(task_id.clone()),
+                    feature_id: task.feature_id.clone(),
+                    outcome: "blocked".to_string(),
+                    model: Some(config.current_model.clone()),
+                    duration_secs: streaming_result.duration_ms as f64 / 1000.0,
+                    cost_usd: 0.0,
+                    files_modified: streaming_result.files_modified.clone(),
+                    notes: None,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                journal::insert_journal_entry(&db, &journal_entry).ok();
+                if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+                    return Ok(Outcome::Complete);
+                }
+                if config.limit_reached() {
+                    return Ok(Outcome::LimitReached);
+                }
+                formatter::print_separator();
+                config = config.next_iteration();
+                let selection = strategy::select_model(&mut config, None);
+                if selection.was_overridden {
+                    strategy::log_model_override(
+                        progress_db.to_str().unwrap(),
+                        config.iteration,
+                        &selection,
+                    );
+                }
+                config.current_model = selection.model;
+                formatter::print_iteration_info(&config);
+                continue;
+            }
+            StopReason::MaxTokens | StopReason::MaxTurnRequests => {
+                eprintln!(
+                    "ralph: agent hit token/turn limit ({}), releasing task claim",
+                    format!("{:?}", streaming_result.stop_reason)
+                );
+                dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
+                formatter::print_task_incomplete(config.iteration, &task_id);
+                let journal_entry = journal::JournalEntry {
+                    id: 0,
+                    run_id: config.run_id.clone(),
+                    iteration: config.iteration,
+                    task_id: Some(task_id.clone()),
+                    feature_id: task.feature_id.clone(),
+                    outcome: "blocked".to_string(),
+                    model: Some(config.current_model.clone()),
+                    duration_secs: streaming_result.duration_ms as f64 / 1000.0,
+                    cost_usd: 0.0,
+                    files_modified: streaming_result.files_modified.clone(),
+                    notes: None,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                journal::insert_journal_entry(&db, &journal_entry).ok();
+                if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+                    return Ok(Outcome::Complete);
+                }
+                if config.limit_reached() {
+                    return Ok(Outcome::LimitReached);
+                }
+                formatter::print_separator();
+                config = config.next_iteration();
+                let selection = strategy::select_model(&mut config, None);
+                if selection.was_overridden {
+                    strategy::log_model_override(
+                        progress_db.to_str().unwrap(),
+                        config.iteration,
+                        &selection,
+                    );
+                }
+                config.current_model = selection.model;
+                formatter::print_iteration_info(&config);
+                continue;
+            }
+            StopReason::Refusal => {
+                eprintln!("ralph: agent refused the request, failing task");
+                dag::fail_task(&db, &task_id, "Agent refused the request")
+                    .context("Failed to fail task")?;
+                formatter::print_task_failed(config.iteration, &task_id);
+                let journal_entry = journal::JournalEntry {
+                    id: 0,
+                    run_id: config.run_id.clone(),
+                    iteration: config.iteration,
+                    task_id: Some(task_id.clone()),
+                    feature_id: task.feature_id.clone(),
+                    outcome: "failed".to_string(),
+                    model: Some(config.current_model.clone()),
+                    duration_secs: streaming_result.duration_ms as f64 / 1000.0,
+                    cost_usd: 0.0,
+                    files_modified: streaming_result.files_modified.clone(),
+                    notes: None,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                journal::insert_journal_entry(&db, &journal_entry).ok();
+                if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+                    return Ok(Outcome::Complete);
+                }
+                if config.limit_reached() {
+                    return Ok(Outcome::LimitReached);
+                }
+                formatter::print_separator();
+                config = config.next_iteration();
+                let selection = strategy::select_model(&mut config, None);
+                if selection.was_overridden {
+                    strategy::log_model_override(
+                        progress_db.to_str().unwrap(),
+                        config.iteration,
+                        &selection,
+                    );
+                }
+                config.current_model = selection.model;
+                formatter::print_iteration_info(&config);
+                continue;
+            }
+            _ => {
+                // Unknown stop reason (#[non_exhaustive]) — treat as incomplete (blocked).
+                eprintln!(
+                    "ralph: agent stopped with unknown reason: {:?}, releasing task claim",
+                    streaming_result.stop_reason
+                );
+                dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
+                formatter::print_task_incomplete(config.iteration, &task_id);
+                let journal_entry = journal::JournalEntry {
+                    id: 0,
+                    run_id: config.run_id.clone(),
+                    iteration: config.iteration,
+                    task_id: Some(task_id.clone()),
+                    feature_id: task.feature_id.clone(),
+                    outcome: "blocked".to_string(),
+                    model: Some(config.current_model.clone()),
+                    duration_secs: streaming_result.duration_ms as f64 / 1000.0,
+                    cost_usd: 0.0,
+                    files_modified: streaming_result.files_modified.clone(),
+                    notes: None,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                journal::insert_journal_entry(&db, &journal_entry).ok();
+                if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+                    return Ok(Outcome::Complete);
+                }
+                if config.limit_reached() {
+                    return Ok(Outcome::LimitReached);
+                }
+                formatter::print_separator();
+                config = config.next_iteration();
+                let selection = strategy::select_model(&mut config, None);
+                if selection.was_overridden {
+                    strategy::log_model_override(
+                        progress_db.to_str().unwrap(),
+                        config.iteration,
+                        &selection,
+                    );
+                }
+                config.current_model = selection.model;
+                formatter::print_iteration_info(&config);
+                continue;
+            }
+        };
+
+        // ── EndTurn path: process sigils normally ────────────────────────────
+
         // Extract model hint before checking completion/failure
-        let next_model_hint = result.as_ref().and_then(|r| r.next_model_hint.clone());
+        let next_model_hint = sigils.next_model_hint.clone();
 
         // Check for FAILURE sigil - this short-circuits before DAG update
-        if let Some(ref r) = result {
-            if r.is_failure() {
-                return Ok(Outcome::Failure);
-            }
+        if sigils.is_failure {
+            return Ok(Outcome::Failure);
         }
 
         // Handle task completion/failure sigils
-        if let Some(ref r) = result {
-            if let Some(ref done_id) = r.task_done {
-                if done_id == &task_id {
-                    handle_task_done(
-                        &db,
-                        &config,
-                        task,
-                        spec_content.as_deref(),
-                        plan_content.as_deref(),
-                        &log_file,
-                    )
-                    .await?;
-                } else {
-                    eprintln!(
-                        "Warning: task-done sigil ID {} does not match assigned task {}",
-                        done_id, task_id
-                    );
-                }
-            } else if let Some(ref failed_id) = r.task_failed {
-                if failed_id == &task_id {
-                    dag::fail_task(&db, &task_id, "Task marked failed by Claude")
-                        .context("Failed to fail task")?;
-                    formatter::print_task_failed(config.iteration, &task_id);
-                } else {
-                    eprintln!(
-                        "Warning: task-failed sigil ID {} does not match assigned task {}",
-                        failed_id, task_id
-                    );
-                }
+        if let Some(ref done_id) = sigils.task_done {
+            if done_id == &task_id {
+                handle_task_done(
+                    &db,
+                    &config,
+                    task,
+                    spec_content.as_deref(),
+                    plan_content.as_deref(),
+                    &log_file,
+                )
+                .await?;
             } else {
-                // No sigil - release the claim and treat as incomplete
-                dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
-                formatter::print_task_incomplete(config.iteration, &task_id);
+                eprintln!(
+                    "Warning: task-done sigil ID {} does not match assigned task {}",
+                    done_id, task_id
+                );
             }
+        } else if let Some(ref failed_id) = sigils.task_failed {
+            if failed_id == &task_id {
+                dag::fail_task(&db, &task_id, "Task marked failed by Claude")
+                    .context("Failed to fail task")?;
+                formatter::print_task_failed(config.iteration, &task_id);
+            } else {
+                eprintln!(
+                    "Warning: task-failed sigil ID {} does not match assigned task {}",
+                    failed_id, task_id
+                );
+            }
+        } else {
+            // No sigil - release the claim and treat as incomplete
+            dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
+            formatter::print_task_incomplete(config.iteration, &task_id);
         }
 
-        // Post-iteration: write journal entry and knowledge files (FR-2.3, FR-3.3)
-        if let Some(ref r) = result {
+        // Post-iteration: write journal entry and knowledge files
+        {
             // Determine outcome by comparing retry_count before/after handle_task_done
             let updated_task = dag::get_task(&db, &task_id).ok();
             let outcome = if let Some(ref t) = updated_task {
                 if t.retry_count > task.retry_count {
                     "retried"
-                } else if r.task_done.is_some() {
+                } else if sigils.task_done.is_some() {
                     "done"
-                } else if r.task_failed.is_some() {
+                } else if sigils.task_failed.is_some() {
                     "failed"
                 } else {
                     "blocked"
                 }
-            } else if r.task_done.is_some() {
+            } else if sigils.task_done.is_some() {
                 "done"
-            } else if r.task_failed.is_some() {
+            } else if sigils.task_failed.is_some() {
                 "failed"
             } else {
                 "blocked"
@@ -248,18 +428,19 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 feature_id: task.feature_id.clone(),
                 outcome: outcome.to_string(),
                 model: Some(config.current_model.clone()),
-                duration_secs: r.duration_ms as f64 / 1000.0,
-                cost_usd: r.total_cost_usd,
-                files_modified: r.files_modified.clone(),
-                notes: r.journal_notes.clone(),
+                // ACP does not report cost — always 0.0 (NFR-5.1)
+                duration_secs: streaming_result.duration_ms as f64 / 1000.0,
+                cost_usd: 0.0,
+                files_modified: streaming_result.files_modified.clone(),
+                notes: sigils.journal_notes.clone(),
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
             if let Err(e) = journal::insert_journal_entry(&db, &journal_entry) {
                 eprintln!("Warning: failed to write journal entry: {}", e);
             }
 
-            // Write knowledge entries emitted by Claude (FR-3.3)
-            for sigil in &r.knowledge_entries {
+            // Write knowledge entries emitted by the agent
+            for sigil in &sigils.knowledge_entries {
                 let feature_name = match &config.run_target {
                     Some(RunTarget::Feature(name)) => Some(name.as_str()),
                     _ => None,
@@ -290,7 +471,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
         config = config.next_iteration();
 
         // Select model for the next iteration based on strategy,
-        // passing Claude's hint (if any) from the previous result
+        // passing the agent's hint (if any) from the previous result
         let selection = strategy::select_model(&mut config, next_model_hint.as_deref());
 
         // Log override events when hint disagrees with strategy

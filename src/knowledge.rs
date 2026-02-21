@@ -4,7 +4,7 @@
 //! Claude creates entries via the `<knowledge>` sigil; Ralph writes them to disk and
 //! surfaces relevant ones each iteration via tag-based scoring.
 
-use crate::claude::events::KnowledgeSigil;
+use crate::acp::types::KnowledgeSigil;
 use anyhow::Result;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
