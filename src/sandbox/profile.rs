@@ -1,16 +1,15 @@
 //! Generate macOS sandbox-exec profiles.
 
-use crate::config::Config;
-
 use super::rules;
 
 /// Base sandbox profile, embedded from resources/sandbox.sb at compile time.
 const BASE_PROFILE: &str = include_str!("../../resources/sandbox.sb");
 
-/// Generate a complete sandbox profile for the given config.
-pub fn generate(config: &Config) -> String {
-    let (readonly_dirs, writeable_dirs) = rules::collect_dirs(&config.allow_rules);
-    let blocked_binaries = rules::collect_blocked_binaries(&config.allow_rules);
+/// Generate a complete sandbox profile for the given allow rules.
+#[allow(dead_code)]
+pub fn generate(allow_rules: &[String]) -> String {
+    let (readonly_dirs, writeable_dirs) = rules::collect_dirs(allow_rules);
+    let blocked_binaries = rules::collect_blocked_binaries(allow_rules);
 
     let mut profile = BASE_PROFILE.to_string();
     profile.push_str(&generate_readonly_rules(&readonly_dirs));

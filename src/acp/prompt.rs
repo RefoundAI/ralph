@@ -208,17 +208,15 @@ mod tests {
             config: RalphConfig::default(),
         };
         Config::from_run_args(
-            None,
-            false,
             false,
             None,
-            vec![],
             Some("cost-optimized".to_string()),
             None,
             project,
             None,
             None,
             false,
+            None,
         )
         .unwrap()
     }

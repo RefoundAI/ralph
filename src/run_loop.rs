@@ -90,10 +90,6 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
         println!("Log will be written to: ");
         formatter::hyperlink(&log_file);
 
-        if config.use_sandbox {
-            formatter::print_sandbox_warning();
-        }
-
         // Build iteration context
         let iteration_context = build_iteration_context(
             &db,

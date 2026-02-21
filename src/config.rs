@@ -11,22 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::cli;
 use crate::project::{ProjectConfig, RalphConfig};
 
-/// Default allowed tools when not using sandbox.
-const DEFAULT_ALLOWED_TOOLS: &[&str] = &[
-    "Bash",
-    "Edit",
-    "Write",
-    "Read",
-    "Glob",
-    "Grep",
-    "Task",
-    "TodoWrite",
-    "NotebookEdit",
-    "WebFetch",
-    "WebSearch",
-    "mcp__*",
-];
-
 /// Target for the `ralph run` command.
 #[derive(Debug, Clone)]
 pub enum RunTarget {
@@ -104,13 +88,9 @@ fn generate_run_id() -> String {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub prompt_file: String,
     pub limit: u32,
     pub iteration: u32,
     pub total: u32,
-    pub use_sandbox: bool,
-    pub allowed_tools: Vec<String>,
-    pub allow_rules: Vec<String>,
     /// The active model strategy for this run.
     pub model_strategy: ModelStrategy,
     /// The model name for `Fixed` strategy (only required when strategy is Fixed).
@@ -135,23 +115,23 @@ pub struct Config {
     pub run_id: String,
     /// The target for this run (feature or standalone task).
     pub run_target: Option<RunTarget>,
+    /// The ACP agent command (program + optional args), e.g. "claude" or "gemini-cli --flag".
+    pub agent_command: String,
 }
 
 impl Config {
     /// Build config from run command args and project config.
     #[allow(clippy::too_many_arguments)]
     pub fn from_run_args(
-        prompt_file: Option<String>,
         once: bool,
-        no_sandbox: bool,
         limit: Option<u32>,
-        allow: Vec<String>,
         model_strategy: Option<String>,
         model: Option<String>,
         project: ProjectConfig,
         run_target: Option<RunTarget>,
         max_retries_override: Option<u32>,
         no_verify: bool,
+        agent: Option<String>,
     ) -> Result<Self> {
         // Check for mutually exclusive flags
         if once && limit.is_some() && limit.unwrap() > 0 {
@@ -177,8 +157,6 @@ impl Config {
             ModelStrategy::PlanThenExecute => "opus".to_string(),
         };
 
-        let prompt_file = prompt_file.unwrap_or_else(|| "prompt".to_string());
-
         let limit = if once { 1 } else { limit.unwrap_or(0) };
 
         let iteration = env::var("RALPH_ITERATION")
@@ -191,25 +169,28 @@ impl Config {
             .and_then(|v| v.parse().ok())
             .unwrap_or(limit);
 
-        let use_sandbox = !no_sandbox;
-
-        let allowed_tools = DEFAULT_ALLOWED_TOOLS
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
         let execution = &project.config.execution;
         let max_retries = max_retries_override.unwrap_or(execution.max_retries);
         let verify = !no_verify && execution.verify;
 
+        // Resolve agent command: --agent flag > RALPH_AGENT env > ralph_config.agent.command > "claude"
+        let command = agent
+            .or_else(|| env::var("RALPH_AGENT").ok())
+            .unwrap_or_else(|| project.config.agent.command.clone());
+
+        // Validate with shlex::split() — error on malformed input (e.g., unclosed quotes)
+        let parts = shlex::split(&command).ok_or_else(|| {
+            anyhow::anyhow!("invalid agent command: failed to parse \"{}\"", command)
+        })?;
+        if parts.is_empty() {
+            bail!("agent command is empty");
+        }
+        let agent_command = command;
+
         Ok(Config {
-            prompt_file,
             limit,
             iteration,
             total,
-            use_sandbox,
-            allowed_tools,
-            allow_rules: allow,
             model_strategy,
             model,
             current_model,
@@ -221,6 +202,7 @@ impl Config {
             verify,
             run_id: generate_run_id(),
             run_target,
+            agent_command,
         })
     }
 
@@ -254,17 +236,15 @@ mod tests {
     /// Helper to build config from run args.
     fn config_from_run(model: Option<&str>, strategy: Option<&str>) -> Result<Config> {
         Config::from_run_args(
-            None,
-            false,
             false,
             None,
-            vec![],
             strategy.map(String::from),
             model.map(String::from),
             test_project(),
             None,
             None,
             false,
+            None,
         )
     }
 
@@ -419,5 +399,89 @@ verify = true
         // learn field is retained in ExecutionConfig for backward compat
         assert_eq!(config.execution.max_retries, 3);
         assert!(config.execution.verify);
+    }
+
+    #[test]
+    fn test_config_default_agent_command() {
+        // Default agent_command should be "claude" when no agent is specified
+        let config = config_from_run(None, None).unwrap();
+        assert_eq!(config.agent_command, "claude");
+    }
+
+    #[test]
+    fn test_config_agent_override() {
+        // Passing an agent param overrides the default
+        let config = Config::from_run_args(
+            false,
+            None,
+            None,
+            None,
+            test_project(),
+            None,
+            None,
+            false,
+            Some("gemini-cli".to_string()),
+        )
+        .unwrap();
+        assert_eq!(config.agent_command, "gemini-cli");
+    }
+
+    #[test]
+    fn test_agent_config_backward_compat() {
+        use crate::project::RalphConfig;
+        // TOML without [agent] section should parse fine (uses defaults)
+        let toml_content = r#"
+[execution]
+max_retries = 3
+verify = true
+"#;
+        let ralph_config: RalphConfig = toml::from_str(toml_content).unwrap();
+        // Default agent command is "claude"
+        assert_eq!(ralph_config.agent.command, "claude");
+    }
+
+    #[test]
+    fn test_agent_config_custom_command() {
+        use crate::project::RalphConfig;
+        // TOML with [agent] section sets custom command
+        let toml_content = r#"
+[agent]
+command = "gemini-cli"
+"#;
+        let ralph_config: RalphConfig = toml::from_str(toml_content).unwrap();
+        assert_eq!(ralph_config.agent.command, "gemini-cli");
+    }
+
+    #[test]
+    fn test_config_no_sandbox_fields() {
+        // Verify Config no longer has use_sandbox, allowed_tools, allow_rules fields
+        // This test verifies compilation - if Config had those fields, it would still compile
+        // but we can check agent_command is present instead
+        let config = config_from_run(None, None).unwrap();
+        // agent_command is the new field replacing the old sandbox fields
+        assert!(!config.agent_command.is_empty());
+    }
+
+    #[test]
+    fn test_shlex_parse_error() {
+        // Malformed agent command (unclosed quote) should return an error
+        let result = Config::from_run_args(
+            false,
+            None,
+            None,
+            None,
+            test_project(),
+            None,
+            None,
+            false,
+            Some("claude 'unclosed quote".to_string()),
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid agent command"),
+            "Error should mention 'invalid agent command', got: {}",
+            err
+        );
     }
 }

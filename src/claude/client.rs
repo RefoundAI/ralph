@@ -9,7 +9,6 @@ use std::thread;
 
 use crate::config::Config;
 use crate::output::formatter::{self, ToolCallInfo};
-use crate::sandbox;
 
 use super::events::{Event, ResultEvent};
 use super::parser;
@@ -108,11 +107,29 @@ pub fn build_task_context(task: &TaskInfo) -> String {
     output
 }
 
+/// Default allowed tools for Claude invocations.
+const DEFAULT_ALLOWED_TOOLS: &[&str] = &[
+    "Bash",
+    "Edit",
+    "Write",
+    "Read",
+    "Glob",
+    "Grep",
+    "Task",
+    "TodoWrite",
+    "NotebookEdit",
+    "WebFetch",
+    "WebSearch",
+    "mcp__*",
+];
+
 /// Build the CLI args vec for invoking the `claude` command.
 fn build_claude_args(config: &Config, context: Option<&IterationContext>) -> Vec<String> {
     let system_prompt = build_system_prompt(config, context);
 
-    let mut args = vec![
+    let tools = DEFAULT_ALLOWED_TOOLS.join(" ");
+
+    vec![
         "--print".to_string(),
         "--verbose".to_string(),
         "--output-format".to_string(),
@@ -122,19 +139,10 @@ fn build_claude_args(config: &Config, context: Option<&IterationContext>) -> Vec
         config.current_model.clone(),
         "--system-prompt".to_string(),
         system_prompt,
-        format!("@{}", config.prompt_file),
-    ];
-
-    // Add tool args based on sandbox mode
-    if config.use_sandbox {
-        args.push("--dangerously-skip-permissions".to_string());
-    } else {
-        let tools = config.allowed_tools.join(" ");
-        args.push("--allowed-tools".to_string());
-        args.push(tools);
-    }
-
-    args
+        "@prompt".to_string(),
+        "--allowed-tools".to_string(),
+        tools,
+    ]
 }
 
 /// Run Claude with the given config and stream output.
@@ -146,12 +154,7 @@ pub fn run(
     context: Option<&IterationContext>,
 ) -> Result<RunResult> {
     let args = build_claude_args(config, context);
-
-    if config.use_sandbox {
-        run_sandboxed(&args, log_file, config)
-    } else {
-        run_direct(&args, log_file)
-    }
+    run_direct(&args, log_file)
 }
 
 /// Run Claude directly with custom args (used by verification agent).
@@ -191,79 +194,6 @@ fn run_direct(args: &[String], log_file: Option<&str>) -> Result<RunResult> {
                 } else {
                     anyhow::bail!(
                         "claude exited with status: {}\nstderr: {}",
-                        status,
-                        stderr_output
-                    );
-                }
-            } else if !stderr_output.is_empty() {
-                eprintln!("{}", stderr_output);
-            }
-
-            Ok(RunResult::Completed(result))
-        }
-    }
-}
-
-fn run_sandboxed(args: &[String], log_file: Option<&str>, config: &Config) -> Result<RunResult> {
-    let sandbox_profile = sandbox::profile::generate(config);
-    let profile_path = write_temp_profile(&sandbox_profile)?;
-
-    let project_dir = std::env::current_dir()
-        .context("Failed to get current directory")?
-        .to_string_lossy()
-        .to_string();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let root_git_dir = detect_git_dir();
-
-    let mut sandbox_args = vec![
-        "-f".to_string(),
-        profile_path.clone(),
-        "-D".to_string(),
-        format!("PROJECT_DIR={}", project_dir),
-        "-D".to_string(),
-        format!("HOME={}", home),
-        "-D".to_string(),
-        format!("ROOT_GIT_DIR={}", root_git_dir),
-        "claude".to_string(),
-    ];
-    sandbox_args.extend(args.iter().cloned());
-
-    let mut child = Command::new("sandbox-exec")
-        .args(&sandbox_args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Failed to spawn sandbox-exec process")?;
-
-    let stdout = child.stdout.take().context("Failed to capture stdout")?;
-    let stderr = child.stderr.take().context("Failed to capture stderr")?;
-    let stderr_thread = drain_stderr(stderr);
-
-    let stream_result = stream_output(stdout, log_file, false)?;
-
-    // Clean up temp profile
-    let _ = std::fs::remove_file(&profile_path);
-
-    match stream_result {
-        StreamResult::Interrupted => {
-            // Kill sandbox-exec (cascades to claude child)
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stderr_thread.join();
-            Ok(RunResult::Interrupted)
-        }
-        StreamResult::Completed(result) => {
-            let status = child
-                .wait()
-                .context("Failed to wait for sandbox-exec process")?;
-            let stderr_output = stderr_thread.join().unwrap_or_default();
-
-            if !status.success() {
-                if stderr_output.is_empty() {
-                    anyhow::bail!("sandbox-exec exited with status: {}", status);
-                } else {
-                    anyhow::bail!(
-                        "sandbox-exec exited with status: {}\nstderr: {}",
                         status,
                         stderr_output
                     );
@@ -506,44 +436,6 @@ Rules:
     prompt
 }
 
-fn write_temp_profile(content: &str) -> Result<String> {
-    let tmp_dir = std::env::temp_dir();
-    let random: u32 = rand_simple();
-    let path = tmp_dir.join(format!("ralph-sandbox-{}.sb", random));
-    std::fs::write(&path, content).context("Failed to write sandbox profile")?;
-    Ok(path.to_string_lossy().to_string())
-}
-
-/// Simple random number generator without external deps.
-fn rand_simple() -> u32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    // Mix nanoseconds for pseudo-randomness
-    (duration.as_nanos() as u32)
-        .wrapping_mul(1103515245)
-        .wrapping_add(12345)
-}
-
-fn detect_git_dir() -> String {
-    let output = Command::new("git")
-        .args(["rev-parse", "--git-common-dir"])
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => {
-            let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            // Expand to absolute path
-            std::path::Path::new(&dir)
-                .canonicalize()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "/dev/null".to_string())
-        }
-        _ => "/dev/null".to_string(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,17 +448,15 @@ mod tests {
             config: RalphConfig::default(),
         };
         Config::from_run_args(
-            None,
-            false,
             false,
             None,
-            vec![],
             Some("cost-optimized".to_string()),
             None,
             project,
             None,
             None,
             false,
+            None,
         )
         .unwrap()
     }
@@ -711,17 +601,15 @@ mod tests {
             config: RalphConfig::default(),
         };
         let config = Config::from_run_args(
-            None,
-            false,
             false,
             None,
-            vec![],
             Some("fixed".to_string()),
             Some("opus".to_string()),
             project,
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         let cli_args = build_claude_args(&config, None);
@@ -740,17 +628,15 @@ mod tests {
             config: RalphConfig::default(),
         };
         let config = Config::from_run_args(
-            None,
-            false,
             false,
             None,
-            vec![],
             Some("escalate".to_string()),
             None,
             project,
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         let cli_args = build_claude_args(&config, None);
@@ -769,17 +655,15 @@ mod tests {
             config: RalphConfig::default(),
         };
         let config = Config::from_run_args(
-            None,
-            false,
             false,
             None,
-            vec![],
             Some("plan-then-execute".to_string()),
             None,
             project,
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         let cli_args = build_claude_args(&config, None);

@@ -254,17 +254,15 @@ mod tests {
             config: RalphConfig::default(),
         };
         Config::from_run_args(
-            None,
-            false,
             false,
             None,
-            vec![],
             Some("fixed".to_string()),
             Some(model.to_string()),
             project,
             None,
             None,
             false,
+            None,
         )
         .unwrap()
     }
@@ -397,17 +395,15 @@ mod tests {
             config: RalphConfig::default(),
         };
         let mut config = Config::from_run_args(
-            None,
-            false,
             false,
             None,
-            vec![],
             Some("cost-optimized".to_string()),
             None,
             project,
             None,
             None,
             false,
+            None,
         )
         .unwrap();
         assert_eq!(select_model(&mut config, Some("haiku")).model, "haiku");
@@ -422,17 +418,15 @@ mod tests {
             config: RalphConfig::default(),
         };
         Config::from_run_args(
-            None,
-            false,
             false,
             None,
-            vec![],
             Some("escalate".to_string()),
             None,
             project,
             None,
             None,
             false,
+            None,
         )
         .unwrap()
     }
@@ -555,17 +549,15 @@ mod tests {
             config: RalphConfig::default(),
         };
         Config::from_run_args(
-            None,
-            false,
             false,
             None,
-            vec![],
             Some("plan-then-execute".to_string()),
             None,
             project,
             None,
             None,
             false,
+            None,
         )
         .unwrap()
     }

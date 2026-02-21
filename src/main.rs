@@ -258,9 +258,9 @@ async fn run() -> Result<ExitCode> {
         Some(cli::Command::Run {
             target,
             once,
-            no_sandbox,
+            no_sandbox: _,
             limit,
-            allow,
+            allow: _,
             model_strategy,
             model,
             max_retries,
@@ -289,17 +289,15 @@ async fn run() -> Result<ExitCode> {
             };
 
             let config = config::Config::from_run_args(
-                None,
                 once,
-                no_sandbox,
                 limit,
-                allow,
                 model_strategy,
                 model,
                 project,
                 Some(run_target),
                 max_retries,
                 no_verify,
+                None, // agent: resolved from RALPH_AGENT env or config file
             )?;
 
             output::formatter::print_iteration_info(&config);
