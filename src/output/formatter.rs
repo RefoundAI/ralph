@@ -175,34 +175,6 @@ pub fn print_iteration_info(config: &Config) {
     }
 }
 
-/// Print sandbox modification info.
-#[allow(dead_code)]
-pub fn print_sandbox_mods(
-    allow_rules: &[String],
-    readonly_dirs: &[String],
-    writeable_dirs: &[String],
-) {
-    if !allow_rules.is_empty() {
-        println!("{} {}", "+allow:".green(), allow_rules.join(" "));
-
-        if !readonly_dirs.is_empty() {
-            println!("{} {}", "+sandbox read:".green(), readonly_dirs.join(" "));
-        }
-
-        if !writeable_dirs.is_empty() {
-            println!("{} {}", "+sandbox write:".green(), writeable_dirs.join(" "));
-        }
-    }
-}
-
-/// Print sandbox warning.
-pub fn print_sandbox_warning() {
-    println!(
-        "{}",
-        "Warning: Using --dangerously-skip-permissions with sandbox-exec. Use --no-sandbox for safer permissions.".yellow()
-    );
-}
-
 /// Print completion message.
 pub fn print_complete() {
     println!("Tasks complete.");
