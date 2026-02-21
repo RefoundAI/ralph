@@ -3,7 +3,9 @@
 use anyhow::{Context, Result};
 
 use crate::claude;
-use crate::claude::client::{BlockerContext, IterationContext, ParentContext, RetryInfo, TaskInfo};
+use crate::claude::client::{
+    BlockerContext, IterationContext, ParentContext, RetryInfo, RunResult, TaskInfo,
+};
 use crate::config::{Config, RunTarget};
 use crate::dag::{self, Db, Task};
 use crate::feature;
@@ -26,10 +28,15 @@ pub enum Outcome {
     Blocked,
     /// DAG is empty, user must run `ralph feature build`
     NoPlan,
+    /// User interrupted and chose not to continue
+    Interrupted,
 }
 
 /// Run the main loop until completion, failure, or limit.
 pub fn run(mut config: Config) -> Result<Outcome> {
+    // Register Ctrl+C signal handler for graceful interrupt
+    crate::interrupt::register_signal_handler().context("Failed to register signal handler")?;
+
     // Open the DAG database
     let progress_db = config.project_root.join(".ralph/progress.db");
     let db = dag::open_db(
@@ -97,8 +104,73 @@ pub fn run(mut config: Config) -> Result<Outcome> {
         )?;
 
         // Run Claude with context
-        let result = claude::client::run(&config, Some(&log_file), Some(&iteration_context))
+        let run_result = claude::client::run(&config, Some(&log_file), Some(&iteration_context))
             .context("Failed to run Claude")?;
+
+        // Handle interrupt: prompt for feedback, reset task, optionally continue
+        let result = match run_result {
+            RunResult::Interrupted => {
+                formatter::print_interrupted(config.iteration, &task_id, &task.title);
+
+                // Prompt for feedback
+                let feedback = crate::interrupt::prompt_for_feedback(task)?;
+
+                if let Some(ref fb) = feedback {
+                    let new_desc = crate::interrupt::append_feedback_to_description(
+                        &task.description,
+                        fb,
+                        config.iteration,
+                    );
+                    dag::update_task(
+                        &db,
+                        &task_id,
+                        dag::TaskUpdate {
+                            description: Some(new_desc),
+                            ..Default::default()
+                        },
+                    )?;
+                    dag::add_log(
+                        &db,
+                        &task_id,
+                        &format!("User feedback (iteration {}): {}", config.iteration, fb),
+                    )?;
+                }
+
+                // Release claim (reset task to pending)
+                dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
+
+                // Journal entry for the interrupted iteration
+                let journal_entry = journal::JournalEntry {
+                    id: 0,
+                    run_id: config.run_id.clone(),
+                    iteration: config.iteration,
+                    task_id: Some(task_id.clone()),
+                    feature_id: task.feature_id.clone(),
+                    outcome: "interrupted".to_string(),
+                    model: Some(config.current_model.clone()),
+                    duration_secs: 0.0,
+                    cost_usd: 0.0,
+                    files_modified: Vec::new(),
+                    notes: feedback.clone(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                };
+                journal::insert_journal_entry(&db, &journal_entry).ok();
+
+                // Clear flag for next iteration
+                crate::interrupt::clear_interrupt();
+
+                // Ask whether to continue
+                if crate::interrupt::should_continue()? {
+                    formatter::print_separator();
+                    config = config.next_iteration();
+                    formatter::print_iteration_info(&config);
+                    continue;
+                } else {
+                    return Ok(Outcome::Interrupted);
+                }
+            }
+            RunResult::Completed(result) => result,
+        };
 
         println!("Log available at: ");
         formatter::hyperlink(&log_file);

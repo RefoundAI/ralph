@@ -388,6 +388,17 @@ pub fn print_review_max_rounds(kind: &str, feature_name: &str, max: u32) {
     );
 }
 
+/// Print interrupted message.
+pub fn print_interrupted(iteration: u32, task_id: &str, title: &str) {
+    println!(
+        "\n[iter {}] {} {} — \"{}\"",
+        iteration,
+        "Interrupted".yellow().bold(),
+        task_id.cyan(),
+        title,
+    );
+}
+
 fn speak(message: &str) {
     if Command::new("which").arg("say").output().is_ok() {
         let msg = message.to_string();

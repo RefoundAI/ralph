@@ -14,6 +14,21 @@ use crate::sandbox;
 use super::events::{Event, ResultEvent};
 use super::parser;
 
+/// Result of running a Claude process — either it completed normally
+/// or was interrupted by the user (Ctrl+C).
+pub enum RunResult {
+    /// Claude finished and produced an optional result event.
+    Completed(Option<ResultEvent>),
+    /// The user interrupted the iteration with Ctrl+C.
+    Interrupted,
+}
+
+/// Internal result from stream_output — distinguishes interrupt from completion.
+pub(crate) enum StreamResult {
+    Completed(Option<ResultEvent>),
+    Interrupted,
+}
+
 /// Information about a task assigned to Claude for the current iteration.
 pub struct TaskInfo {
     pub task_id: String,
@@ -133,12 +148,13 @@ fn build_claude_args(config: &Config, context: Option<&IterationContext>) -> Vec
 }
 
 /// Run Claude with the given config and stream output.
-/// Returns the final result event, if any.
+/// Returns `RunResult::Completed` with the final result event, or
+/// `RunResult::Interrupted` if the user pressed Ctrl+C.
 pub fn run(
     config: &Config,
     log_file: Option<&str>,
     context: Option<&IterationContext>,
-) -> Result<Option<ResultEvent>> {
+) -> Result<RunResult> {
     let args = build_claude_args(config, context);
 
     if config.use_sandbox {
@@ -149,14 +165,11 @@ pub fn run(
 }
 
 /// Run Claude directly with custom args (used by verification agent).
-pub fn run_direct_with_args(
-    args: &[String],
-    log_file: Option<&str>,
-) -> Result<Option<ResultEvent>> {
+pub fn run_direct_with_args(args: &[String], log_file: Option<&str>) -> Result<RunResult> {
     run_direct(args, log_file)
 }
 
-fn run_direct(args: &[String], log_file: Option<&str>) -> Result<Option<ResultEvent>> {
+fn run_direct(args: &[String], log_file: Option<&str>) -> Result<RunResult> {
     let mut child = Command::new("claude")
         .args(args)
         .stdout(Stdio::piped())
@@ -168,33 +181,40 @@ fn run_direct(args: &[String], log_file: Option<&str>) -> Result<Option<ResultEv
     let stderr = child.stderr.take().context("Failed to capture stderr")?;
     let stderr_thread = drain_stderr(stderr);
 
-    let result = stream_output(stdout, log_file, false)?;
+    let stream_result = stream_output(stdout, log_file, false)?;
 
-    let status = child.wait().context("Failed to wait for claude process")?;
-    let stderr_output = stderr_thread.join().unwrap_or_default();
-
-    if !status.success() {
-        if stderr_output.is_empty() {
-            anyhow::bail!("claude exited with status: {}", status);
-        } else {
-            anyhow::bail!(
-                "claude exited with status: {}\nstderr: {}",
-                status,
-                stderr_output
-            );
+    match stream_result {
+        StreamResult::Interrupted => {
+            // Kill the child process and clean up
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stderr_thread.join();
+            Ok(RunResult::Interrupted)
         }
-    } else if !stderr_output.is_empty() {
-        eprintln!("{}", stderr_output);
-    }
+        StreamResult::Completed(result) => {
+            let status = child.wait().context("Failed to wait for claude process")?;
+            let stderr_output = stderr_thread.join().unwrap_or_default();
 
-    Ok(result)
+            if !status.success() {
+                if stderr_output.is_empty() {
+                    anyhow::bail!("claude exited with status: {}", status);
+                } else {
+                    anyhow::bail!(
+                        "claude exited with status: {}\nstderr: {}",
+                        status,
+                        stderr_output
+                    );
+                }
+            } else if !stderr_output.is_empty() {
+                eprintln!("{}", stderr_output);
+            }
+
+            Ok(RunResult::Completed(result))
+        }
+    }
 }
 
-fn run_sandboxed(
-    args: &[String],
-    log_file: Option<&str>,
-    config: &Config,
-) -> Result<Option<ResultEvent>> {
+fn run_sandboxed(args: &[String], log_file: Option<&str>, config: &Config) -> Result<RunResult> {
     let sandbox_profile = sandbox::profile::generate(config);
     let profile_path = write_temp_profile(&sandbox_profile)?;
 
@@ -229,38 +249,49 @@ fn run_sandboxed(
     let stderr = child.stderr.take().context("Failed to capture stderr")?;
     let stderr_thread = drain_stderr(stderr);
 
-    let result = stream_output(stdout, log_file, false);
+    let stream_result = stream_output(stdout, log_file, false)?;
 
     // Clean up temp profile
     let _ = std::fs::remove_file(&profile_path);
 
-    let status = child
-        .wait()
-        .context("Failed to wait for sandbox-exec process")?;
-    let stderr_output = stderr_thread.join().unwrap_or_default();
-
-    if !status.success() {
-        if stderr_output.is_empty() {
-            anyhow::bail!("sandbox-exec exited with status: {}", status);
-        } else {
-            anyhow::bail!(
-                "sandbox-exec exited with status: {}\nstderr: {}",
-                status,
-                stderr_output
-            );
+    match stream_result {
+        StreamResult::Interrupted => {
+            // Kill sandbox-exec (cascades to claude child)
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = stderr_thread.join();
+            Ok(RunResult::Interrupted)
         }
-    } else if !stderr_output.is_empty() {
-        eprintln!("{}", stderr_output);
-    }
+        StreamResult::Completed(result) => {
+            let status = child
+                .wait()
+                .context("Failed to wait for sandbox-exec process")?;
+            let stderr_output = stderr_thread.join().unwrap_or_default();
 
-    result
+            if !status.success() {
+                if stderr_output.is_empty() {
+                    anyhow::bail!("sandbox-exec exited with status: {}", status);
+                } else {
+                    anyhow::bail!(
+                        "sandbox-exec exited with status: {}\nstderr: {}",
+                        status,
+                        stderr_output
+                    );
+                }
+            } else if !stderr_output.is_empty() {
+                eprintln!("{}", stderr_output);
+            }
+
+            Ok(RunResult::Completed(result))
+        }
+    }
 }
 
 pub(crate) fn stream_output<R: std::io::Read>(
     reader: R,
     log_file: Option<&str>,
     suppress_text: bool,
-) -> Result<Option<ResultEvent>> {
+) -> Result<StreamResult> {
     let mut log_handle = log_file
         .map(File::create)
         .transpose()
@@ -272,6 +303,11 @@ pub(crate) fn stream_output<R: std::io::Read>(
     let mut files_modified: Vec<String> = Vec::new();
 
     for line in buf_reader.lines() {
+        // Check for interrupt before processing each line
+        if crate::interrupt::is_interrupted() {
+            return Ok(StreamResult::Interrupted);
+        }
+
         let line = line.context("Failed to read line from stdout")?;
 
         // Log raw output
@@ -332,7 +368,7 @@ pub(crate) fn stream_output<R: std::io::Read>(
         result.files_modified = files_modified;
     }
 
-    Ok(last_result)
+    Ok(StreamResult::Completed(last_result))
 }
 
 /// Drain stderr on a background thread to prevent pipe buffer deadlocks.

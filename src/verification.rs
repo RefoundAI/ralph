@@ -41,7 +41,17 @@ pub fn verify_task(
         "Verify the task described in the system prompt.".to_string(),
     ];
 
-    let result = crate::claude::client::run_direct_with_args(&args, Some(log_file))?;
+    let run_result = crate::claude::client::run_direct_with_args(&args, Some(log_file))?;
+
+    let result = match run_result {
+        crate::claude::client::RunResult::Completed(r) => r,
+        crate::claude::client::RunResult::Interrupted => {
+            return Ok(VerificationResult {
+                passed: false,
+                reason: "Verification interrupted by user".to_string(),
+            });
+        }
+    };
 
     // Parse verification sigils from the result
     if let Some(ref r) = result {

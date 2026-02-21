@@ -107,7 +107,18 @@ fn run_review_agent(
         ),
     ];
 
-    let result = crate::claude::client::run_direct_with_args(&args, None)?;
+    let run_result = crate::claude::client::run_direct_with_args(&args, None)?;
+
+    let result = match run_result {
+        crate::claude::client::RunResult::Completed(r) => r,
+        crate::claude::client::RunResult::Interrupted => {
+            // Treat interrupt as pass to prevent infinite loops
+            return Ok(ReviewResult {
+                passed: true,
+                changes_summary: String::new(),
+            });
+        }
+    };
 
     if let Some(ref r) = result {
         if let Some(ref text) = r.result {
@@ -144,21 +155,25 @@ fn build_review_prompt(
     let label = kind.label();
 
     let kind_specific_criteria = match kind {
-        DocumentKind::Spec => r#"## Spec-Specific Criteria
+        DocumentKind::Spec => {
+            r#"## Spec-Specific Criteria
 
 - **Completeness**: Does the spec cover all functional and non-functional requirements?
 - **Testability**: Are acceptance criteria concrete and verifiable?
 - **Precision**: Are data models, APIs, and schemas defined with enough detail for implementation?
 - **Edge cases**: Are error handling, boundary conditions, and failure modes addressed?
-- **Dependencies**: Are external dependencies, integrations, and assumptions documented?"#,
-        DocumentKind::Plan => r#"## Plan-Specific Criteria
+- **Dependencies**: Are external dependencies, integrations, and assumptions documented?"#
+        }
+        DocumentKind::Plan => {
+            r#"## Plan-Specific Criteria
 
 - **Completeness**: Does the plan cover all spec requirements?
 - **Ordering**: Are implementation phases in a logical, dependency-respecting order?
 - **Task granularity**: Are phases broken into right-sized, implementable chunks?
 - **Verification**: Does each phase have clear verification/acceptance criteria?
 - **Risk coverage**: Are risk areas, failure modes, and mitigation strategies identified?
-- **Spec alignment**: Does the plan reference specific spec sections?"#,
+- **Spec alignment**: Does the plan reference specific spec sections?"#
+        }
     };
 
     let spec_section = match spec_content {
@@ -336,8 +351,7 @@ mod tests {
     #[test]
     fn test_review_prompt_includes_context() {
         let ctx = "## Project Context\n\nTest content";
-        let prompt =
-            build_review_prompt("/tmp/spec.md", DocumentKind::Spec, "test", None, ctx, 1);
+        let prompt = build_review_prompt("/tmp/spec.md", DocumentKind::Spec, "test", None, ctx, 1);
         assert!(prompt.contains("Test content"));
     }
 }

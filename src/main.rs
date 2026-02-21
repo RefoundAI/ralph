@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod dag;
 mod feature;
+mod interrupt;
 mod journal;
 mod knowledge;
 mod output;
@@ -41,6 +42,7 @@ mod tests {
         let _limit = run_loop::Outcome::LimitReached;
         let _blocked = run_loop::Outcome::Blocked;
         let _noplan = run_loop::Outcome::NoPlan;
+        let _interrupted = run_loop::Outcome::Interrupted;
     }
 
     #[test]
@@ -322,6 +324,10 @@ fn run() -> Result<ExitCode> {
                         "No plan: DAG is empty. Run 'ralph feature build <name>' to create tasks"
                     );
                     Ok(ExitCode::from(3))
+                }
+                run_loop::Outcome::Interrupted => {
+                    println!("Run interrupted by user.");
+                    Ok(ExitCode::SUCCESS)
                 }
             }
         }
