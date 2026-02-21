@@ -1,7 +1,6 @@
 //! Ralph - Autonomous agent loop harness for Claude Code
 
 mod acp;
-mod claude;
 mod cli;
 mod config;
 mod dag;
