@@ -8,7 +8,7 @@ The journal/knowledge system provides cross-iteration and cross-run memory.
 
 **Journal** (`src/journal.rs`):
 - SQLite table + FTS5 virtual table for full-text search
-- Each iteration writes a `JournalEntry`: run_id, iteration, task_id, feature_id, outcome, model, duration_secs, cost_usd, files_modified, notes
+- Each iteration writes a `JournalEntry`: run_id, iteration, task_id, feature_id, outcome (done/failed/retried/blocked/interrupted), model, duration_secs, cost_usd, files_modified, notes
 - Smart selection in `select_journal_entries()`: combines up to 5 recent entries from current run + up to 5 FTS-matched entries from prior runs
 - Rendered within 3000-token budget (~12K chars)
 - Notes come from Claude's `<journal>` sigil output

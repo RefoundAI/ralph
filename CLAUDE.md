@@ -21,7 +21,7 @@ Ralph is an autonomous agent loop harness that iteratively invokes Claude Code u
 ### Core Loop (`src/run_loop.rs`)
 DAG-driven loop: open `.ralph/progress.db`, get scoped ready tasks, claim one, build iteration context (parent, blockers, spec/plan, retry info, journal/knowledge context), run Claude, handle sigils, verify (if enabled), retry on failure, repeat. No async runtime — uses synchronous `std::process` with `BufReader::lines()` for streaming.
 
-**Outcome enum**: `Complete`, `Failure`, `LimitReached`, `Blocked` (no ready tasks but incomplete tasks remain), `NoPlan` (DAG is empty).
+**Outcome enum**: `Complete`, `Failure`, `LimitReached`, `Blocked` (no ready tasks but incomplete tasks remain), `NoPlan` (DAG is empty), `Interrupted` (user pressed Ctrl+C and chose not to continue).
 
 **Key functions**: `resolve_feature_context()` loads spec/plan for feature targets. `get_scoped_ready_tasks()` filters by feature or task ID. `build_iteration_context()` assembles full context including journal + knowledge. `handle_task_done()` orchestrates verification + retry. `journal::select_journal_entries()` picks relevant past iteration records. `knowledge::discover_knowledge()` and `knowledge::match_knowledge_entries()` find and score relevant project knowledge.
 
@@ -41,8 +41,11 @@ CRUD operations for features: `create_feature`, `get_feature` (by name), `get_fe
 ### Verification Agent (`src/verification.rs`)
 Spawns a read-only Claude session to verify completed tasks. Uses restricted tools (`Bash Read Glob Grep`). Parses `<verify-pass/>` and `<verify-fail>reason</verify-fail>` sigils.
 
+### Interrupt Handling (`src/interrupt.rs`)
+Graceful Ctrl+C support using `signal-hook`. Registers a SIGINT handler that sets an `AtomicBool` flag on first press and force-exits (`exit(130)`) on second press. The stream reader checks `is_interrupted()` each line and returns `StreamResult::Interrupted` early, which propagates up as `RunResult::Interrupted`. On interrupt the run loop: prints an interrupted banner, prompts the user for task feedback (multi-line, empty to skip), appends feedback to the task description as a `**User Guidance**` section, logs a journal entry with outcome `"interrupted"`, releases the task claim via `release_claim()`, and asks whether to continue. Key functions: `register_signal_handler()`, `is_interrupted()`, `clear_interrupt()`, `prompt_for_feedback()`, `append_feedback_to_description()`, `should_continue()`.
+
 ### Claude Integration (`src/claude/`)
-- **client.rs**: Spawns `claude` CLI with `--output-format stream-json` and `--model <model>`, handles both direct and sandboxed execution. Builds the system prompt with DAG task assignment instructions, spec/plan content, retry info, journal/knowledge context sections, and Memory instructions (with `<journal>` and `<knowledge>` sigils). Defines `TaskInfo`, `ParentContext`, `BlockerContext`, `RetryInfo`, `IterationContext` (with `run_id`, `journal_context`, `knowledge_context`) structs. `build_task_context()` renders task assignment markdown.
+- **client.rs**: Spawns `claude` CLI with `--output-format stream-json` and `--model <model>`, handles both direct and sandboxed execution. Builds the system prompt with DAG task assignment instructions, spec/plan content, retry info, journal/knowledge context sections, and Memory instructions (with `<journal>` and `<knowledge>` sigils). Defines `RunResult` (`Completed`/`Interrupted`) and `StreamResult` enums for interrupt-aware process management. Defines `TaskInfo`, `ParentContext`, `BlockerContext`, `RetryInfo`, `IterationContext` (with `run_id`, `journal_context`, `knowledge_context`) structs. `build_task_context()` renders task assignment markdown.
 - **interactive.rs**: `run_interactive()` spawns Claude with inherited stdio for interactive sessions (used by spec, plan, build, and task create commands).
 - **events.rs**: Typed event structs for NDJSON parsing. Parses sigils from result text: `<task-done>`, `<task-failed>`, `<next-model>`, `<promise>COMPLETE/FAILURE</promise>`, `<journal>`, `<knowledge>`. `ResultEvent` includes `journal_notes`, `knowledge_entries`, and `files_modified` fields.
 - **parser.rs**: Deserializes raw JSON into typed events

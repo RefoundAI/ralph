@@ -18,6 +18,8 @@ On verification failure:
 - The failure reason is included as `RetryInfo` in the next iteration's system prompt
 - Retry count is tracked in `tasks.retry_count` column
 
+If the user interrupts verification with Ctrl+C, the `RunResult::Interrupted` variant is returned and verification treats it as a failure (`passed: false`, reason: "Verification interrupted by user"). This causes the task to be retried on the next iteration.
+
 The verification agent runs in the same sandbox as the main Claude session.
 
 Disable with `--no-verify` flag. Configure max retries with `--max-retries=N` or `[execution] max_retries` in `.ralph.toml`.
