@@ -10,6 +10,8 @@ use anyhow::Result;
 /// A single journal entry recording metadata about one agent loop iteration.
 #[derive(Debug, Clone)]
 pub struct JournalEntry {
+    /// Row ID from SQLite; used in FTS5 joins.
+    #[allow(dead_code)]
     pub id: i64,
     pub run_id: String,
     pub iteration: u32,

@@ -45,6 +45,8 @@ pub struct IterationContext {
     pub plan_content: Option<String>,
     pub retry_info: Option<RetryInfo>,
     /// Unique run ID for this invocation (format: run-{8 hex chars}).
+    /// Used by the journal subsystem for grouping entries; read indirectly.
+    #[allow(dead_code)]
     pub run_id: String,
     /// Pre-rendered markdown from journal::render_journal_context().
     pub journal_context: String,
@@ -98,6 +100,7 @@ pub struct SigilResult {
     /// Knowledge entries from `<knowledge>` sigils, if any.
     pub knowledge_entries: Vec<KnowledgeSigil>,
     /// True if `<promise>COMPLETE</promise>` was found.
+    #[allow(dead_code)]
     pub is_complete: bool,
     /// True if `<promise>FAILURE</promise>` was found.
     pub is_failure: bool,

@@ -7,7 +7,7 @@
 //! Design choice: `Rc<RefCell<>>` (not `Arc<Mutex<>>`) — all ACP futures are
 //! `!Send` and everything runs on a single thread via `tokio::task::LocalSet`.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -45,8 +45,6 @@ pub struct RalphClient {
     files_modified: Rc<RefCell<Vec<String>>>,
     /// If `true`, file write requests are rejected.
     read_only: bool,
-    /// Counter for generating unique terminal IDs within this session.
-    next_terminal_id: Rc<Cell<u64>>,
 }
 
 impl RalphClient {
@@ -63,7 +61,6 @@ impl RalphClient {
             text_accumulator: Rc::new(RefCell::new(String::new())),
             files_modified: Rc::new(RefCell::new(Vec::new())),
             read_only,
-            next_terminal_id: Rc::new(Cell::new(1)),
         }
     }
 
@@ -93,13 +90,6 @@ impl RalphClient {
         for session in sessions {
             tools::release_terminal(session).await;
         }
-    }
-
-    /// Generate a terminal ID string for a new terminal session.
-    fn generate_terminal_id(&self) -> String {
-        let id = self.next_terminal_id.get();
-        self.next_terminal_id.set(id + 1);
-        format!("ralph-terminal-{id}")
     }
 
     /// Normalize `path` to be project-relative.

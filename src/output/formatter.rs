@@ -135,11 +135,6 @@ pub fn print_task_working(iteration: u32, task_id: &str, title: &str) {
     );
 }
 
-/// Print ACP iteration result with duration summary.
-pub fn print_iteration_result(duration_ms: u64) {
-    println!("{}", format!("Done ({}s)", duration_ms / 1000).green());
-}
-
 /// Print review loop start message.
 pub fn print_review_start(kind: &str, feature_name: &str) {
     println!(

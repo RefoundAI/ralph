@@ -5,7 +5,7 @@
 //! - build_task_context()
 //! - build_prompt_text() (new: concatenates system + task context)
 
-use crate::acp::types::{BlockerContext, IterationContext, ParentContext, TaskInfo};
+use crate::acp::types::{IterationContext, TaskInfo};
 use crate::config::Config;
 
 /// Build the system instructions portion of a prompt.
@@ -199,6 +199,7 @@ pub fn build_prompt_text(config: &Config, context: &IterationContext) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::acp::types::{BlockerContext, ParentContext};
     use crate::project::{ProjectConfig, RalphConfig};
     use std::path::PathBuf;
 

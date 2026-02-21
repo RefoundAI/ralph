@@ -14,8 +14,10 @@ use std::path::{Path, PathBuf};
 pub struct KnowledgeEntry {
     pub title: String,
     pub tags: Vec<String>,
+    #[allow(dead_code)]
     pub feature: Option<String>,
     pub body: String,
+    #[allow(dead_code)]
     pub created_at: String,
     /// Resolved path of the file in `.ralph/knowledge/`.
     pub file_path: PathBuf,
