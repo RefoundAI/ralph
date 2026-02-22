@@ -11,6 +11,19 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
+/// Options for restricting an ACP session's capabilities.
+///
+/// Used by `run_acp_session()` to control what the agent is allowed to do.
+/// Callers construct this to disable terminal access and/or restrict file
+/// writes for document-authoring sessions (spec, plan, review).
+#[derive(Clone, Default)]
+pub struct SessionRestrictions {
+    /// If `false`, terminal (bash) capability is disabled.
+    pub allow_terminal: bool,
+    /// If set, file writes are restricted to only these paths.
+    pub allowed_write_paths: Option<Vec<PathBuf>>,
+}
+
 use agent_client_protocol::{
     Agent, AuthenticateRequest, CancelNotification, ClientCapabilities, ClientSideConnection,
     ContentBlock, FileSystemCapability, Implementation, InitializeRequest, NewSessionRequest,
@@ -57,6 +70,10 @@ pub async fn run_iteration(config: &Config, context: &IterationContext) -> Resul
             prompt_text,
             false, // read_only
             None,  // model override
+            SessionRestrictions {
+                allow_terminal: true,
+                ..Default::default()
+            },
         ))
         .await
 }
@@ -66,6 +83,11 @@ pub async fn run_iteration(config: &Config, context: &IterationContext) -> Resul
 /// Concatenates `instructions` and `message` into a single `TextContent` block.
 /// If `model` is provided, sets `RALPH_MODEL` to that value on the spawned process
 /// (overriding `current_model`).
+///
+/// `restrictions` controls terminal access and file write paths. Use
+/// `SessionRestrictions::default()` (terminal disabled, no write restrictions)
+/// for document-only sessions, or set `allow_terminal: true` for sessions that
+/// need to run shell commands.
 pub async fn run_autonomous(
     agent_command: &str,
     project_root: &Path,
@@ -73,6 +95,7 @@ pub async fn run_autonomous(
     message: &str,
     read_only: bool,
     model: Option<&str>,
+    restrictions: SessionRestrictions,
 ) -> Result<StreamingResult> {
     let agent_command = agent_command.to_owned();
     let project_root = project_root.to_path_buf();
@@ -90,6 +113,7 @@ pub async fn run_autonomous(
             prompt_text,
             read_only,
             model,
+            restrictions,
         ))
         .await?;
 
@@ -144,6 +168,7 @@ async fn run_acp_session(
     prompt_text: String,
     read_only: bool,
     model_override: Option<String>,
+    restrictions: SessionRestrictions,
 ) -> Result<RunResult> {
     let start = Instant::now();
 
@@ -205,7 +230,11 @@ async fn run_acp_session(
     });
 
     // ── 3. Create RalphClient and wire up the ACP connection ──────────────
-    let client = Rc::new(RalphClient::new(project_root.clone(), read_only));
+    let mut ralph_client = RalphClient::new(project_root.clone(), read_only, model.clone());
+    if let Some(paths) = restrictions.allowed_write_paths {
+        ralph_client = ralph_client.with_allowed_write_paths(paths);
+    }
+    let client = Rc::new(ralph_client);
     let client_ref = Rc::clone(&client);
 
     // Convert tokio IO handles to futures-compatible IO (required by the ACP crate).
@@ -227,7 +256,9 @@ async fn run_acp_session(
         .read_text_file(true)
         .write_text_file(!read_only);
 
-    let caps = ClientCapabilities::new().fs(fs_caps).terminal(true);
+    let caps = ClientCapabilities::new()
+        .fs(fs_caps)
+        .terminal(restrictions.allow_terminal);
 
     let client_info = Implementation::new("ralph", env!("CARGO_PKG_VERSION"));
 

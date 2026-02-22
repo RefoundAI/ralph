@@ -86,6 +86,7 @@ pub async fn run_streaming(
     model: Option<&str>,
 ) -> Result<()> {
     // Delegate to run_autonomous — same lifecycle, different return type.
+    // Feature build needs terminal access for `ralph task add` commands.
     connection::run_autonomous(
         agent_command,
         project_root,
@@ -93,6 +94,10 @@ pub async fn run_streaming(
         message,
         false,
         model,
+        connection::SessionRestrictions {
+            allow_terminal: true,
+            ..Default::default()
+        },
     )
     .await
     .map(|_| ())
@@ -199,7 +204,7 @@ async fn run_interactive_inner(
     });
 
     // ── 3. Create RalphClient and wire up the ACP connection ──────────────
-    let mut ralph_client = RalphClient::new(project_root.clone(), false);
+    let mut ralph_client = RalphClient::new(project_root.clone(), false, ralph_model.to_string());
     if let Some(paths) = allowed_write_paths {
         ralph_client = ralph_client.with_allowed_write_paths(paths);
     }

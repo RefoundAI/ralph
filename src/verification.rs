@@ -33,6 +33,10 @@ pub async fn verify_task(
         "Verify the task.",
         true, // read_only = true
         Some(&config.current_model),
+        acp::connection::SessionRestrictions {
+            allow_terminal: true, // verification needs to run tests
+            ..Default::default()
+        },
     )
     .await?;
 

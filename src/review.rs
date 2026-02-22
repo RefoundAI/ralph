@@ -1,10 +1,11 @@
 //! Iterative review agent for spec and plan documents.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::acp;
+use crate::acp::connection::SessionRestrictions;
 use crate::output::formatter;
 
 /// Maximum number of review rounds before stopping.
@@ -111,6 +112,10 @@ async fn run_review_agent(
         &message,
         false,        // read_only = false (review agent can write)
         Some("opus"), // matching current hardcoded --model opus behavior
+        SessionRestrictions {
+            allow_terminal: false, // review is document-only, no bash
+            allowed_write_paths: Some(vec![PathBuf::from(document_path)]),
+        },
     )
     .await;
 
