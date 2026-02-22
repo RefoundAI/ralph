@@ -39,6 +39,25 @@ use crate::acp::types::{IterationContext, RunResult, StreamingResult};
 use crate::config::Config;
 use crate::interrupt;
 
+/// Check if an ACP error looks like an authentication failure and return
+/// a user-friendly message directing them to `ralph auth`.
+pub(crate) fn auth_hint(err: &dyn std::fmt::Display) -> Option<String> {
+    let msg = err.to_string().to_lowercase();
+    if msg.contains("authentication required")
+        || msg.contains("not authenticated")
+        || msg.contains("unauthenticated")
+        || msg.contains("auth")
+            && (msg.contains("required") || msg.contains("failed") || msg.contains("expired"))
+    {
+        Some(format!(
+            "Agent authentication error: {err}\n\n  \
+             Hint: run `ralph auth` to authenticate before retrying."
+        ))
+    } else {
+        None
+    }
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -274,7 +293,10 @@ async fn run_acp_session(
     let init_resp = conn
         .initialize(init_req)
         .await
-        .map_err(|e| anyhow!("ACP initialize failed: {e}"))?;
+        .map_err(|e| match auth_hint(&e) {
+            Some(hint) => anyhow!("{hint}"),
+            None => anyhow!("ACP initialize failed: {e}"),
+        })?;
 
     // Attempt authentication if the agent advertises auth methods.
     // Failures are non-fatal: some agents (e.g. claude-agent-acp) advertise methods
@@ -289,7 +311,10 @@ async fn run_acp_session(
     let session_resp = conn
         .new_session(NewSessionRequest::new(project_root.clone()))
         .await
-        .map_err(|e| anyhow!("ACP new_session failed: {e}"))?;
+        .map_err(|e| match auth_hint(&e) {
+            Some(hint) => anyhow!("{hint}"),
+            None => anyhow!("ACP new_session failed: {e}"),
+        })?;
 
     let session_id = session_resp.session_id;
 
@@ -303,7 +328,10 @@ async fn run_acp_session(
         result = conn.prompt(prompt_req) => {
             match result {
                 Ok(resp) => Ok(resp),
-                Err(e) => Err(anyhow!("ACP prompt failed: {e}")),
+                Err(e) => Err(match auth_hint(&e) {
+                    Some(hint) => anyhow!("{hint}"),
+                    None => anyhow!("ACP prompt failed: {e}"),
+                }),
             }
         }
         _ = poll_interrupt() => {
@@ -509,5 +537,48 @@ mod tests {
         assert!(prompt_text.contains("You are a verifier."));
         assert!(prompt_text.contains("---"));
         assert!(prompt_text.contains("Verify the task."));
+    }
+
+    // ---- auth_hint tests ----------------------------------------------------
+
+    #[test]
+    fn test_auth_hint_detects_authentication_required() {
+        let err = "Authentication required";
+        let hint = auth_hint(&err);
+        assert!(hint.is_some());
+        let msg = hint.unwrap();
+        assert!(
+            msg.contains("ralph auth"),
+            "should suggest ralph auth: {msg}"
+        );
+        assert!(msg.contains("Authentication required"));
+    }
+
+    #[test]
+    fn test_auth_hint_detects_not_authenticated() {
+        let err = "client is not authenticated";
+        let hint = auth_hint(&err);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("ralph auth"));
+    }
+
+    #[test]
+    fn test_auth_hint_detects_auth_expired() {
+        let err = "auth token expired";
+        let hint = auth_hint(&err);
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("ralph auth"));
+    }
+
+    #[test]
+    fn test_auth_hint_returns_none_for_unrelated_errors() {
+        let err = "connection refused";
+        assert!(auth_hint(&err).is_none());
+    }
+
+    #[test]
+    fn test_auth_hint_returns_none_for_generic_failure() {
+        let err = "timeout waiting for response";
+        assert!(auth_hint(&err).is_none());
     }
 }

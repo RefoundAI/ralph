@@ -23,6 +23,7 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::acp::client_impl::RalphClient;
 use crate::acp::connection;
+use crate::acp::connection::auth_hint;
 use crate::interrupt;
 
 // ============================================================================
@@ -241,7 +242,10 @@ async fn run_interactive_inner(
     let init_resp = conn
         .initialize(init_req)
         .await
-        .map_err(|e| anyhow!("ACP initialize failed: {e}"))?;
+        .map_err(|e| match auth_hint(&e) {
+            Some(hint) => anyhow!("{hint}"),
+            None => anyhow!("ACP initialize failed: {e}"),
+        })?;
 
     // Attempt authentication if the agent advertises auth methods.
     // Failures are non-fatal: some agents (e.g. claude-agent-acp) advertise methods
@@ -256,7 +260,10 @@ async fn run_interactive_inner(
     let session_resp = conn
         .new_session(NewSessionRequest::new(project_root.clone()))
         .await
-        .map_err(|e| anyhow!("ACP new_session failed: {e}"))?;
+        .map_err(|e| match auth_hint(&e) {
+            Some(hint) => anyhow!("{hint}"),
+            None => anyhow!("ACP new_session failed: {e}"),
+        })?;
 
     let session_id = session_resp.session_id;
 
@@ -274,7 +281,10 @@ async fn run_interactive_inner(
             match result {
                 Ok(_) => false,
                 Err(e) => {
-                    eprintln!("ralph: ACP prompt failed: {e}");
+                    match auth_hint(&e) {
+                        Some(hint) => eprintln!("ralph: {hint}"),
+                        None => eprintln!("ralph: ACP prompt failed: {e}"),
+                    }
                     true
                 }
             }
@@ -340,7 +350,10 @@ async fn run_interactive_inner(
                 match result {
                     Ok(_) => false,
                     Err(e) => {
-                        eprintln!("ralph: ACP prompt failed: {e}");
+                        match auth_hint(&e) {
+                            Some(hint) => eprintln!("ralph: {hint}"),
+                            None => eprintln!("ralph: ACP prompt failed: {e}"),
+                        }
                         true
                     }
                 }
