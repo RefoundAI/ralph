@@ -23,9 +23,11 @@ pub fn render_session_update(update: &SessionUpdateMsg) {
     match update {
         SessionUpdateMsg::AgentText(text) => {
             print!("{}", text.bright_white());
+            flush_stdout();
         }
         SessionUpdateMsg::AgentThought(text) => {
             print!("{}", text.bright_black());
+            flush_stdout();
         }
         SessionUpdateMsg::ToolCall { name, input } => {
             println!("{} {}", name.cyan(), input.dimmed());
@@ -35,8 +37,18 @@ pub fn render_session_update(update: &SessionUpdateMsg) {
             let truncated = lines.join("\n");
             eprintln!("{}: {}", name.red(), truncated.red());
         }
+        SessionUpdateMsg::ToolCallProgress { title, content } => {
+            if let Some(t) = title {
+                println!("  {}", t.dimmed());
+            }
+            if !content.is_empty() {
+                print!("{}", content.dimmed());
+                flush_stdout();
+            }
+        }
         SessionUpdateMsg::PlanUpdate(text) => {
             print!("{text}");
+            flush_stdout();
         }
         SessionUpdateMsg::Finished => {
             flush_stdout();

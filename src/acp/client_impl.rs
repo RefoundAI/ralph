@@ -19,8 +19,9 @@ use agent_client_protocol::{
     ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, SessionUpdate, TerminalExitStatus, TerminalId,
-    TerminalOutputRequest, TerminalOutputResponse, ToolKind, WaitForTerminalExitRequest,
-    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
+    TerminalOutputRequest, TerminalOutputResponse, ToolCallContent, ToolKind,
+    WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
+    WriteTextFileResponse,
 };
 
 use crate::acp::streaming::render_session_update;
@@ -217,13 +218,42 @@ impl Client for RalphClient {
                     .unwrap_or_default();
                 render_session_update(&SessionUpdateMsg::ToolCall { name, input });
             }
+            SessionUpdate::ToolCallUpdate(update) => {
+                // Extract text content from tool call updates for progress display.
+                let text = update
+                    .fields
+                    .content
+                    .as_ref()
+                    .map(|contents| {
+                        contents
+                            .iter()
+                            .filter_map(|c| match c {
+                                ToolCallContent::Content(content) => {
+                                    Self::content_block_text(&content.content).map(|s| s.to_owned())
+                                }
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("")
+                    })
+                    .unwrap_or_default();
+
+                let title = update.fields.title.clone();
+
+                if title.is_some() || !text.is_empty() {
+                    render_session_update(&SessionUpdateMsg::ToolCallProgress {
+                        title,
+                        content: text,
+                    });
+                }
+            }
             SessionUpdate::Plan(plan) => {
                 // Plans are rendered as PlanUpdate messages.
                 // The Plan type's textual representation is its debug form; for
                 // now we just signal that a plan update arrived.
                 render_session_update(&SessionUpdateMsg::PlanUpdate(format!("{plan:?}")));
             }
-            // ToolCallUpdate, CurrentModeUpdate, ConfigOptionUpdate, etc. are
+            // CurrentModeUpdate, ConfigOptionUpdate, etc. are
             // silently accepted — no rendering needed for these.
             _ => {}
         }

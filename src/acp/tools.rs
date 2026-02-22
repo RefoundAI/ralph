@@ -161,6 +161,11 @@ pub enum SessionUpdateMsg {
     ToolCall { name: String, input: String },
     /// A tool call returned an error.
     ToolCallError { name: String, error: String },
+    /// A tool call status/content update (streaming progress).
+    ToolCallProgress {
+        title: Option<String>,
+        content: String,
+    },
     /// The agent emitted a plan update.
     PlanUpdate(String),
     /// The session has finished (prompt completed).
