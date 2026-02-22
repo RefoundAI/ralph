@@ -234,15 +234,9 @@ async fn run_interactive_inner(
     // Failures are non-fatal: some agents (e.g. claude-agent-acp) advertise methods
     // but don't implement the authenticate RPC, expecting out-of-band auth instead.
     for method in &init_resp.auth_methods {
-        if let Err(e) = conn
+        let _ = conn
             .authenticate(AuthenticateRequest::new(method.id.clone()))
-            .await
-        {
-            eprintln!(
-                "Warning: ACP authenticate ({:?}) failed: {e} — continuing anyway",
-                method.id
-            );
-        }
+            .await;
     }
 
     // ── 5. Create session ─────────────────────────────────────────────────

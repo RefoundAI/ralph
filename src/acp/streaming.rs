@@ -17,7 +17,6 @@ use crate::acp::tools::SessionUpdateMsg;
 /// - `AgentThought`   — bright black / dim (matches thinking delta behavior)
 /// - `ToolCall`       — `name` in cyan + `input` dimmed
 /// - `ToolCallError`  — red, capped at the first 5 lines
-/// - `PlanUpdate`     — normal color
 /// - `Finished`       — flushes stdout
 pub fn render_session_update(update: &SessionUpdateMsg) {
     match update {
@@ -42,13 +41,16 @@ pub fn render_session_update(update: &SessionUpdateMsg) {
                 println!("  {}", t.dimmed());
             }
             if !content.is_empty() {
-                print!("{}", content.dimmed());
-                flush_stdout();
+                if title.is_some() {
+                    // Wrap tool result content in a dimmed code fence for visual separation.
+                    println!("{}", "```".dimmed());
+                    print!("{}", content.dimmed());
+                    println!("\n{}", "```".dimmed());
+                } else {
+                    print!("{}", content.dimmed());
+                    flush_stdout();
+                }
             }
-        }
-        SessionUpdateMsg::PlanUpdate(text) => {
-            print!("{text}");
-            flush_stdout();
         }
         SessionUpdateMsg::Finished => {
             flush_stdout();

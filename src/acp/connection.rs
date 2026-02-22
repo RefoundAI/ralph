@@ -17,7 +17,6 @@ use agent_client_protocol::{
     PromptRequest, ProtocolVersion, StopReason, TextContent,
 };
 use anyhow::{anyhow, Result};
-use tokio::io::AsyncReadExt;
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -170,18 +169,38 @@ async fn run_acp_session(
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
 
-    // ── 2. Spawn background stderr reader (streams to terminal) ─────────
+    // ── 2. Spawn background stderr reader (filters noise, streams to terminal) ──
     let stderr_handle = tokio::task::spawn_local(async move {
-        let mut stderr = stderr;
-        let mut buf = [0u8; 4096];
-        loop {
-            match stderr.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    // Print agent stderr to our stderr in real-time.
-                    let _ = std::io::Write::write_all(&mut std::io::stderr(), &buf[..n]);
-                }
+        use tokio::io::AsyncBufReadExt;
+        let reader = tokio::io::BufReader::new(stderr);
+        let mut lines = reader.lines();
+        let mut suppressing = false;
+        let mut brace_depth: i32 = 0;
+
+        while let Ok(Some(line)) = lines.next_line().await {
+            // Start suppressing JSON-RPC error dumps from the agent.
+            if line.starts_with("Error handling request {") {
+                suppressing = true;
+                brace_depth = count_braces(&line);
+                continue;
             }
+
+            // Skip hook-not-found noise.
+            if line.contains("onPostToolUseHook") {
+                continue;
+            }
+
+            // If we're inside a suppressed multi-line JSON block, track braces.
+            if suppressing {
+                brace_depth += count_braces(&line);
+                if brace_depth <= 0 {
+                    suppressing = false;
+                }
+                continue;
+            }
+
+            // Pass everything else through.
+            eprintln!("{line}");
         }
     });
 
@@ -225,15 +244,9 @@ async fn run_acp_session(
     // Failures are non-fatal: some agents (e.g. claude-agent-acp) advertise methods
     // but don't implement the authenticate RPC, expecting out-of-band auth instead.
     for method in &init_resp.auth_methods {
-        if let Err(e) = conn
+        let _ = conn
             .authenticate(AuthenticateRequest::new(method.id.clone()))
-            .await
-        {
-            eprintln!(
-                "Warning: ACP authenticate ({:?}) failed: {e} — continuing anyway",
-                method.id
-            );
-        }
+            .await;
     }
 
     // ── 5. Create session ─────────────────────────────────────────────────
@@ -302,6 +315,19 @@ async fn run_acp_session(
     cleanup(conn, io_handle, stderr_handle, &client, child).await;
 
     Ok(run_result)
+}
+
+/// Count net brace depth change in a line: `{` adds 1, `}` subtracts 1.
+fn count_braces(line: &str) -> i32 {
+    let mut depth: i32 = 0;
+    for ch in line.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
 }
 
 /// Kill all resources: terminals, io task, stderr task, and agent process.

@@ -166,8 +166,6 @@ pub enum SessionUpdateMsg {
         title: Option<String>,
         content: String,
     },
-    /// The agent emitted a plan update.
-    PlanUpdate(String),
     /// The session has finished (prompt completed).
     Finished,
 }

@@ -27,6 +27,25 @@ use agent_client_protocol::{
 use crate::acp::streaming::render_session_update;
 use crate::acp::tools::{self, SessionUpdateMsg, TerminalSession};
 
+/// Truncate multi-line content to a maximum number of lines.
+///
+/// If content exceeds `max_lines`, returns the first 10 lines, a
+/// `... (N more lines)` indicator, and the last 5 lines.
+fn truncate_content(content: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.len() <= max_lines {
+        return content.to_owned();
+    }
+    let head = &lines[..10];
+    let tail = &lines[lines.len() - 5..];
+    let omitted = lines.len() - 15;
+    format!(
+        "{}\n  ... ({omitted} more lines)\n{}",
+        head.join("\n"),
+        tail.join("\n"),
+    )
+}
+
 /// Ralph's implementation of the ACP [`Client`] trait.
 ///
 /// Handles tool requests from the agent:
@@ -241,17 +260,16 @@ impl Client for RalphClient {
                 let title = update.fields.title.clone();
 
                 if title.is_some() || !text.is_empty() {
+                    // Truncate long content (e.g. full file dumps) to keep output readable.
+                    let truncated = truncate_content(&text, 20);
                     render_session_update(&SessionUpdateMsg::ToolCallProgress {
                         title,
-                        content: text,
+                        content: truncated,
                     });
                 }
             }
-            SessionUpdate::Plan(plan) => {
-                // Plans are rendered as PlanUpdate messages.
-                // The Plan type's textual representation is its debug form; for
-                // now we just signal that a plan update arrived.
-                render_session_update(&SessionUpdateMsg::PlanUpdate(format!("{plan:?}")));
+            SessionUpdate::Plan(_) => {
+                // Plan updates are internal agent state; visible work shows via text + tool calls.
             }
             // CurrentModeUpdate, ConfigOptionUpdate, etc. are
             // silently accepted — no rendering needed for these.
