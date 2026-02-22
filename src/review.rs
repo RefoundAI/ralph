@@ -226,7 +226,9 @@ fn build_review_prompt(
 
 - You MUST read the document first before making any assessment
 - Explore the codebase (using Read, Glob, Grep) to validate that proposals are feasible
-- Make changes directly — do not just list suggestions
+- Make changes directly to `{document_path}` — do not just list suggestions
+- ONLY modify the document at `{document_path}` — do NOT modify any source code, tests, or other files
+- Do NOT run build commands, test commands, or any implementation steps
 - Preserve the author's intent — improve clarity and coverage, do not redesign
 - If the document is already comprehensive and clear, do not make changes just for the sake of it
 - Focus on substantive issues, not minor stylistic preferences

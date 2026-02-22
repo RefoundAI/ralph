@@ -36,6 +36,8 @@ use crate::interrupt;
 /// The session ends when the user sends an empty line or EOF (Ctrl+D).
 ///
 /// If `model` is provided, sets `RALPH_MODEL` env var on the spawned agent process.
+/// If `allow_terminal` is false, terminal (bash) capability is disabled — use this
+/// for document-authoring sessions (spec, plan) where the agent should only read/write files.
 /// ACP has no equivalent to `plan_mode` from the old Claude CLI integration — permission
 /// management is now handled by Ralph's tool provider (auto-approve in normal mode).
 pub async fn run_interactive(
@@ -44,6 +46,7 @@ pub async fn run_interactive(
     initial_message: &str,
     project_root: &Path,
     model: Option<&str>,
+    allow_terminal: bool,
 ) -> Result<()> {
     // Extract owned values before entering the LocalSet to avoid lifetime issues.
     let agent_command = agent_command.to_owned();
@@ -60,6 +63,7 @@ pub async fn run_interactive(
             instructions,
             initial_message,
             model,
+            allow_terminal,
         ))
         .await
 }
@@ -142,6 +146,7 @@ async fn run_interactive_inner(
     instructions: String,
     initial_message: String,
     model: Option<String>,
+    allow_terminal: bool,
 ) -> Result<()> {
     // ── 1. Parse + spawn agent process ────────────────────────────────────
     let parts = shlex::split(&agent_command).ok_or_else(|| {
@@ -211,7 +216,9 @@ async fn run_interactive_inner(
         .read_text_file(true)
         .write_text_file(true); // interactive sessions allow writes
 
-    let caps = ClientCapabilities::new().fs(fs_caps).terminal(true);
+    let caps = ClientCapabilities::new()
+        .fs(fs_caps)
+        .terminal(allow_terminal);
     let client_info = Implementation::new("ralph", env!("CARGO_PKG_VERSION"));
 
     let init_req = InitializeRequest::new(ProtocolVersion::LATEST)
@@ -408,6 +415,7 @@ mod tests {
             "initial",
             root,
             None,
+            true,
         ));
     }
 }

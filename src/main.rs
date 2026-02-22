@@ -415,13 +415,14 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             let system_prompt = build_feature_spec_system_prompt(&name, &spec_path_str, &context);
             let initial_message = build_initial_message_spec(&name, resuming);
 
-            // Launch interactive session via ACP
+            // Launch interactive session via ACP (no terminal — spec authoring only)
             acp::interactive::run_interactive(
                 &agent_command,
                 &system_prompt,
                 &initial_message,
                 &project.root,
                 Some(model.as_deref().unwrap_or("opus")),
+                false, // allow_terminal: spec sessions only need file read/write
             )
             .await?;
 
@@ -490,13 +491,14 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 build_feature_plan_system_prompt(&name, &spec_content, &plan_path_str, &context);
             let initial_message = build_initial_message_plan(&name, resuming);
 
-            // Launch interactive session via ACP
+            // Launch interactive session via ACP (no terminal — plan authoring only)
             acp::interactive::run_interactive(
                 &agent_command,
                 &system_prompt,
                 &initial_message,
                 &project.root,
                 Some(model.as_deref().unwrap_or("opus")),
+                false, // allow_terminal: plan sessions only need file read/write
             )
             .await?;
 
@@ -686,6 +688,7 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
                 &initial_message,
                 &project.root,
                 model.as_deref(),
+                true, // allow_terminal: task creation may need codebase exploration
             )
             .await?;
             println!("Task creation session complete.");
@@ -974,7 +977,7 @@ fn build_feature_spec_system_prompt(name: &str, spec_path: &str, context: &str) 
 
 Interview the user thoroughly to understand their requirements, then write a comprehensive specification document.
 
-## Scope — SPECIFICATION ONLY
+## Scope — SPECIFICATION DOCUMENT ONLY
 
 Your ONLY job is to author the spec document at `{spec_path}`. You must NOT:
 - Write or modify any source code, tests, or configuration files
@@ -982,7 +985,9 @@ Your ONLY job is to author the spec document at `{spec_path}`. You must NOT:
 - Create any files other than the spec document itself
 - Start implementing the spec — that happens later via `ralph feature plan`, `ralph feature build`, and `ralph run`
 
-When the spec document is written, your work is done. Stop and let the user review it.
+IMPORTANT: Once you have written the spec document to `{spec_path}`, your work is DONE.
+Do NOT proceed to implement anything. Do NOT run any commands. Do NOT create tasks.
+Simply write the spec file and stop. The user will review it and proceed to the next step themselves.
 
 ## Guidelines
 
@@ -1036,7 +1041,7 @@ fn build_feature_plan_system_prompt(
 
 Based on the specification above, work with the user to create a detailed implementation plan. The plan should break down the work into logical phases.
 
-## Scope — PLANNING ONLY
+## Scope — PLANNING DOCUMENT ONLY
 
 Your ONLY job is to author the plan document at `{plan_path}`. You must NOT:
 - Write or modify any source code, tests, or configuration files
@@ -1044,7 +1049,9 @@ Your ONLY job is to author the plan document at `{plan_path}`. You must NOT:
 - Create any files other than the plan document itself
 - Start implementing the plan — that happens later via `ralph feature build` and `ralph run`
 
-When the plan document is written, your work is done. Stop and let the user review it.
+IMPORTANT: Once you have written the plan document to `{plan_path}`, your work is DONE.
+Do NOT proceed to implement anything. Do NOT run any commands. Do NOT create tasks.
+Simply write the plan file and stop. The user will review it and proceed to the next step themselves.
 
 ## Guidelines
 
@@ -1063,7 +1070,9 @@ The plan should include:
 1. **Implementation phases** - Ordered list of work to do
 2. **Per-phase details** - What to implement, what to test
 3. **Verification criteria** - How to know each phase is done
-4. **Risk areas** - Things that might go wrong"#,
+4. **Risk areas** - Things that might go wrong
+
+After writing the plan file, STOP. Do not implement anything."#,
         name = name,
         spec_content = spec_content,
         plan_path = plan_path,
