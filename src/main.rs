@@ -251,6 +251,7 @@ async fn run() -> Result<ExitCode> {
             project::init()?;
             Ok(ExitCode::SUCCESS)
         }
+        Some(cli::Command::Auth { agent }) => handle_auth(agent).await,
         Some(cli::Command::Feature { action }) => handle_feature(action).await,
         Some(cli::Command::Task { action }) => handle_task(action).await,
         Some(cli::Command::Run {
@@ -332,6 +333,37 @@ async fn run() -> Result<ExitCode> {
             cli::Args::parse_from(["ralph", "--help"]);
             Ok(ExitCode::SUCCESS)
         }
+    }
+}
+
+/// Handle `ralph auth` — run `claude auth login` for the underlying Claude CLI.
+///
+/// The ACP agent binary (e.g. `claude-agent-acp`) may not have its own auth command;
+/// authentication is managed by the `claude` CLI which the agent delegates to.
+async fn handle_auth(_agent: Option<String>) -> Result<ExitCode> {
+    println!("{}", "Running: claude auth login".bright_cyan());
+
+    let status = std::process::Command::new("claude")
+        .args(["auth", "login"])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to run 'claude auth login': {e}"))?;
+
+    if status.success() {
+        println!("{}", "Authentication successful.".bright_green());
+        Ok(ExitCode::SUCCESS)
+    } else {
+        eprintln!(
+            "{}",
+            format!(
+                "Authentication failed (exit code: {}).",
+                status.code().unwrap_or(-1)
+            )
+            .bright_red()
+        );
+        Ok(ExitCode::FAILURE)
     }
 }
 
@@ -942,6 +974,16 @@ fn build_feature_spec_system_prompt(name: &str, spec_path: &str, context: &str) 
 
 Interview the user thoroughly to understand their requirements, then write a comprehensive specification document.
 
+## Scope — SPECIFICATION ONLY
+
+Your ONLY job is to author the spec document at `{spec_path}`. You must NOT:
+- Write or modify any source code, tests, or configuration files
+- Run build commands, test commands, or any implementation steps
+- Create any files other than the spec document itself
+- Start implementing the spec — that happens later via `ralph feature plan`, `ralph feature build`, and `ralph run`
+
+When the spec document is written, your work is done. Stop and let the user review it.
+
 ## Guidelines
 
 - Ask about:
@@ -993,6 +1035,16 @@ fn build_feature_plan_system_prompt(
 ## Your Role
 
 Based on the specification above, work with the user to create a detailed implementation plan. The plan should break down the work into logical phases.
+
+## Scope — PLANNING ONLY
+
+Your ONLY job is to author the plan document at `{plan_path}`. You must NOT:
+- Write or modify any source code, tests, or configuration files
+- Run build commands, test commands, or any implementation steps
+- Create any files other than the plan document itself
+- Start implementing the plan — that happens later via `ralph feature build` and `ralph run`
+
+When the plan document is written, your work is done. Stop and let the user review it.
 
 ## Guidelines
 
