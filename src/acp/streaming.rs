@@ -3,7 +3,7 @@
 //! Maps `SessionUpdateMsg` variants to terminal output with visually distinct
 //! formatting per output type:
 //! - Tool calls: blue name `->` light gray metadata (single line)
-//! - LLM responses: purple model name `->` default color text
+//! - LLM responses: purple model name `->` markdown-formatted text
 //! - Errors: red name `->` bright red details
 //! - Thinking: dim/gray, truncated to 100 chars
 //! - Tool progress: suppressed (too noisy)
@@ -18,12 +18,14 @@ use crate::acp::tools::SessionUpdateMsg;
 
 /// State carried across render calls within a single session.
 ///
-/// Tracks the model name (for the `model ->` prefix) and whether the current
-/// text chunk is the first one after a tool call or session start (so we know
-/// when to print the prefix).
+/// Tracks the model name (for the `model ->` prefix), whether the current
+/// text chunk is the first one after a tool call or session start, and a
+/// line buffer for markdown formatting.
 pub struct RenderState {
     pub model_name: String,
     pub is_first_chunk: Rc<RefCell<bool>>,
+    pub line_buffer: Rc<RefCell<String>>,
+    pub in_code_block: Rc<RefCell<bool>>,
 }
 
 /// Truncate a string to at most one line and `max_chars` characters.
@@ -39,15 +41,29 @@ pub fn truncate_to_line(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Flush any remaining partial line from the buffer to stdout.
+///
+/// Called before tool call lines and at session end to ensure no text is lost.
+fn flush_line_buffer(state: &RenderState) {
+    let mut buf = state.line_buffer.borrow_mut();
+    if !buf.is_empty() {
+        let line = std::mem::take(&mut *buf);
+        let mut in_code = state.in_code_block.borrow_mut();
+        let formatted = format_markdown_line(&line, &mut in_code);
+        print!("{formatted}");
+        flush_stdout();
+    }
+}
+
 /// Render a single ACP session update to the terminal.
 ///
 /// Output style per variant:
-/// - `AgentText`         — `{model.purple()} -> ` prefix on first chunk, then default color
+/// - `AgentText`         — `{model.purple()} -> ` prefix on first chunk, then markdown-formatted
 /// - `AgentThought`      — dim/gray, truncated to 100 chars
-/// - `ToolCall`          — `{name.blue()} -> {input.bright_black()}` (single line)
+/// - `ToolCall`          — newline separator + `{name.blue()} -> {input.bright_black()}`
 /// - `ToolCallError`     — `ERROR.red() -> {error.bright_red()}`
 /// - `ToolCallProgress`  — suppressed
-/// - `Finished`          — newline + flush
+/// - `Finished`          — flush buffer + newline
 pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
     match update {
         SessionUpdateMsg::AgentText(text) => {
@@ -56,7 +72,23 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
                 print!("\n{} {} ", state.model_name.purple(), "->".dimmed());
                 *is_first = false;
             }
-            print!("{text}");
+            drop(is_first);
+
+            // Append to line buffer and render complete lines.
+            let mut buf = state.line_buffer.borrow_mut();
+            buf.push_str(text);
+
+            // Process all complete lines (terminated by \n).
+            while let Some(newline_pos) = buf.find('\n') {
+                let line: String = buf.drain(..=newline_pos).collect();
+                // Strip the trailing \n for formatting, then println.
+                let trimmed = &line[..line.len() - 1];
+                let mut in_code = state.in_code_block.borrow_mut();
+                let formatted = format_markdown_line(trimmed, &mut in_code);
+                drop(in_code);
+                println!("{formatted}");
+            }
+
             flush_stdout();
         }
         SessionUpdateMsg::AgentThought(text) => {
@@ -67,6 +99,15 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
             }
         }
         SessionUpdateMsg::ToolCall { name, input } => {
+            // Flush any buffered text before the tool call line.
+            let was_streaming = !*state.is_first_chunk.borrow();
+            flush_line_buffer(state);
+
+            // If text was streaming, add a newline to separate.
+            if was_streaming {
+                println!();
+            }
+
             // Reset first-chunk flag so the next text chunk gets a model prefix.
             *state.is_first_chunk.borrow_mut() = true;
             let truncated_input = truncate_to_line(input, 120);
@@ -89,13 +130,296 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
             // Suppressed — file dumps and terminal output are noise in the new format.
         }
         SessionUpdateMsg::Finished => {
+            flush_line_buffer(state);
             println!();
             flush_stdout();
         }
     }
 }
 
+/// Format a single line of markdown for terminal display.
+///
+/// Handles:
+/// - Fenced code block delimiters (```) → toggle state, render dimmed
+/// - Lines inside code blocks → bright_black, no inline formatting
+/// - Headings (`#`, `##`, `###`) → bold
+/// - Other lines → inline markdown formatting
+pub fn format_markdown_line(line: &str, in_code_block: &mut bool) -> String {
+    let trimmed = line.trim_start();
+
+    // Check for fenced code block delimiter.
+    if trimmed.starts_with("```") {
+        *in_code_block = !*in_code_block;
+        return format!("{}", line.dimmed());
+    }
+
+    // Inside code blocks: render as dim, no inline formatting.
+    if *in_code_block {
+        return format!("{}", line.bright_black());
+    }
+
+    // Headings: # → bold.
+    if trimmed.starts_with("### ") || trimmed.starts_with("## ") || trimmed.starts_with("# ") {
+        return format!("{}", line.bold());
+    }
+
+    // Normal text: apply inline markdown formatting.
+    format_inline_markdown(line)
+}
+
+/// Apply inline markdown formatting to a line of text.
+///
+/// Recognizes:
+/// - `` `code` `` → cyan
+/// - `**bold**` → bold
+/// - `*italic*` → italic
+///
+/// Unclosed delimiters are left as-is.
+pub fn format_inline_markdown(line: &str) -> String {
+    let mut result = String::with_capacity(line.len() + 32);
+    let chars: Vec<char> = line.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Backtick: inline code.
+        if chars[i] == '`' {
+            if let Some(end) = find_closing_char(&chars, i + 1, '`') {
+                let code: String = chars[i + 1..end].iter().collect();
+                result.push_str(&format!("\x1b[36m`{code}`\x1b[0m"));
+                i = end + 1;
+                continue;
+            }
+        }
+
+        // Double asterisk: bold.
+        if chars[i] == '*' && i + 1 < len && chars[i + 1] == '*' {
+            if let Some(end) = find_closing_pair(&chars, i + 2, '*', '*') {
+                let bold_text: String = chars[i + 2..end].iter().collect();
+                result.push_str(&format!("\x1b[1m**{bold_text}**\x1b[22m"));
+                i = end + 2;
+                continue;
+            }
+        }
+
+        // Single asterisk: italic (but not **).
+        if chars[i] == '*' && !(i + 1 < len && chars[i + 1] == '*') {
+            if let Some(end) = find_closing_single_asterisk(&chars, i + 1) {
+                let italic_text: String = chars[i + 1..end].iter().collect();
+                result.push_str(&format!("\x1b[3m*{italic_text}*\x1b[23m"));
+                i = end + 1;
+                continue;
+            }
+        }
+
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    result
+}
+
+/// Find the position of a closing single character after `start`.
+fn find_closing_char(chars: &[char], start: usize, close: char) -> Option<usize> {
+    for j in start..chars.len() {
+        if chars[j] == close {
+            return Some(j);
+        }
+    }
+    None
+}
+
+/// Find the position of a closing two-character pair (e.g. `**`) after `start`.
+///
+/// Returns the index of the first character of the pair.
+fn find_closing_pair(chars: &[char], start: usize, c1: char, c2: char) -> Option<usize> {
+    if chars.len() < 2 {
+        return None;
+    }
+    for j in start..chars.len() - 1 {
+        if chars[j] == c1 && chars[j + 1] == c2 {
+            return Some(j);
+        }
+    }
+    None
+}
+
+/// Find a closing single `*` that is not part of `**`.
+fn find_closing_single_asterisk(chars: &[char], start: usize) -> Option<usize> {
+    for j in start..chars.len() {
+        if chars[j] == '*' {
+            // Make sure it's not a `**` pair.
+            if j + 1 < chars.len() && chars[j + 1] == '*' {
+                continue;
+            }
+            return Some(j);
+        }
+    }
+    None
+}
+
 /// Flush stdout, ignoring any I/O errors.
 pub fn flush_stdout() {
     std::io::stdout().flush().ok();
+}
+
+// ============================================================================
+// Unit tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- format_markdown_line tests ----------------------------------------
+
+    #[test]
+    fn test_plain_text_unchanged() {
+        let mut in_code = false;
+        let result = format_markdown_line("hello world", &mut in_code);
+        assert_eq!(result, "hello world");
+        assert!(!in_code);
+    }
+
+    #[test]
+    fn test_heading_h1_is_bold() {
+        let mut in_code = false;
+        let result = format_markdown_line("# Heading", &mut in_code);
+        // Should contain ANSI bold escape.
+        assert!(result.contains("Heading"));
+        assert!(!in_code);
+    }
+
+    #[test]
+    fn test_heading_h2_is_bold() {
+        let mut in_code = false;
+        let result = format_markdown_line("## Sub Heading", &mut in_code);
+        assert!(result.contains("Sub Heading"));
+    }
+
+    #[test]
+    fn test_heading_h3_is_bold() {
+        let mut in_code = false;
+        let result = format_markdown_line("### Third", &mut in_code);
+        assert!(result.contains("Third"));
+    }
+
+    #[test]
+    fn test_code_block_toggle() {
+        let mut in_code = false;
+
+        // Opening fence.
+        let _ = format_markdown_line("```rust", &mut in_code);
+        assert!(in_code, "should be inside code block after opening fence");
+
+        // Line inside code block.
+        let inside = format_markdown_line("let x = 1;", &mut in_code);
+        assert!(in_code, "should still be inside code block");
+        // Inside code block lines are bright_black (contain ANSI).
+        assert!(inside.contains("let x = 1;"));
+
+        // Closing fence.
+        let _ = format_markdown_line("```", &mut in_code);
+        assert!(!in_code, "should be outside code block after closing fence");
+    }
+
+    #[test]
+    fn test_code_block_no_inline_formatting() {
+        let mut in_code = true;
+        let result = format_markdown_line("**not bold** `not code`", &mut in_code);
+        // Should NOT contain inline formatting escapes — rendered as bright_black plain text.
+        assert!(
+            !result.contains("\x1b[1m"),
+            "should not apply bold inside code block"
+        );
+        assert!(
+            !result.contains("\x1b[36m"),
+            "should not apply cyan inside code block"
+        );
+    }
+
+    // ---- format_inline_markdown tests --------------------------------------
+
+    #[test]
+    fn test_inline_code() {
+        let result = format_inline_markdown("use `foo` here");
+        assert!(
+            result.contains("\x1b[36m`foo`\x1b[0m"),
+            "backtick code should be cyan: {result}"
+        );
+    }
+
+    #[test]
+    fn test_inline_bold() {
+        let result = format_inline_markdown("this is **bold** text");
+        assert!(
+            result.contains("\x1b[1m**bold**\x1b[22m"),
+            "double asterisk should be bold: {result}"
+        );
+    }
+
+    #[test]
+    fn test_inline_italic() {
+        let result = format_inline_markdown("this is *italic* text");
+        assert!(
+            result.contains("\x1b[3m*italic*\x1b[23m"),
+            "single asterisk should be italic: {result}"
+        );
+    }
+
+    #[test]
+    fn test_unclosed_backtick_left_asis() {
+        let result = format_inline_markdown("unclosed `backtick");
+        assert_eq!(
+            result, "unclosed `backtick",
+            "unclosed delimiter should be literal"
+        );
+    }
+
+    #[test]
+    fn test_unclosed_bold_left_asis() {
+        let result = format_inline_markdown("unclosed **bold");
+        assert_eq!(result, "unclosed **bold");
+    }
+
+    #[test]
+    fn test_unclosed_italic_left_asis() {
+        let result = format_inline_markdown("unclosed *italic");
+        assert_eq!(result, "unclosed *italic");
+    }
+
+    #[test]
+    fn test_mixed_inline() {
+        let result = format_inline_markdown("`code` and **bold** and *italic*");
+        assert!(result.contains("\x1b[36m`code`\x1b[0m"), "code: {result}");
+        assert!(result.contains("\x1b[1m**bold**\x1b[22m"), "bold: {result}");
+        assert!(
+            result.contains("\x1b[3m*italic*\x1b[23m"),
+            "italic: {result}"
+        );
+    }
+
+    #[test]
+    fn test_empty_line() {
+        let mut in_code = false;
+        let result = format_markdown_line("", &mut in_code);
+        assert_eq!(result, "");
+    }
+
+    // ---- truncate_to_line tests (existing) ---------------------------------
+
+    #[test]
+    fn test_truncate_short() {
+        assert_eq!(truncate_to_line("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_long() {
+        assert_eq!(truncate_to_line("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn test_truncate_multiline() {
+        assert_eq!(truncate_to_line("line1\nline2", 100), "line1");
+    }
 }

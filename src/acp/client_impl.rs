@@ -53,6 +53,10 @@ pub struct RalphClient {
     model_name: String,
     /// Whether the next text chunk is the first after a tool call or session start.
     first_text_chunk: Rc<RefCell<bool>>,
+    /// Buffer for accumulating partial lines of agent text before rendering.
+    line_buffer: Rc<RefCell<String>>,
+    /// Whether we are currently inside a fenced code block (``` toggled).
+    in_code_block: Rc<RefCell<bool>>,
 }
 
 impl RalphClient {
@@ -73,6 +77,8 @@ impl RalphClient {
             allowed_write_paths: None,
             model_name,
             first_text_chunk: Rc::new(RefCell::new(true)),
+            line_buffer: Rc::new(RefCell::new(String::new())),
+            in_code_block: Rc::new(RefCell::new(false)),
         }
     }
 
@@ -81,6 +87,8 @@ impl RalphClient {
         RenderState {
             model_name: self.model_name.clone(),
             is_first_chunk: Rc::clone(&self.first_text_chunk),
+            line_buffer: Rc::clone(&self.line_buffer),
+            in_code_block: Rc::clone(&self.in_code_block),
         }
     }
 

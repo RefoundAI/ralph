@@ -215,6 +215,11 @@ async fn run_acp_session(
                 continue;
             }
 
+            // Skip rate limit event noise from the agent.
+            if line.starts_with("Unexpected case:") {
+                continue;
+            }
+
             // If we're inside a suppressed multi-line JSON block, track braces.
             if suppressing {
                 brace_depth += count_braces(&line);
