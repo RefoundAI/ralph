@@ -3,6 +3,7 @@
 use colored::Colorize;
 use std::process::Command;
 
+use crate::acp::types::SigilResult;
 use crate::config::Config;
 
 /// Print iteration information.
@@ -210,6 +211,41 @@ pub fn print_interrupted(iteration: u32, task_id: &str, title: &str) {
         task_id.cyan(),
         title,
     );
+}
+
+/// Print extracted sigils from an iteration in a visually distinct format.
+///
+/// Each sigil is displayed on its own line with a green sigil name and
+/// light gray content.
+pub fn print_sigils(sigils: &SigilResult) {
+    if let Some(ref id) = sigils.task_done {
+        println!("{} {}", "<TASK-DONE>".green(), id.bright_black());
+    }
+    if let Some(ref id) = sigils.task_failed {
+        println!("{} {}", "<TASK-FAILED>".green(), id.bright_black());
+    }
+    if let Some(ref model) = sigils.next_model_hint {
+        println!("{} {}", "<NEXT-MODEL>".green(), model.bright_black());
+    }
+    if let Some(ref notes) = sigils.journal_notes {
+        let first_line = notes.lines().next().unwrap_or("");
+        println!("{} {}", "<JOURNAL>".green(), first_line.bright_black());
+    }
+    for entry in &sigils.knowledge_entries {
+        let tags = entry.tags.join(", ");
+        println!(
+            "{} {} {}",
+            "<KNOWLEDGE>".green(),
+            entry.title.bright_black(),
+            format!("[{tags}]").bright_black()
+        );
+    }
+    if sigils.is_complete {
+        println!("{}", "<PROMISE>COMPLETE</PROMISE>".green());
+    }
+    if sigils.is_failure {
+        println!("{}", "<PROMISE>FAILURE</PROMISE>".green());
+    }
 }
 
 fn speak(message: &str) {

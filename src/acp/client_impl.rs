@@ -19,32 +19,12 @@ use agent_client_protocol::{
     ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
     SelectedPermissionOutcome, SessionNotification, SessionUpdate, TerminalExitStatus, TerminalId,
-    TerminalOutputRequest, TerminalOutputResponse, ToolCallContent, ToolKind,
-    WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
-    WriteTextFileResponse,
+    TerminalOutputRequest, TerminalOutputResponse, ToolKind, WaitForTerminalExitRequest,
+    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
 
-use crate::acp::streaming::render_session_update;
+use crate::acp::streaming::{self, RenderState};
 use crate::acp::tools::{self, SessionUpdateMsg, TerminalSession};
-
-/// Truncate multi-line content to a maximum number of lines.
-///
-/// If content exceeds `max_lines`, returns the first 10 lines, a
-/// `... (N more lines)` indicator, and the last 5 lines.
-fn truncate_content(content: &str, max_lines: usize) -> String {
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.len() <= max_lines {
-        return content.to_owned();
-    }
-    let head = &lines[..10];
-    let tail = &lines[lines.len() - 5..];
-    let omitted = lines.len() - 15;
-    format!(
-        "{}\n  ... ({omitted} more lines)\n{}",
-        head.join("\n"),
-        tail.join("\n"),
-    )
-}
 
 /// Ralph's implementation of the ACP [`Client`] trait.
 ///
@@ -69,6 +49,10 @@ pub struct RalphClient {
     /// are rejected with an error. Used for document-authoring sessions
     /// (spec, plan) to prevent the agent from writing source code.
     allowed_write_paths: Option<Vec<PathBuf>>,
+    /// Model name for terminal display (e.g. "sonnet", "opus").
+    model_name: String,
+    /// Whether the next text chunk is the first after a tool call or session start.
+    first_text_chunk: Rc<RefCell<bool>>,
 }
 
 impl RalphClient {
@@ -78,7 +62,8 @@ impl RalphClient {
     ///
     /// * `project_root` — Absolute path to the project root directory.
     /// * `read_only` — If `true`, write requests are rejected (verification mode).
-    pub fn new(project_root: PathBuf, read_only: bool) -> Self {
+    /// * `model_name` — Model name for display in terminal output (e.g. "sonnet").
+    pub fn new(project_root: PathBuf, read_only: bool, model_name: String) -> Self {
         Self {
             project_root,
             terminals: Rc::new(RefCell::new(HashMap::new())),
@@ -86,6 +71,16 @@ impl RalphClient {
             files_modified: Rc::new(RefCell::new(Vec::new())),
             read_only,
             allowed_write_paths: None,
+            model_name,
+            first_text_chunk: Rc::new(RefCell::new(true)),
+        }
+    }
+
+    /// Build a `RenderState` for passing to `render_session_update()`.
+    fn render_state(&self) -> RenderState {
+        RenderState {
+            model_name: self.model_name.clone(),
+            is_first_chunk: Rc::clone(&self.first_text_chunk),
         }
     }
 
@@ -229,18 +224,26 @@ impl Client for RalphClient {
         &self,
         notification: SessionNotification,
     ) -> agent_client_protocol::Result<()> {
+        let state = self.render_state();
+
         match notification.update {
             SessionUpdate::AgentMessageChunk(chunk) => {
                 if let Some(text) = Self::content_block_text(&chunk.content) {
                     // Accumulate for sigil extraction.
                     self.text_accumulator.borrow_mut().push_str(text);
                     // Render to terminal.
-                    render_session_update(&SessionUpdateMsg::AgentText(text.to_owned()));
+                    streaming::render_session_update(
+                        &SessionUpdateMsg::AgentText(text.to_owned()),
+                        &state,
+                    );
                 }
             }
             SessionUpdate::AgentThoughtChunk(chunk) => {
                 if let Some(text) = Self::content_block_text(&chunk.content) {
-                    render_session_update(&SessionUpdateMsg::AgentThought(text.to_owned()));
+                    streaming::render_session_update(
+                        &SessionUpdateMsg::AgentThought(text.to_owned()),
+                        &state,
+                    );
                 }
             }
             SessionUpdate::ToolCall(tool_call) => {
@@ -250,37 +253,29 @@ impl Client for RalphClient {
                     .as_ref()
                     .map(|v: &serde_json::Value| v.to_string())
                     .unwrap_or_default();
-                render_session_update(&SessionUpdateMsg::ToolCall { name, input });
+                streaming::render_session_update(
+                    &SessionUpdateMsg::ToolCall { name, input },
+                    &state,
+                );
             }
             SessionUpdate::ToolCallUpdate(update) => {
-                // Extract text content from tool call updates for progress display.
-                let text = update
+                // Tool call progress is suppressed in the new output format.
+                // Extract text content only for error detection.
+                let title = update.fields.title.clone();
+                let has_content = update
                     .fields
                     .content
                     .as_ref()
-                    .map(|contents| {
-                        contents
-                            .iter()
-                            .filter_map(|c| match c {
-                                ToolCallContent::Content(content) => {
-                                    Self::content_block_text(&content.content).map(|s| s.to_owned())
-                                }
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("")
-                    })
-                    .unwrap_or_default();
+                    .is_some_and(|c| !c.is_empty());
 
-                let title = update.fields.title.clone();
-
-                if title.is_some() || !text.is_empty() {
-                    // Truncate long content (e.g. full file dumps) to keep output readable.
-                    let truncated = truncate_content(&text, 20);
-                    render_session_update(&SessionUpdateMsg::ToolCallProgress {
-                        title,
-                        content: truncated,
-                    });
+                if title.is_some() || has_content {
+                    streaming::render_session_update(
+                        &SessionUpdateMsg::ToolCallProgress {
+                            title,
+                            content: String::new(),
+                        },
+                        &state,
+                    );
                 }
             }
             SessionUpdate::Plan(_) => {
@@ -532,7 +527,11 @@ mod tests {
     }
 
     fn make_client(tmp: &TempDir, read_only: bool) -> RalphClient {
-        RalphClient::new(tmp.path().to_path_buf(), read_only)
+        RalphClient::new(
+            tmp.path().to_path_buf(),
+            read_only,
+            "test-model".to_string(),
+        )
     }
 
     fn make_allow_option(id: &str) -> PermissionOption {
@@ -935,7 +934,7 @@ mod tests {
     async fn test_allowed_write_paths_permits_listed_file() {
         let tmp = TempDir::new().unwrap();
         let allowed_path = tmp.path().join("plan.md");
-        let client = RalphClient::new(tmp.path().to_path_buf(), false)
+        let client = RalphClient::new(tmp.path().to_path_buf(), false, "test-model".to_string())
             .with_allowed_write_paths(vec![allowed_path.clone()]);
 
         let req = WriteTextFileRequest::new(SessionId::new("s"), &allowed_path, "# Plan");
@@ -950,7 +949,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let allowed_path = tmp.path().join("plan.md");
         let forbidden_path = tmp.path().join("src").join("main.rs");
-        let client = RalphClient::new(tmp.path().to_path_buf(), false)
+        let client = RalphClient::new(tmp.path().to_path_buf(), false, "test-model".to_string())
             .with_allowed_write_paths(vec![allowed_path]);
 
         let req = WriteTextFileRequest::new(SessionId::new("s"), &forbidden_path, "fn main() {}");

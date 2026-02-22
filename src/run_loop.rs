@@ -182,7 +182,9 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
         let sigils = match streaming_result.stop_reason {
             StopReason::EndTurn => {
                 // Normal completion — extract sigils from accumulated text.
-                acp::sigils::extract_sigils(&streaming_result.full_text)
+                let s = acp::sigils::extract_sigils(&streaming_result.full_text);
+                formatter::print_sigils(&s);
+                s
             }
             StopReason::Cancelled => {
                 // Unexpected: cancellation is normally caught in connection.rs.
