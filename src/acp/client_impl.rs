@@ -33,6 +33,12 @@ use crate::acp::tools::{self, SessionUpdateMsg, TerminalSession};
 /// - Terminal session management
 /// - Permission requests (auto-approve or read-only deny)
 /// - Session update notifications (streaming display + text accumulation)
+/// Tracks a pending tool call waiting for its `raw_input` via `ToolCallUpdate`.
+struct PendingToolCall {
+    name: String,
+    metadata_rendered: bool,
+}
+
 pub struct RalphClient {
     /// Project root directory; paths are resolved relative to this.
     project_root: PathBuf,
@@ -57,6 +63,10 @@ pub struct RalphClient {
     line_buffer: Rc<RefCell<String>>,
     /// Whether we are currently inside a fenced code block (``` toggled).
     in_code_block: Rc<RefCell<bool>>,
+    /// Pending tool calls awaiting `raw_input` via `ToolCallUpdate`.
+    pending_tool_calls: Rc<RefCell<HashMap<String, PendingToolCall>>>,
+    /// Tracks whether we are inside a multi-line sigil tag.
+    in_sigil: Rc<RefCell<Option<String>>>,
 }
 
 impl RalphClient {
@@ -79,6 +89,8 @@ impl RalphClient {
             first_text_chunk: Rc::new(RefCell::new(true)),
             line_buffer: Rc::new(RefCell::new(String::new())),
             in_code_block: Rc::new(RefCell::new(false)),
+            pending_tool_calls: Rc::new(RefCell::new(HashMap::new())),
+            in_sigil: Rc::new(RefCell::new(None)),
         }
     }
 
@@ -89,6 +101,7 @@ impl RalphClient {
             is_first_chunk: Rc::clone(&self.first_text_chunk),
             line_buffer: Rc::clone(&self.line_buffer),
             in_code_block: Rc::clone(&self.in_code_block),
+            in_sigil: Rc::clone(&self.in_sigil),
         }
     }
 
@@ -256,6 +269,7 @@ impl Client for RalphClient {
             }
             SessionUpdate::ToolCall(tool_call) => {
                 let name = tool_call.title.clone();
+                let has_raw_input = tool_call.raw_input.is_some();
                 let input = tool_call
                     .raw_input
                     .as_ref()
@@ -268,31 +282,44 @@ impl Client for RalphClient {
                     .collect();
                 streaming::render_session_update(
                     &SessionUpdateMsg::ToolCall {
-                        name,
+                        name: name.clone(),
                         input,
                         locations,
                     },
                     &state,
                 );
+
+                // Register for potential ToolCallUpdate with raw_input.
+                let tool_call_id = tool_call.tool_call_id.0.as_ref().to_owned();
+                self.pending_tool_calls.borrow_mut().insert(
+                    tool_call_id,
+                    PendingToolCall {
+                        name,
+                        metadata_rendered: has_raw_input,
+                    },
+                );
             }
             SessionUpdate::ToolCallUpdate(update) => {
-                // Tool call progress is suppressed in the new output format.
-                // Extract text content only for error detection.
-                let title = update.fields.title.clone();
-                let has_content = update
-                    .fields
-                    .content
-                    .as_ref()
-                    .is_some_and(|c| !c.is_empty());
+                let tool_call_id = update.tool_call_id.0.as_ref().to_owned();
 
-                if title.is_some() || has_content {
-                    streaming::render_session_update(
-                        &SessionUpdateMsg::ToolCallProgress {
-                            title,
-                            content: String::new(),
-                        },
-                        &state,
-                    );
+                // If raw_input arrived and we haven't rendered metadata yet, render detail lines.
+                if let Some(ref raw_input) = update.fields.raw_input {
+                    let mut pending = self.pending_tool_calls.borrow_mut();
+                    if let Some(entry) = pending.get_mut(&tool_call_id) {
+                        if !entry.metadata_rendered {
+                            entry.metadata_rendered = true;
+                            let name = entry.name.clone();
+                            drop(pending);
+                            let detail_lines =
+                                streaming::format_tool_detail_lines(&name, raw_input);
+                            if !detail_lines.is_empty() {
+                                streaming::render_session_update(
+                                    &SessionUpdateMsg::ToolCallDetail { name, detail_lines },
+                                    &state,
+                                );
+                            }
+                        }
+                    }
                 }
             }
             SessionUpdate::Plan(_) => {

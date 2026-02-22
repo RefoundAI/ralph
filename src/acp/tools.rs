@@ -170,6 +170,11 @@ pub enum SessionUpdateMsg {
         title: Option<String>,
         content: String,
     },
+    /// Detail lines for a tool call (rendered below the tool call header).
+    ToolCallDetail {
+        name: String,
+        detail_lines: Vec<String>,
+    },
     /// The session has finished (prompt completed).
     Finished,
 }
