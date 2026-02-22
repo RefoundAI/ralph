@@ -144,9 +144,13 @@ ralph run <target>                # Execute scoped work (feature name or task ID
 
 Environment variables: `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RALPH_ITERATION`, `RALPH_TOTAL`, `RALPH_AGENT`.
 
-## Documentation (`docs/`)
+## Understanding Design Decisions
 
-The `docs/` directory contains detailed prose documentation. Consult these when working on or near the relevant subsystem — they have context beyond what this file covers.
+Before modifying code, check two resources that explain the **why** behind implementation choices:
+
+### Documentation (`docs/`)
+
+Prose documentation covering system design, data flows, and architectural rationale. **Read the relevant doc before changing a subsystem** — they contain design constraints and tradeoffs that aren't obvious from code alone.
 
 - **architecture.md** — Full system design: module structure, data model, schema, execution modes, ACP protocol. Read when adding a new subsystem or understanding how pieces connect.
 - **agent-loop.md** — The ten-step iteration lifecycle inside `run_loop.rs`: context assembly, model selection, sigil parsing, outcome handling. Read when debugging loop behavior or modifying prompt construction.
@@ -156,6 +160,20 @@ The `docs/` directory contains detailed prose documentation. Consult these when 
 - **oneshot-vs-features.md** — Tradeoffs between one-shot tasks and the feature workflow. Read when changing how run targets are resolved or adding new execution modes.
 - **memory-and-learning.md** — Journal/knowledge system, skills (SKILL.md), discovery, system prompt integration. Read when working on journal entries, knowledge persistence, or skill creation.
 - **getting-started.md** — User-facing walkthrough of install, init, features, tasks, and running. Read when changing CLI UX or onboarding behavior.
+
+### Project Knowledge (`.ralph/knowledge/`)
+
+Targeted knowledge entries that capture specific gotchas, patterns, and decisions learned during development. Each file has YAML frontmatter with `title` and `tags`, followed by a focused explanation. **Scan these before working on a subsystem** — they record pitfalls and constraints that prevent repeated mistakes.
+
+Examples of what's in here:
+- Parameter contracts and call-site update requirements (`config-from-run-args.md`)
+- Schema migration patterns and FTS5 trigger gotchas (`schema-migrations.md`)
+- ACP connection lifecycle patterns (`acp-connection-lifecycle-pattern-with-localset-and-owned-data.md`)
+- Run loop iteration sequence and outcome handling (`run-loop-lifecycle.md`)
+- Interrupt flow and signal handling details (`interrupt-handling.md`)
+- Testing patterns for ACP mock agents and LocalSet (`mock-acp-agent-binary-pattern-with-agentsideconnection.md`)
+
+To find relevant entries, match the tags in frontmatter against the subsystem you're working on. File names are descriptive — browse the directory listing to find what's relevant.
 
 ## Nix Development
 

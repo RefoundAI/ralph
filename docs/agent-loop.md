@@ -1,15 +1,15 @@
 # Agent Loop
 
-Ralph's core is a synchronous iteration loop that picks ready tasks from a DAG,
-spawns Claude Code sessions, and processes results. This document explains how
-the loop works in detail.
+Ralph's core is an async iteration loop that picks ready tasks from a DAG,
+spawns ACP agent sessions, and processes results. This document explains how the
+loop works in detail.
 
 The implementation lives in `src/run_loop.rs`. The public entry point is the
 `run()` function, which takes a `Config` and returns an `Outcome`.
 
 ## Outcome
 
-Every run terminates with one of five outcomes:
+Every run terminates with one of six outcomes:
 
 | Outcome        | Meaning                                                            |
 | -------------- | ------------------------------------------------------------------ |
@@ -18,6 +18,7 @@ Every run terminates with one of five outcomes:
 | `LimitReached` | Hit the configured iteration limit before all tasks resolved.      |
 | `Blocked`      | No ready tasks available but incomplete tasks remain.              |
 | `NoPlan`       | The DAG is empty -- no tasks exist at all.                         |
+| `Interrupted`  | User pressed Ctrl+C and chose not to continue.                     |
 
 `Blocked` typically indicates a dependency deadlock: remaining tasks depend on
 failed blockers that will never become `done`, so nothing can proceed. It can
@@ -73,14 +74,14 @@ the sections that follow explain each step.
               |
               v
    [4] Build iteration context
-        (task, parent, blockers, retry, skills, spec, plan)
+        (task, parent, blockers, retry, journal, knowledge, spec, plan)
               |
               v
    [5] Select model (strategy + hint)
               |
               v
-   [6] Spawn Claude Code session
-        (direct or sandboxed, streaming NDJSON)
+   [6] Run ACP agent session
+        (spawn agent, drive connection lifecycle)
               |
               v
    [7] Parse result (sigils from output)
@@ -193,8 +194,9 @@ IterationContext
   |     +-- attempt (retry_count + 1)
   |     +-- max_retries
   |     +-- previous_failure_reason
-  +-- skills_summary: Vec<(name, description)>
-  +-- learn: bool
+  +-- run_id: String
+  +-- journal_context: String
+  +-- knowledge_context: String
 ```
 
 Key details:
@@ -213,10 +215,14 @@ Key details:
   `task_logs`. This is included in the system prompt so Claude knows what went
   wrong on the previous attempt.
 
-- **Skills discovery.** `discover_skills()` scans
-  `.ralph/skills/*/SKILL.md`. For each skill directory, it reads the YAML
-  frontmatter and extracts the `description` field. Returns a list of
-  `(name, description)` pairs.
+- **Journal context.** `select_journal_entries()` combines recent entries from
+  the current run with FTS-matched entries from prior runs. Rendered within a
+  3000-token budget.
+
+- **Knowledge context.** `discover_knowledge()` scans
+  `.ralph/knowledge/*.md` and `match_knowledge_entries()` scores by tag
+  relevance to the current task, feature, and recently modified files. Rendered
+  within a 2000-token budget.
 
 - **Spec/plan content.** Passed through from the feature context resolved at
   loop initialization. Not re-read from disk each iteration.
@@ -249,72 +255,46 @@ downward in the escalation ladder.
 > the strategy when `Config` is created. Subsequent iterations run
 > `select_model()` after advancing the iteration counter in step 10.
 
-### Step 6: Spawn Claude Code
+### Step 6: Run ACP Agent Session
 
-`claude::client::run()` spawns a Claude Code CLI process. It first builds the
-system prompt and CLI arguments, then dispatches to one of two execution modes.
+`acp::connection::run_iteration()` spawns an ACP agent process and drives the
+full connection lifecycle:
 
-**CLI arguments built by `build_claude_args()`:**
+1. **Spawn**: `tokio::process::Command::new(program).args(args)` with piped
+   stdio and `RALPH_MODEL`, `RALPH_ITERATION`, `RALPH_TOTAL` env vars.
+2. **Connect**: `ClientSideConnection::new(RalphClient, outgoing, incoming)`
+   drives JSON-RPC transport via `spawn_local` inside a `LocalSet`.
+3. **Initialize**: `conn.initialize()` with capabilities: `fs: { read: true,
+   write: !read_only }, terminal: true`.
+4. **Session**: `conn.new_session()` with the project root as cwd.
+5. **Prompt**: `conn.prompt()` sends system instructions + task context as a
+   single `TextContent` block (ACP has no separate system prompt channel).
+6. **Stream**: Agent sends `session_notification` updates (text chunks, thought
+   chunks, tool call notifications). `RalphClient` renders and accumulates.
+7. **Tool calls**: Agent requests `fs/read_text_file`, `fs/write_text_file`,
+   `terminal/*`. `RalphClient` fulfills by reading/writing disk and spawning
+   subprocesses.
+8. **Complete**: `conn.prompt()` returns `PromptResponse { stop_reason }`.
+9. **Cleanup**: Terminal sessions killed, agent process killed/waited.
 
-```
-claude --print --verbose \
-       --output-format stream-json \
-       --no-session-persistence \
-       --model <current_model> \
-       --system-prompt <system_prompt> \
-       @<prompt_file> \
-       [--dangerously-skip-permissions | --allowed-tools <tools>]
-```
-
-When sandboxing is enabled, `--dangerously-skip-permissions` is used (the
-sandbox itself restricts file access). When sandboxing is disabled, an explicit
-`--allowed-tools` list is passed instead.
-
-**Execution modes:**
-
-- **Direct** (`run_direct()`). Spawns `claude` as a child process. stdout is
-  piped for streaming; stderr is drained on a background thread to prevent pipe
-  buffer deadlocks.
-
-- **Sandboxed** (`run_sandboxed()`). Wraps the invocation in macOS
-  `sandbox-exec`:
-
-  ```
-  sandbox-exec -f <profile> \
-    -D PROJECT_DIR=<cwd> \
-    -D HOME=<home> \
-    -D ROOT_GIT_DIR=<git_root> \
-    claude [args...]
-  ```
-
-  The sandbox profile is generated dynamically and written to a temp file. It
-  denies all writes except the project directory, temp dirs, Claude state
-  directories, and git worktree roots. The temp profile is cleaned up after the
-  process exits.
-
-**Output streaming:**
-
-`stream_output()` reads stdout line by line using `BufReader::lines()`. No async
-runtime is used -- the entire loop is synchronous. Each NDJSON line is:
-
-1. Written as raw JSON to a log file under
-   `$TMPDIR/ralph/logs/<project>/<timestamp>.log`.
-2. Parsed via `parser::parse_line()` into a typed `Event`.
-3. Formatted for terminal display by `formatter::format_event()`.
-
-The last `ResultEvent` is captured and returned to the caller.
+Interrupt handling uses `tokio::select!` against `poll_interrupt()` (checks
+every 100ms). On interrupt, a `CancelNotification` is sent to the agent and
+`RunResult::Interrupted` is returned.
 
 ### Step 7: Parse Result
 
-When the Claude session completes, the `ResultEvent` contains the final output
-text. Sigils are parsed during NDJSON deserialization by the parser module:
+When the ACP session completes, `acp::sigils::extract_sigils(&full_text)` scans
+the accumulated output for structured markers:
 
-| Sigil                | Parser function          | Result field       |
-| -------------------- | ------------------------ | ------------------ |
-| `<task-done>ID</>`   | `parse_task_done()`      | `result.task_done` |
-| `<task-failed>ID</>` | `parse_task_failed()`    | `result.task_failed` |
-| `<next-model>M</>`   | `parse_next_model_hint()`| `result.next_model_hint` |
-| `<promise>*</>`      | `is_complete()` / `is_failure()` | checked via methods |
+| Sigil                     | Parser function            | Result field               |
+| ------------------------- | -------------------------- | -------------------------- |
+| `<task-done>ID</>`        | `parse_task_done()`        | `sigils.task_done`         |
+| `<task-failed>ID</>`      | `parse_task_failed()`      | `sigils.task_failed`       |
+| `<next-model>M</>`        | `parse_next_model_hint()`  | `sigils.next_model_hint`   |
+| `<journal>notes</>`       | `parse_journal_sigil()`    | `sigils.journal_notes`     |
+| `<knowledge ...>body</>` | `parse_knowledge_sigils()` | `sigils.knowledge_entries` |
+| `<promise>COMPLETE</>`    |                            | `sigils.is_complete`       |
+| `<promise>FAILURE</>`     |                            | `sigils.is_failure`        |
 
 If both `<task-done>` and `<task-failed>` appear in the same output, the parser
 resolves the conflict optimistically: `task-done` wins and `task-failed` is
@@ -322,6 +302,9 @@ discarded.
 
 The `<next-model>` hint is validated against a whitelist of `["opus", "sonnet",
 "haiku"]`. Invalid model names are silently ignored.
+
+Sigils are parsed from the accumulated `StreamingResult.full_text` using simple
+string matching in `src/acp/sigils.rs`. No XML parser is used.
 
 ### Step 8: Handle Outcome
 
@@ -365,6 +348,13 @@ logged to `task_logs`.
 `pending` and clears `claimed_by`. The task becomes eligible for pickup on the
 next iteration.
 
+**5. Journal entry.** `insert_journal_entry()` records the iteration outcome,
+model, duration, files modified, and any `<journal>` notes to the SQLite journal
+table.
+
+**6. Knowledge entries.** Any `<knowledge>` sigils are written to
+`.ralph/knowledge/` via `write_knowledge_entry()` with deduplication.
+
 ### Step 9: Check Loop Exit Conditions
 
 After handling the task outcome, two exit conditions are checked:
@@ -389,8 +379,8 @@ If neither exit condition is met:
 
 ## System Prompt Construction
 
-`build_system_prompt()` in `src/claude/client.rs` assembles a multi-section
-markdown prompt. Sections are appended conditionally based on available context.
+`build_prompt_text()` in `src/acp/prompt.rs` assembles a multi-section markdown
+prompt. Sections are appended conditionally based on available context.
 
 ### Core Instructions (always present)
 
@@ -443,18 +433,20 @@ The previous attempt failed verification with the following reason:
 Fix the issues identified above before marking the task as done.
 ```
 
-### Available Skills (when skills exist)
+### Journal Context (when journal entries exist)
 
-Lists discovered skills with their descriptions:
+Pre-rendered markdown from `journal::render_journal_context()`, listing recent
+iterations with outcome, task, model, duration, files, and notes.
 
-```
-- **skill-name**: description from YAML frontmatter
-```
+### Knowledge Context (when knowledge entries match)
 
-### Learning Instructions (when learn is enabled)
+Pre-rendered markdown from `knowledge::render_knowledge_context()`, listing
+relevant knowledge entries with title, tags, and body.
 
-Instructs Claude to create reusable skills in `.ralph/skills/` and update
-`CLAUDE.md` with project-specific knowledge.
+### Memory Instructions (always present)
+
+Documents the `<journal>` and `<knowledge>` sigils. Also instructs the agent to
+update CLAUDE.md with project-wide knowledge.
 
 ## Verification Integration
 
@@ -464,7 +456,9 @@ with restricted capabilities.
 
 ### Verification Agent Configuration
 
-- **Tools:** `Bash Read Glob Grep` only (read-only access).
+- **Permissions:** The verification agent uses `run_autonomous()` with
+  `read_only=true`. The `RalphClient` rejects `fs/write_text_file` requests but
+  permits terminal operations so the agent can run `cargo test`.
 - **Model:** Uses the same model as the current iteration.
 - **Prompt:** Built by `build_verification_prompt()` with:
   - Task ID, title, and description.
@@ -574,23 +568,19 @@ Simple two-phase approach:
 
 ## Streaming and Output
 
-The loop uses `std::process::Command` with piped stdout and spawns no async
-runtime. Stderr is drained on a background thread to prevent pipe buffer
-deadlocks.
+The loop uses `tokio` async runtime (`current_thread` flavor, required because
+ACP futures are `!Send`). The agent connection lifecycle runs inside a
+`LocalSet`. Agent output is rendered in real-time via `session_notification`
+callbacks in `RalphClient`.
 
-Each NDJSON line from Claude is parsed into one of these event types:
+ACP session updates are mapped to terminal output:
 
-| Event Type     | Source                   | Terminal Rendering                 |
-| -------------- | ------------------------ | ---------------------------------- |
-| `StreamDelta`  | `content_block_delta`    | Thinking in dim, text in bright white |
-| `Assistant`    | Complete assistant message | Model name in purple               |
-| `ToolUse`      | Tool invocation block    | Tool name in cyan, input dimmed    |
-| `ToolErrors`   | Error tool results       | Red, first 5 lines                 |
-| `Result`       | Final result             | Duration + cost in green           |
-
-Raw JSON is written to log files under `$TMPDIR/ralph/logs/<project>/`. Each
-iteration gets its own timestamped log file. The log file path is printed to the
-terminal as a clickable hyperlink (using terminal escape codes).
+| Update Type          | Source            | Terminal Rendering              |
+| -------------------- | ----------------- | ------------------------------- |
+| `AgentMessageChunk`  | Text content      | Bright white                    |
+| `AgentThoughtChunk`  | Thinking content  | Dim                             |
+| `ToolCall`           | Tool invocation   | Tool name in cyan, input dimmed |
+| Tool errors          | Error responses   | Red, first 5 lines             |
 
 Audio notifications are triggered via macOS `say` on task completion and
 failure.
@@ -621,16 +611,21 @@ The loop is designed to be resilient to individual iteration failures:
 
 ## Key Source Files
 
-| File                     | Role                                      |
-| ------------------------ | ----------------------------------------- |
-| `src/run_loop.rs`        | Main loop, context building, task handling |
-| `src/claude/client.rs`   | System prompt, CLI args, process spawning  |
-| `src/claude/events.rs`   | Event types, sigil parsing                 |
-| `src/claude/parser.rs`   | NDJSON line deserialization                |
-| `src/verification.rs`    | Verification agent                         |
-| `src/strategy.rs`        | Model selection strategies                 |
-| `src/dag/mod.rs`         | Ready queries, claim/complete/fail/retry   |
-| `src/dag/transitions.rs` | Status state machine, auto-transitions     |
-| `src/config.rs`          | Config struct, iteration advancement       |
-| `src/output/formatter.rs`| Terminal formatting, ANSI colors           |
-| `src/output/logger.rs`   | Log file path generation                   |
+| File                       | Role                                           |
+| -------------------------- | ---------------------------------------------- |
+| `src/run_loop.rs`          | Main loop, context building, task handling      |
+| `src/acp/connection.rs`    | ACP lifecycle, agent spawning, interrupt handling |
+| `src/acp/prompt.rs`        | System prompt and task context construction     |
+| `src/acp/sigils.rs`        | Sigil extraction from agent output              |
+| `src/acp/client_impl.rs`   | RalphClient: tool fulfillment, permission handling |
+| `src/acp/streaming.rs`     | Session update rendering                        |
+| `src/verification.rs`      | Verification agent                              |
+| `src/strategy.rs`          | Model selection strategies                      |
+| `src/journal.rs`           | Journal entries, FTS5 search, prompt rendering  |
+| `src/knowledge.rs`         | Knowledge discovery, matching, deduplication    |
+| `src/interrupt.rs`         | SIGINT handler, feedback prompt                 |
+| `src/dag/mod.rs`           | Ready queries, claim/complete/fail/retry        |
+| `src/dag/transitions.rs`   | Status state machine, auto-transitions          |
+| `src/config.rs`            | Config struct, iteration advancement            |
+| `src/output/formatter.rs`  | Terminal formatting, ANSI colors                |
+| `src/output/logger.rs`     | Log file path generation                        |

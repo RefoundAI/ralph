@@ -266,13 +266,11 @@ ralph run my-feature --limit=5           # Max 5 iterations (0 = unlimited)
 ralph run my-feature --model=opus        # Use specific model (implies fixed strategy)
 ralph run my-feature --model-strategy=cost-optimized   # Let Ralph pick models
 
-# Sandbox control (macOS)
-ralph run my-feature --no-sandbox        # Disable macOS sandbox
-ralph run my-feature --allow=aws         # Grant sandbox write access to ~/.aws
+# Agent command
+ralph run my-feature --agent=claude      # Override ACP agent binary
 
-# Verification and learning
+# Verification
 ralph run my-feature --no-verify         # Skip verification agent
-ralph run my-feature --no-learn          # Don't create skills or update CLAUDE.md
 
 # Retries
 ralph run my-feature --max-retries=5     # Override retry count (default: 3)
@@ -311,6 +309,7 @@ hint in its output. Hints apply to the next iteration only.
 | `RALPH_LIMIT`          | Default iteration limit           |
 | `RALPH_MODEL`          | Default model (opus/sonnet/haiku) |
 | `RALPH_MODEL_STRATEGY` | Default model strategy            |
+| `RALPH_AGENT`          | Default ACP agent command         |
 | `RALPH_ITERATION`      | Current iteration (for resume)    |
 | `RALPH_TOTAL`          | Total iterations (for display)    |
 
@@ -323,6 +322,8 @@ hint in its output. Hints apply to the next iteration only.
   spec.md                    Feature specification
   plan.md                    Implementation plan
 .ralph/knowledge/<name>.md   Project knowledge entries (YAML frontmatter)
+.claude/skills/<name>/
+  SKILL.md                   Reusable agent skills (Claude Code native)
 ```
 
 ## Next Steps
@@ -330,8 +331,8 @@ hint in its output. Hints apply to the next iteration only.
 - Read the [architecture documentation][architecture] for a deeper
   understanding of how Ralph works internally
 - Explore the `--model-strategy` options to optimize cost for your workloads
-- Create reusable skills in `.ralph/skills/` to teach Ralph patterns specific
-  to your project
+- Create knowledge entries in `.ralph/knowledge/` to capture project patterns
+  and conventions across runs
 
 [rustup]: https://rustup.rs
 [releases]: https://github.com/Studio-Sasquatch/ralph/releases
