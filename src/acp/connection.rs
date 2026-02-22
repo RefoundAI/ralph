@@ -12,9 +12,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use agent_client_protocol::{
-    Agent, CancelNotification, ClientCapabilities, ClientSideConnection, ContentBlock,
-    FileSystemCapability, Implementation, InitializeRequest, NewSessionRequest, PromptRequest,
-    ProtocolVersion, StopReason, TextContent,
+    Agent, AuthenticateRequest, CancelNotification, ClientCapabilities, ClientSideConnection,
+    ContentBlock, FileSystemCapability, Implementation, InitializeRequest, NewSessionRequest,
+    PromptRequest, ProtocolVersion, StopReason, TextContent,
 };
 use anyhow::{anyhow, Result};
 use tokio::io::AsyncReadExt;
@@ -170,11 +170,7 @@ async fn run_acp_session(
     let stdout = child.stdout.take().expect("stdout piped");
     let stderr = child.stderr.take().expect("stderr piped");
 
-    // ── 2. Spawn background stderr reader ─────────────────────────────────
-    use std::cell::RefCell;
-    let stderr_buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
-    let stderr_buf_clone = Rc::clone(&stderr_buf);
-
+    // ── 2. Spawn background stderr reader (streams to terminal) ─────────
     let stderr_handle = tokio::task::spawn_local(async move {
         let mut stderr = stderr;
         let mut buf = [0u8; 4096];
@@ -182,7 +178,8 @@ async fn run_acp_session(
             match stderr.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    stderr_buf_clone.borrow_mut().extend_from_slice(&buf[..n]);
+                    // Print agent stderr to our stderr in real-time.
+                    let _ = std::io::Write::write_all(&mut std::io::stderr(), &buf[..n]);
                 }
             }
         }
@@ -224,12 +221,19 @@ async fn run_acp_session(
         .await
         .map_err(|e| anyhow!("ACP initialize failed: {e}"))?;
 
-    // Reject agents that require authentication — Ralph does not support it.
-    if !init_resp.auth_methods.is_empty() {
-        cleanup(conn, io_handle, stderr_handle, &client, child).await;
-        return Err(anyhow!(
-            "agent requires authentication, which Ralph does not support"
-        ));
+    // Attempt authentication if the agent advertises auth methods.
+    // Failures are non-fatal: some agents (e.g. claude-agent-acp) advertise methods
+    // but don't implement the authenticate RPC, expecting out-of-band auth instead.
+    for method in &init_resp.auth_methods {
+        if let Err(e) = conn
+            .authenticate(AuthenticateRequest::new(method.id.clone()))
+            .await
+        {
+            eprintln!(
+                "Warning: ACP authenticate ({:?}) failed: {e} — continuing anyway",
+                method.id
+            );
+        }
     }
 
     // ── 5. Create session ─────────────────────────────────────────────────

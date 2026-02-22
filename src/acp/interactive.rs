@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use agent_client_protocol::{
-    Agent, CancelNotification, ClientCapabilities, ClientSideConnection, ContentBlock,
-    FileSystemCapability, Implementation, InitializeRequest, NewSessionRequest, PromptRequest,
-    ProtocolVersion, TextContent,
+    Agent, AuthenticateRequest, CancelNotification, ClientCapabilities, ClientSideConnection,
+    ContentBlock, FileSystemCapability, Implementation, InitializeRequest, NewSessionRequest,
+    PromptRequest, ProtocolVersion, TextContent,
 };
 use anyhow::{anyhow, Result};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -223,12 +223,19 @@ async fn run_interactive_inner(
         .await
         .map_err(|e| anyhow!("ACP initialize failed: {e}"))?;
 
-    // Reject agents that require authentication — Ralph does not support it.
-    if !init_resp.auth_methods.is_empty() {
-        interactive_cleanup(conn, io_handle, stderr_handle, &client, child).await;
-        return Err(anyhow!(
-            "agent requires authentication, which Ralph does not support"
-        ));
+    // Attempt authentication if the agent advertises auth methods.
+    // Failures are non-fatal: some agents (e.g. claude-agent-acp) advertise methods
+    // but don't implement the authenticate RPC, expecting out-of-band auth instead.
+    for method in &init_resp.auth_methods {
+        if let Err(e) = conn
+            .authenticate(AuthenticateRequest::new(method.id.clone()))
+            .await
+        {
+            eprintln!(
+                "Warning: ACP authenticate ({:?}) failed: {e} — continuing anyway",
+                method.id
+            );
+        }
     }
 
     // ── 5. Create session ─────────────────────────────────────────────────
