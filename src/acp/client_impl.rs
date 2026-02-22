@@ -926,4 +926,53 @@ mod tests {
         // After taking, should be empty.
         assert!(client.take_files_modified().is_empty());
     }
+
+    // ------------------------------------------------------------------ //
+    // allowed_write_paths tests                                             //
+    // ------------------------------------------------------------------ //
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_allowed_write_paths_permits_listed_file() {
+        let tmp = TempDir::new().unwrap();
+        let allowed_path = tmp.path().join("plan.md");
+        let client = RalphClient::new(tmp.path().to_path_buf(), false)
+            .with_allowed_write_paths(vec![allowed_path.clone()]);
+
+        let req = WriteTextFileRequest::new(SessionId::new("s"), &allowed_path, "# Plan");
+        Client::write_text_file(&client, req).await.unwrap();
+
+        let content = std::fs::read_to_string(&allowed_path).unwrap();
+        assert_eq!(content, "# Plan");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_allowed_write_paths_rejects_unlisted_file() {
+        let tmp = TempDir::new().unwrap();
+        let allowed_path = tmp.path().join("plan.md");
+        let forbidden_path = tmp.path().join("src").join("main.rs");
+        let client = RalphClient::new(tmp.path().to_path_buf(), false)
+            .with_allowed_write_paths(vec![allowed_path]);
+
+        let req = WriteTextFileRequest::new(SessionId::new("s"), &forbidden_path, "fn main() {}");
+        let result: agent_client_protocol::Result<WriteTextFileResponse> =
+            Client::write_text_file(&client, req).await;
+
+        assert!(result.is_err(), "write to unlisted path should be rejected");
+        assert!(
+            !forbidden_path.exists(),
+            "file should not have been created"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_no_write_path_restriction_allows_any() {
+        let tmp = TempDir::new().unwrap();
+        let client = make_client(&tmp, false); // no allowed_write_paths set
+
+        let file_path = tmp.path().join("anything.rs");
+        let req = WriteTextFileRequest::new(SessionId::new("s"), &file_path, "content");
+        client.write_text_file(req).await.unwrap();
+
+        assert!(file_path.exists(), "file should have been written");
+    }
 }
