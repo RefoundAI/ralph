@@ -65,6 +65,10 @@ pub struct RalphClient {
     files_modified: Rc<RefCell<Vec<String>>>,
     /// If `true`, file write requests are rejected.
     read_only: bool,
+    /// If set, only these absolute paths may be written. All other writes
+    /// are rejected with an error. Used for document-authoring sessions
+    /// (spec, plan) to prevent the agent from writing source code.
+    allowed_write_paths: Option<Vec<PathBuf>>,
 }
 
 impl RalphClient {
@@ -81,7 +85,18 @@ impl RalphClient {
             text_accumulator: Rc::new(RefCell::new(String::new())),
             files_modified: Rc::new(RefCell::new(Vec::new())),
             read_only,
+            allowed_write_paths: None,
         }
+    }
+
+    /// Restrict file writes to only the specified paths.
+    ///
+    /// When set, `write_text_file` will reject any path not in the allowed list.
+    /// Used for document-authoring sessions (spec, plan) to prevent the agent
+    /// from writing source code.
+    pub fn with_allowed_write_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.allowed_write_paths = Some(paths);
+        self
     }
 
     /// Take and return all accumulated agent text, leaving the accumulator empty.
@@ -334,6 +349,25 @@ impl Client for RalphClient {
             return Err(Error::invalid_params().data(serde_json::json!(
                 "write_text_file is not allowed in read-only mode"
             )));
+        }
+
+        // If write paths are restricted, check the requested path against the allow-list.
+        if let Some(ref allowed) = self.allowed_write_paths {
+            let canonical = req.path.canonicalize().unwrap_or_else(|_| req.path.clone());
+            let is_allowed = allowed.iter().any(|p| {
+                let allowed_canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
+                canonical == allowed_canonical
+            });
+            if !is_allowed {
+                return Err(Error::invalid_params().data(serde_json::json!(format!(
+                    "write not allowed: this session can only write to {}",
+                    allowed
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))));
+            }
         }
 
         // Create parent directories as needed.

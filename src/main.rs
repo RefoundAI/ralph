@@ -423,6 +423,7 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 &project.root,
                 Some(model.as_deref().unwrap_or("opus")),
                 false, // allow_terminal: spec sessions only need file read/write
+                Some(vec![spec_path.clone()]), // restrict writes to spec document only
             )
             .await?;
 
@@ -499,6 +500,7 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 &project.root,
                 Some(model.as_deref().unwrap_or("opus")),
                 false, // allow_terminal: plan sessions only need file read/write
+                Some(vec![plan_path.clone()]), // restrict writes to plan document only
             )
             .await?;
 
@@ -689,6 +691,7 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
                 &project.root,
                 model.as_deref(),
                 true, // allow_terminal: task creation may need codebase exploration
+                None, // no write path restrictions
             )
             .await?;
             println!("Task creation session complete.");

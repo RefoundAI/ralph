@@ -38,6 +38,7 @@ use crate::interrupt;
 /// If `model` is provided, sets `RALPH_MODEL` env var on the spawned agent process.
 /// If `allow_terminal` is false, terminal (bash) capability is disabled — use this
 /// for document-authoring sessions (spec, plan) where the agent should only read/write files.
+/// If `allowed_write_paths` is set, file writes are restricted to those paths only.
 /// ACP has no equivalent to `plan_mode` from the old Claude CLI integration — permission
 /// management is now handled by Ralph's tool provider (auto-approve in normal mode).
 pub async fn run_interactive(
@@ -47,6 +48,7 @@ pub async fn run_interactive(
     project_root: &Path,
     model: Option<&str>,
     allow_terminal: bool,
+    allowed_write_paths: Option<Vec<PathBuf>>,
 ) -> Result<()> {
     // Extract owned values before entering the LocalSet to avoid lifetime issues.
     let agent_command = agent_command.to_owned();
@@ -64,6 +66,7 @@ pub async fn run_interactive(
             initial_message,
             model,
             allow_terminal,
+            allowed_write_paths,
         ))
         .await
 }
@@ -147,6 +150,7 @@ async fn run_interactive_inner(
     initial_message: String,
     model: Option<String>,
     allow_terminal: bool,
+    allowed_write_paths: Option<Vec<PathBuf>>,
 ) -> Result<()> {
     // ── 1. Parse + spawn agent process ────────────────────────────────────
     let parts = shlex::split(&agent_command).ok_or_else(|| {
@@ -195,7 +199,11 @@ async fn run_interactive_inner(
     });
 
     // ── 3. Create RalphClient and wire up the ACP connection ──────────────
-    let client = Rc::new(RalphClient::new(project_root.clone(), false));
+    let mut ralph_client = RalphClient::new(project_root.clone(), false);
+    if let Some(paths) = allowed_write_paths {
+        ralph_client = ralph_client.with_allowed_write_paths(paths);
+    }
+    let client = Rc::new(ralph_client);
     let client_ref = Rc::clone(&client);
 
     // Convert tokio IO handles → futures-compatible IO (required by the ACP crate).
@@ -410,6 +418,7 @@ mod tests {
             root,
             None,
             true,
+            None,
         ));
     }
 }
