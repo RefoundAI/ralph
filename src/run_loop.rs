@@ -27,7 +27,7 @@ pub enum Outcome {
     LimitReached,
     /// No ready tasks, but incomplete tasks exist
     Blocked,
-    /// DAG is empty, user must run `ralph feature build`
+    /// DAG is empty, user must run `ralph feature create`
     NoPlan,
     /// User interrupted and chose not to continue
     Interrupted,

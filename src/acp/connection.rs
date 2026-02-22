@@ -3,7 +3,7 @@
 //! This module contains the core ACP integration:
 //! - `parse_agent_command()`: shell-splits the agent command string using `shlex`
 //! - `run_iteration()`: full lifecycle — spawn → initialize → session → prompt → result
-//! - `run_autonomous()`: single autonomous prompt for verification, review, and feature build
+//! - `run_autonomous()`: single autonomous prompt for verification, review, and feature create (build phase)
 //!
 //! ACP futures are `!Send`; all connection logic runs inside a `tokio::task::LocalSet`.
 

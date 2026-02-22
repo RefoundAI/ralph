@@ -218,7 +218,7 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
 
     println!("\nRalph project initialized successfully!");
     println!("Next steps:");
-    println!("  - Run 'ralph feature spec <name>' to define a feature");
+    println!("  - Run 'ralph feature create <name>' to define a feature");
     println!("  - Or run 'ralph task new' to create a standalone task");
 
     Ok(())

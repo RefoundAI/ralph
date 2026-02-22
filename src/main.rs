@@ -295,7 +295,7 @@ async fn run() -> Result<ExitCode> {
                 let feat = feature::get_feature(&db, &target)?;
                 if feat.status != "ready" && feat.status != "running" {
                     anyhow::bail!(
-                        "Feature '{}' is not ready to run (status: {}). Run 'ralph feature build {}' first.",
+                        "Feature '{}' is not ready to run (status: {}). Run 'ralph feature create {}' first.",
                         target, feat.status, target
                     );
                 }
@@ -335,7 +335,7 @@ async fn run() -> Result<ExitCode> {
                 }
                 run_loop::Outcome::NoPlan => {
                     eprintln!(
-                        "No plan: DAG is empty. Run 'ralph feature build <name>' to create tasks"
+                        "No plan: DAG is empty. Run 'ralph feature create <name>' to create tasks"
                     );
                     Ok(ExitCode::from(3))
                 }
@@ -390,11 +390,13 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
     let db = dag::open_db(db_path.to_str().unwrap())?;
 
     match action {
-        cli::FeatureAction::Spec { name, model, agent } => {
+        cli::FeatureAction::Create { name, model, agent } => {
             // Resolve agent command: --agent flag > RALPH_AGENT env > config > "claude"
             let agent_command = agent
                 .or_else(|| std::env::var("RALPH_AGENT").ok())
                 .unwrap_or_else(|| project.config.agent.command.clone());
+
+            let model_name = model.as_deref().unwrap_or("opus");
 
             // Create or get feature
             let feat = if feature::feature_exists(&db, &name)? {
@@ -412,76 +414,6 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 .join(&name)
                 .join("spec.md");
             let spec_path_str = spec_path.to_string_lossy().to_string();
-
-            // Detect existing spec for resume
-            let existing_spec = feature::read_spec(&project.root, &name).ok();
-            let resuming = existing_spec.is_some();
-
-            // Gather project context
-            let mut context = gather_project_context(&project, &db, false);
-
-            // If resuming, append existing spec content
-            if let Some(spec_content) = existing_spec {
-                let truncated =
-                    truncate_context(&spec_content, MAX_CONTEXT_FILE_CHARS, &spec_path_str);
-                context.push_str(&format!("\n\n## Existing Spec (Resume)\n\n{}", truncated));
-            }
-
-            // Build system prompt and initial message
-            let system_prompt = build_feature_spec_system_prompt(&name, &spec_path_str, &context);
-            let initial_message = build_initial_message_spec(&name, resuming);
-
-            // Launch interactive session via ACP (no terminal — spec authoring only)
-            acp::interactive::run_interactive(
-                &agent_command,
-                &system_prompt,
-                &initial_message,
-                &project.root,
-                Some(model.as_deref().unwrap_or("opus")),
-                false, // allow_terminal: spec sessions only need file read/write
-                Some(vec![spec_path.clone()]), // restrict writes to spec document only
-            )
-            .await?;
-
-            // Iterative review loop
-            if spec_path.exists() {
-                review::review_document(
-                    &spec_path_str,
-                    review::DocumentKind::Spec,
-                    &name,
-                    None,
-                    &context,
-                    &agent_command,
-                    &project.root,
-                )
-                .await?;
-            }
-
-            // Update feature with spec path
-            feature::update_feature_spec_path(&db, &feat.id, &spec_path_str)?;
-
-            println!("Feature '{}' spec saved.", name);
-            Ok(ExitCode::SUCCESS)
-        }
-        cli::FeatureAction::Plan { name, model, agent } => {
-            // Resolve agent command: --agent flag > RALPH_AGENT env > config > "claude"
-            let agent_command = agent
-                .or_else(|| std::env::var("RALPH_AGENT").ok())
-                .unwrap_or_else(|| project.config.agent.command.clone());
-
-            // Validate feature exists with spec
-            let feat = feature::get_feature(&db, &name)?;
-            if feat.spec_path.is_none() {
-                anyhow::bail!(
-                    "Feature '{}' has no spec. Run 'ralph feature spec {}' first.",
-                    name,
-                    name
-                );
-            }
-
-            // Read spec content
-            let spec_content = feature::read_spec(&project.root, &name)?;
-
             let plan_path = project
                 .root
                 .join(".ralph/features")
@@ -489,84 +421,147 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 .join("plan.md");
             let plan_path_str = plan_path.to_string_lossy().to_string();
 
-            // Detect existing plan for resume
-            let existing_plan = feature::read_plan(&project.root, &name).ok();
-            let resuming = existing_plan.is_some();
+            // ── Phase 1: Spec ────────────────────────────────────────────
+            // Skip if feature already has a spec on disk
+            let has_spec = spec_path.exists();
+            if has_spec {
+                eprintln!(
+                    "Spec already exists at {}, skipping spec phase.",
+                    spec_path_str
+                );
+            } else {
+                eprintln!("\n{}", "Phase 1: Specification".bright_cyan().bold());
+                eprintln!("{}\n", "Interview → write spec → review".dimmed());
 
-            // Gather project context
-            let mut context = gather_project_context(&project, &db, false);
+                // Gather project context
+                let context = gather_project_context(&project, &db, false);
 
-            // If resuming, append existing plan content
-            if let Some(plan_content) = existing_plan {
-                let truncated =
-                    truncate_context(&plan_content, MAX_CONTEXT_FILE_CHARS, &plan_path_str);
-                context.push_str(&format!("\n\n## Existing Plan (Resume)\n\n{}", truncated));
-            }
+                // Build system prompt and initial message
+                let system_prompt =
+                    build_feature_spec_system_prompt(&name, &spec_path_str, &context);
+                let initial_message = build_initial_message_spec(&name, false);
 
-            // Build system prompt and initial message
-            let system_prompt =
-                build_feature_plan_system_prompt(&name, &spec_content, &plan_path_str, &context);
-            let initial_message = build_initial_message_plan(&name, resuming);
-
-            // Launch interactive session via ACP (no terminal — plan authoring only)
-            acp::interactive::run_interactive(
-                &agent_command,
-                &system_prompt,
-                &initial_message,
-                &project.root,
-                Some(model.as_deref().unwrap_or("opus")),
-                false, // allow_terminal: plan sessions only need file read/write
-                Some(vec![plan_path.clone()]), // restrict writes to plan document only
-            )
-            .await?;
-
-            // Iterative review loop
-            if plan_path.exists() {
-                review::review_document(
-                    &plan_path_str,
-                    review::DocumentKind::Plan,
-                    &name,
-                    Some(&spec_content),
-                    &context,
+                // Launch interactive session via ACP (no terminal — spec authoring only)
+                acp::interactive::run_interactive(
                     &agent_command,
+                    &system_prompt,
+                    &initial_message,
                     &project.root,
+                    Some(model_name),
+                    false,
+                    Some(vec![spec_path.clone()]),
                 )
                 .await?;
+
+                // Iterative review loop
+                if spec_path.exists() {
+                    review::review_document(
+                        &spec_path_str,
+                        review::DocumentKind::Spec,
+                        &name,
+                        None,
+                        &context,
+                        &agent_command,
+                        &project.root,
+                    )
+                    .await?;
+                }
+
+                // Update feature with spec path
+                feature::update_feature_spec_path(&db, &feat.id, &spec_path_str)?;
+                eprintln!("Spec saved to {}", spec_path_str);
             }
 
-            // Update feature with plan path and status
-            feature::update_feature_plan_path(&db, &feat.id, &plan_path_str)?;
-            feature::update_feature_status(&db, &feat.id, "planned")?;
-
-            println!("Feature '{}' plan saved.", name);
-            Ok(ExitCode::SUCCESS)
-        }
-        cli::FeatureAction::Build { name, model, agent } => {
-            // Resolve agent command: --agent flag > RALPH_AGENT env > config > "claude"
-            let agent_command = agent
-                .or_else(|| std::env::var("RALPH_AGENT").ok())
-                .unwrap_or_else(|| project.config.agent.command.clone());
-
-            // Validate feature has spec and plan
-            let feat = feature::get_feature(&db, &name)?;
-            if feat.spec_path.is_none() {
+            // Bail if spec wasn't actually written
+            if !spec_path.exists() {
                 anyhow::bail!(
-                    "Feature '{}' has no spec. Run 'ralph feature spec {}' first.",
-                    name,
-                    name
-                );
-            }
-            if feat.plan_path.is_none() {
-                anyhow::bail!(
-                    "Feature '{}' has no plan. Run 'ralph feature plan {}' first.",
-                    name,
-                    name
+                    "Spec file was not created at {}. Cannot proceed to planning.",
+                    spec_path_str
                 );
             }
 
-            // Read spec + plan content
+            // ── Phase 2: Plan ────────────────────────────────────────────
+            // Skip if feature already has a plan on disk
+            let has_plan = plan_path.exists();
+            if has_plan {
+                eprintln!(
+                    "Plan already exists at {}, skipping plan phase.",
+                    plan_path_str
+                );
+            } else {
+                eprintln!("\n{}", "Phase 2: Implementation Plan".bright_cyan().bold());
+                eprintln!("{}\n", "Interview → write plan → review".dimmed());
+
+                let spec_content = feature::read_spec(&project.root, &name)?;
+
+                // Gather project context
+                let context = gather_project_context(&project, &db, false);
+
+                // Build system prompt and initial message
+                let system_prompt = build_feature_plan_system_prompt(
+                    &name,
+                    &spec_content,
+                    &plan_path_str,
+                    &context,
+                );
+                let initial_message = build_initial_message_plan(&name, false);
+
+                // Launch interactive session via ACP (no terminal — plan authoring only)
+                acp::interactive::run_interactive(
+                    &agent_command,
+                    &system_prompt,
+                    &initial_message,
+                    &project.root,
+                    Some(model_name),
+                    false,
+                    Some(vec![plan_path.clone()]),
+                )
+                .await?;
+
+                // Iterative review loop
+                if plan_path.exists() {
+                    let spec_content = feature::read_spec(&project.root, &name)?;
+                    review::review_document(
+                        &plan_path_str,
+                        review::DocumentKind::Plan,
+                        &name,
+                        Some(&spec_content),
+                        &context,
+                        &agent_command,
+                        &project.root,
+                    )
+                    .await?;
+                }
+
+                // Update feature with plan path and status
+                feature::update_feature_plan_path(&db, &feat.id, &plan_path_str)?;
+                feature::update_feature_status(&db, &feat.id, "planned")?;
+                eprintln!("Plan saved to {}", plan_path_str);
+            }
+
+            // Bail if plan wasn't actually written
+            if !plan_path.exists() {
+                anyhow::bail!(
+                    "Plan file was not created at {}. Cannot proceed to task creation.",
+                    plan_path_str
+                );
+            }
+
+            // ── Phase 3: Task DAG ────────────────────────────────────────
+            eprintln!("\n{}", "Phase 3: Task Decomposition".bright_cyan().bold());
+            eprintln!("{}\n", "Creating task DAG from plan".dimmed());
+
             let spec_content = feature::read_spec(&project.root, &name)?;
             let plan_content = feature::read_plan(&project.root, &name)?;
+
+            // Ensure spec/plan paths are recorded (in case we skipped earlier phases)
+            if feat.spec_path.is_none() {
+                feature::update_feature_spec_path(&db, &feat.id, &spec_path_str)?;
+            }
+            if feat.plan_path.is_none() {
+                feature::update_feature_plan_path(&db, &feat.id, &plan_path_str)?;
+                feature::update_feature_status(&db, &feat.id, "planned")?;
+            }
 
             // Create root task for the feature
             let max_retries = project.config.execution.max_retries as i32;
@@ -587,13 +582,12 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 build_feature_build_system_prompt(&spec_content, &plan_content, &root.id, &feat.id);
 
             // Launch ACP streaming session — agent autonomously creates the task DAG
-            // via `ralph task add` and `ralph task deps add` CLI commands.
             acp::interactive::run_streaming(
                 &agent_command,
                 &system_prompt,
                 "Read the spec and plan, then create the task DAG. When done, stop.",
                 &project.root,
-                model.as_deref(),
+                Some(model_name),
             )
             .await?;
 
@@ -608,8 +602,17 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 print_task_tree(&tree, &root.id, "", true);
             }
 
-            // Update feature status
+            // Update feature status to ready
             feature::update_feature_status(&db, &feat.id, "ready")?;
+
+            eprintln!(
+                "\n{}",
+                format!(
+                    "Feature '{}' is ready. Run 'ralph run {}' to start.",
+                    name, name
+                )
+                .bright_green()
+            );
 
             Ok(ExitCode::SUCCESS)
         }
@@ -617,7 +620,7 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             let features = feature::list_features(&db)?;
 
             if features.is_empty() {
-                println!("No features. Run 'ralph feature spec <name>' to create one.");
+                println!("No features. Run 'ralph feature create <name>' to create one.");
                 return Ok(ExitCode::SUCCESS);
             }
 
@@ -1004,7 +1007,7 @@ Your ONLY deliverable is the spec document at `{spec_path}`. You must NOT:
 - Write or modify any source code, tests, or configuration files
 - Run build commands, test commands, or any implementation steps
 - Create any files other than the spec document itself
-- Start implementing the spec — that happens later via `ralph feature plan`, `ralph feature build`, and `ralph run`
+- Start implementing the spec — that happens in later phases of `ralph feature create` and via `ralph run`
 
 IMPORTANT: Once you have written the spec document to `{spec_path}`, your work is DONE.
 Do NOT proceed to implement anything. Do NOT try to create tasks. Do NOT run any commands.
@@ -1073,7 +1076,7 @@ Your ONLY deliverable is the plan document at `{plan_path}`. You must NOT:
 - Run build commands, test commands, or any implementation steps
 - Create any files other than the plan document itself
 - Read source code for the purpose of starting implementation
-- Start implementing the plan — that happens later via `ralph feature build` and `ralph run`
+- Start implementing the plan — that happens in later phases of `ralph feature create` and via `ralph run`
 
 IMPORTANT: Once you have written the plan document to `{plan_path}`, your work is DONE.
 Do NOT proceed to implement anything. Do NOT try to create tasks. Do NOT run any commands.

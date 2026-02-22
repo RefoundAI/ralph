@@ -47,13 +47,13 @@ Graceful Ctrl+C support using `signal-hook`. Registers a SIGINT handler that set
 ### ACP Integration (`src/acp/`)
 Ralph communicates with AI agents via the Agent Client Protocol (ACP) — a JSON-RPC 2.0 standard over stdin/stdout. Ralph is the ACP client and tool provider; any ACP-compliant agent binary can be used.
 
-- **connection.rs**: Agent spawning, ACP connection lifecycle, `run_iteration()` (the main entry point for the agent loop), `run_autonomous()` (for verification, review, and feature build). Handles interrupt cancellation via `tokio::select!`, stop reason mapping, and process cleanup.
+- **connection.rs**: Agent spawning, ACP connection lifecycle, `run_iteration()` (the main entry point for the agent loop), `run_autonomous()` (for verification, review, and feature create (build phase)). Handles interrupt cancellation via `tokio::select!`, stop reason mapping, and process cleanup.
 - **client_impl.rs**: `RalphClient` implementing the ACP `Client` trait. Handles `session_notification` (accumulates text, renders output), `request_permission` (auto-approve normal / deny writes in read-only mode), and all tool calls delegated from the agent.
 - **tools.rs**: Terminal session management — `TerminalSession` struct with stdout/stderr reader tasks, `create_terminal`, `terminal_output`, `wait_for_terminal_exit`, `kill_terminal_command`, `release_terminal` handlers.
 - **prompt.rs**: Prompt text construction — `build_prompt_text()` concatenates system instructions and task context into a single `TextContent` block (ACP has no separate system prompt channel). Migrated from `claude/client.rs`.
 - **sigils.rs**: Sigil extraction — `extract_sigils()` combines all parsers into a `SigilResult`. Individual parsers: `parse_task_done()`, `parse_task_failed()`, `parse_next_model_hint()`, `parse_journal_sigil()`, `parse_knowledge_sigils()`.
 - **streaming.rs**: Session update rendering — maps ACP `SessionUpdate` variants to terminal output (text in bright white, thoughts in dim, tool calls in cyan/dimmed).
-- **interactive.rs**: `run_interactive()` — ACP-mediated interactive sessions where Ralph reads user input and sends it as prompts; `run_streaming()` — single autonomous prompt for feature build.
+- **interactive.rs**: `run_interactive()` — ACP-mediated interactive sessions where Ralph reads user input and sends it as prompts; `run_streaming()` — single autonomous prompt for feature create (build phase).
 - **types.rs**: `RunResult` (`Completed(StreamingResult)` / `Interrupted`), `StreamingResult` (full_text, files_modified, duration_ms, stop_reason), `SigilResult`, `IterationContext`, `TaskInfo`, `ParentContext`, `BlockerContext`, `RetryInfo`, `KnowledgeSigil`.
 
 ### Project Configuration (`src/project.rs`)
@@ -114,9 +114,7 @@ Ralph uses a nested subcommand architecture:
 
 ```
 ralph init                        # Initialize project (.ralph.toml, .ralph/ dirs)
-ralph feature spec <name>         # Interactive: craft a specification
-ralph feature plan <name>         # Interactive: create implementation plan from spec
-ralph feature build <name>        # Decompose plan into task DAG (autonomous ACP session)
+ralph feature create <name>       # Unified: interview → spec → plan → task DAG
 ralph feature list                # List features and status
 ralph task add <TITLE> [flags]     # Non-interactive task creation (scriptable)
 ralph task create [--model M]     # Interactive ACP-assisted task creation
@@ -155,7 +153,7 @@ Prose documentation covering system design, data flows, and architectural ration
 - **architecture.md** — Full system design: module structure, data model, schema, execution modes, ACP protocol. Read when adding a new subsystem or understanding how pieces connect.
 - **agent-loop.md** — The ten-step iteration lifecycle inside `run_loop.rs`: context assembly, model selection, sigil parsing, outcome handling. Read when debugging loop behavior or modifying prompt construction.
 - **task-management.md** — Task data model, SQLite schema, status state machine, parent-child hierarchies, dependency edges, cycle detection, ready queries, retries. Read when changing task internals or query logic.
-- **interactive-flows.md** — Three Claude spawning modes (interactive, streaming, loop iteration), their CLI arguments, and output handling. Read when working on `feature spec/plan/build` or output formatting.
+- **interactive-flows.md** — Three Claude spawning modes (interactive, streaming, loop iteration), their CLI arguments, and output handling. Read when working on `feature create` or output formatting.
 - **specs-plans-tasks.md** — The four-phase feature workflow (spec → plan → build → run), decomposition rules, how context flows from spec through execution. Read when modifying the feature pipeline.
 - **oneshot-vs-features.md** — Tradeoffs between one-shot tasks and the feature workflow. Read when changing how run targets are resolved or adding new execution modes.
 - **memory-and-learning.md** — Journal/knowledge system, skills (SKILL.md), discovery, system prompt integration. Read when working on journal entries, knowledge persistence, or skill creation.

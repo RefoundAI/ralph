@@ -21,7 +21,7 @@ pub struct Args {
 pub enum Command {
     /// Initialize a new Ralph project
     Init,
-    /// Manage features (spec, plan, build, list)
+    /// Manage features (create, list)
     Feature {
         #[command(subcommand)]
         action: FeatureAction,
@@ -76,36 +76,8 @@ pub enum Command {
 /// Feature subcommands.
 #[derive(Subcommand, Debug)]
 pub enum FeatureAction {
-    /// Interactively craft a specification for a feature
-    Spec {
-        /// Feature name
-        #[arg(value_name = "NAME")]
-        name: String,
-
-        /// Model to use: opus 4.6 (default), sonnet 4.6, haiku 4.5
-        #[arg(long, value_name = "MODEL")]
-        model: Option<String>,
-
-        /// Agent command to spawn
-        #[arg(long, env = "RALPH_AGENT")]
-        agent: Option<String>,
-    },
-    /// Interactively create an implementation plan from a spec
-    Plan {
-        /// Feature name
-        #[arg(value_name = "NAME")]
-        name: String,
-
-        /// Model to use: opus 4.6 (default), sonnet 4.6, haiku 4.5
-        #[arg(long, value_name = "MODEL")]
-        model: Option<String>,
-
-        /// Agent command to spawn
-        #[arg(long, env = "RALPH_AGENT")]
-        agent: Option<String>,
-    },
-    /// Decompose a plan into a task DAG
-    Build {
+    /// Interview → spec → review → plan → review → task DAG (all in one)
+    Create {
         /// Feature name
         #[arg(value_name = "NAME")]
         name: String,
@@ -369,34 +341,24 @@ mod tests {
     }
 
     #[test]
-    fn test_agent_flag_parsed_on_feature_spec() {
-        let args =
-            Args::try_parse_from(["ralph", "feature", "spec", "name", "--agent", "gemini-cli"])
-                .unwrap();
+    fn test_agent_flag_parsed_on_feature_create() {
+        let args = Args::try_parse_from([
+            "ralph",
+            "feature",
+            "create",
+            "name",
+            "--agent",
+            "gemini-cli",
+        ])
+        .unwrap();
         match args.command {
             Some(Command::Feature {
-                action: FeatureAction::Spec { name, agent, .. },
+                action: FeatureAction::Create { name, agent, .. },
             }) => {
                 assert_eq!(agent, Some("gemini-cli".to_string()));
                 assert_eq!(name, "name");
             }
-            _ => panic!("expected feature spec command"),
-        }
-    }
-
-    #[test]
-    fn test_agent_flag_parsed_on_feature_build() {
-        let args =
-            Args::try_parse_from(["ralph", "feature", "build", "name", "--agent", "gemini-cli"])
-                .unwrap();
-        match args.command {
-            Some(Command::Feature {
-                action: FeatureAction::Build { name, agent, .. },
-            }) => {
-                assert_eq!(agent, Some("gemini-cli".to_string()));
-                assert_eq!(name, "name");
-            }
-            _ => panic!("expected feature build command"),
+            _ => panic!("expected feature create command"),
         }
     }
 

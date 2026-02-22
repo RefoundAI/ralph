@@ -1,7 +1,7 @@
 //! Interactive and streaming ACP sessions.
 //!
 //! - [`run_interactive`]: ACP-mediated interactive session (user ↔ agent loop).
-//! - [`run_streaming`]: Single autonomous prompt, stream output. Used by `feature build`.
+//! - [`run_streaming`]: Single autonomous prompt, stream output. Used by `feature create` (build phase).
 //!
 //! Both functions create a fresh [`tokio::task::LocalSet`] for the ACP connection
 //! lifecycle (ACP futures are `!Send`). The shared connection setup is factored into
@@ -75,7 +75,7 @@ pub async fn run_interactive(
 /// Run a non-interactive streaming session (single prompt, agent runs autonomously).
 ///
 /// Concatenates `instructions` and `message` into a single prompt.
-/// Used by `feature build` to let the agent autonomously create a task DAG via
+/// Used by `feature create` (build phase) to let the agent autonomously create a task DAG via
 /// `ralph task add` and `ralph task deps add` CLI commands.
 ///
 /// If `model` is provided, sets `RALPH_MODEL` env var on the spawned agent process.
