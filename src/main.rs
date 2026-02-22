@@ -196,6 +196,10 @@ mod tests {
             assert!(msg.contains("Start"));
             assert!(msg.contains("my-feature"));
             assert!(msg.contains("spec is included"));
+            assert!(
+                msg.contains("Discuss"),
+                "initial message should ask agent to discuss before writing"
+            );
         }
 
         #[test]
@@ -233,6 +237,18 @@ mod tests {
             assert!(plan_prompt.contains(test_context));
             assert!(plan_prompt.contains("## Guidelines"));
             assert!(plan_prompt.contains("## Output"));
+            assert!(
+                plan_prompt.contains("## Workflow"),
+                "plan prompt should have explicit workflow steps"
+            );
+            assert!(
+                plan_prompt.contains("Interview"),
+                "plan prompt workflow should start with interview"
+            );
+            assert!(
+                plan_prompt.contains("PLANNING session"),
+                "plan prompt should identify as planning session"
+            );
 
             // Test task new prompt
             let task_prompt = build_task_new_system_prompt(test_context);
@@ -982,15 +998,23 @@ Interview the user thoroughly to understand their requirements, then write a com
 
 ## Scope — SPECIFICATION DOCUMENT ONLY
 
-Your ONLY job is to author the spec document at `{spec_path}`. You must NOT:
+This is a SPECIFICATION session. You are authoring a spec document — nothing else.
+
+Your ONLY deliverable is the spec document at `{spec_path}`. You must NOT:
 - Write or modify any source code, tests, or configuration files
 - Run build commands, test commands, or any implementation steps
 - Create any files other than the spec document itself
 - Start implementing the spec — that happens later via `ralph feature plan`, `ralph feature build`, and `ralph run`
 
 IMPORTANT: Once you have written the spec document to `{spec_path}`, your work is DONE.
-Do NOT proceed to implement anything. Do NOT run any commands. Do NOT create tasks.
-Simply write the spec file and stop. The user will review it and proceed to the next step themselves.
+Do NOT proceed to implement anything. Do NOT try to create tasks. Do NOT run any commands.
+Tell the user the spec is written and wait for their feedback. The user exits by pressing Enter on an empty line.
+
+## Workflow
+
+1. **Interview** — Ask the user about requirements, constraints, edge cases, and acceptance criteria.
+2. **Write** — Once you have enough information, write the spec to `{spec_path}`.
+3. **Stop** — After writing the spec file, tell the user it's done. Do NOT continue working.
 
 ## Guidelines
 
@@ -1036,25 +1060,32 @@ fn build_feature_plan_system_prompt(
     format!(
         r#"You are helping the user create an implementation plan for feature "{name}".
 
-## Specification
-
-{spec_content}
-
 ## Your Role
 
-Based on the specification above, work with the user to create a detailed implementation plan. The plan should break down the work into logical phases.
+Interview the user to discuss implementation approach and trade-offs, then write a detailed implementation plan document. The plan should break down the work into logical phases.
 
 ## Scope — PLANNING DOCUMENT ONLY
 
-Your ONLY job is to author the plan document at `{plan_path}`. You must NOT:
+This is a PLANNING session. You are authoring a plan document — nothing else.
+
+Your ONLY deliverable is the plan document at `{plan_path}`. You must NOT:
 - Write or modify any source code, tests, or configuration files
 - Run build commands, test commands, or any implementation steps
 - Create any files other than the plan document itself
+- Read source code for the purpose of starting implementation
 - Start implementing the plan — that happens later via `ralph feature build` and `ralph run`
 
 IMPORTANT: Once you have written the plan document to `{plan_path}`, your work is DONE.
-Do NOT proceed to implement anything. Do NOT run any commands. Do NOT create tasks.
-Simply write the plan file and stop. The user will review it and proceed to the next step themselves.
+Do NOT proceed to implement anything. Do NOT try to create tasks. Do NOT run any commands.
+Tell the user the plan is written and wait for their feedback. The user exits by pressing Enter on an empty line.
+
+## Workflow
+
+1. **Interview** — Discuss the spec with the user. Ask about implementation preferences,
+   architectural choices, ordering, and any ambiguities. You may read the codebase to
+   understand existing patterns relevant to planning.
+2. **Write** — Once the user agrees on the approach, write the plan to `{plan_path}`.
+3. **Stop** — After writing the plan file, tell the user it's done. Do NOT continue working.
 
 ## Guidelines
 
@@ -1064,6 +1095,10 @@ Simply write the plan file and stop. The user will review it and proceed to the 
 - Reference the spec sections by name
 
 {context}
+
+## Specification
+
+{spec_content}
 
 ## Output
 
@@ -1316,7 +1351,7 @@ fn build_initial_message_plan(name: &str, resuming: bool) -> String {
         )
     } else {
         format!(
-            "Start the plan interview for feature \"{}\". The spec is included in your system prompt.",
+            "Start the plan interview for feature \"{}\". The spec is included in your system prompt. Discuss the implementation approach with me before writing the plan file.",
             name
         )
     }
