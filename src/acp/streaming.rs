@@ -98,7 +98,11 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
                 flush_stdout();
             }
         }
-        SessionUpdateMsg::ToolCall { name, input } => {
+        SessionUpdateMsg::ToolCall {
+            name,
+            input,
+            locations,
+        } => {
             // Flush any buffered text before the tool call line.
             let was_streaming = !*state.is_first_chunk.borrow();
             flush_line_buffer(state);
@@ -110,12 +114,12 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
 
             // Reset first-chunk flag so the next text chunk gets a model prefix.
             *state.is_first_chunk.borrow_mut() = true;
-            let truncated_input = truncate_to_line(input, 120);
+            let summary = format_tool_summary(name, input, locations);
             println!(
                 "{} {} {}",
                 name.blue(),
                 "->".dimmed(),
-                truncated_input.bright_black()
+                summary.bright_black()
             );
         }
         SessionUpdateMsg::ToolCallError { name, error } => {
@@ -135,6 +139,120 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
             flush_stdout();
         }
     }
+}
+
+/// Build a concise summary of what a tool call is doing.
+///
+/// Priority:
+/// 1. Locations (file paths from ACP) — shown as shortened paths.
+/// 2. Extracted fields from raw_input JSON (file_path, command, pattern, query, etc.)
+/// 3. Truncated raw input as fallback.
+fn format_tool_summary(name: &str, raw_input: &str, locations: &[String]) -> String {
+    // If we have locations, show them (shortened).
+    if !locations.is_empty() {
+        let paths: Vec<&str> = locations.iter().map(|p| shorten_path(p)).collect();
+        return paths.join(", ");
+    }
+
+    // Try to extract useful fields from raw_input JSON.
+    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(raw_input) {
+        if let Some(summary) = extract_tool_metadata(name, &obj) {
+            return summary;
+        }
+    }
+
+    // Fallback: truncated raw input (skip if empty or just "{}").
+    let trimmed = raw_input.trim();
+    if trimmed.is_empty() || trimmed == "{}" || trimmed == "null" {
+        return String::new();
+    }
+    truncate_to_line(raw_input, 120)
+}
+
+/// Extract a meaningful one-liner from tool input JSON based on tool name.
+fn extract_tool_metadata(name: &str, input: &serde_json::Value) -> Option<String> {
+    let name_lower = name.to_lowercase();
+
+    // File operations: look for file_path / path.
+    if name_lower.contains("read")
+        || name_lower.contains("edit")
+        || name_lower.contains("write")
+        || name_lower.contains("notebook")
+    {
+        if let Some(path) = input.get("file_path").or(input.get("path")) {
+            return Some(shorten_path(path.as_str()?).to_string());
+        }
+    }
+
+    // Bash / terminal: show the command.
+    if name_lower.contains("bash") || name_lower.contains("terminal") || name_lower == "execute" {
+        if let Some(cmd) = input.get("command") {
+            let cmd_str = cmd.as_str()?;
+            return Some(truncate_to_line(cmd_str, 120));
+        }
+    }
+
+    // Search tools: show pattern + optional path.
+    if name_lower.contains("grep") || name_lower.contains("search") || name_lower.contains("glob") {
+        let mut parts = Vec::new();
+        if let Some(pat) = input.get("pattern") {
+            parts.push(format!("/{}/", pat.as_str()?));
+        }
+        if let Some(path) = input.get("path") {
+            parts.push(shorten_path(path.as_str()?).to_string());
+        }
+        if !parts.is_empty() {
+            return Some(parts.join(" in "));
+        }
+    }
+
+    // Web fetch: show URL.
+    if name_lower.contains("fetch") || name_lower.contains("web") {
+        if let Some(url) = input.get("url") {
+            return Some(truncate_to_line(url.as_str()?, 120));
+        }
+    }
+
+    // Task tool / agent launch: show description or prompt snippet.
+    if name_lower.contains("task") || name_lower.contains("agent") {
+        if let Some(desc) = input.get("description") {
+            return Some(truncate_to_line(desc.as_str()?, 80));
+        }
+        if let Some(prompt) = input.get("prompt") {
+            return Some(truncate_to_line(prompt.as_str()?, 80));
+        }
+    }
+
+    // Generic: try common field names.
+    for key in &["file_path", "path", "command", "pattern", "query", "url"] {
+        if let Some(val) = input.get(key) {
+            if let Some(s) = val.as_str() {
+                let label = if *key == "file_path" || *key == "path" {
+                    shorten_path(s).to_string()
+                } else {
+                    truncate_to_line(s, 120)
+                };
+                return Some(label);
+            }
+        }
+    }
+
+    None
+}
+
+/// Shorten a file path to its last 2-3 components for display.
+fn shorten_path(path: &str) -> &str {
+    // Show at most the last 3 path segments.
+    let mut count = 0;
+    for (i, c) in path.char_indices().rev() {
+        if c == '/' {
+            count += 1;
+            if count == 3 {
+                return &path[i + 1..];
+            }
+        }
+    }
+    path
 }
 
 /// Format a single line of markdown for terminal display.
@@ -421,5 +539,73 @@ mod tests {
     #[test]
     fn test_truncate_multiline() {
         assert_eq!(truncate_to_line("line1\nline2", 100), "line1");
+    }
+
+    // ---- shorten_path tests -------------------------------------------------
+
+    #[test]
+    fn test_shorten_deep_path() {
+        assert_eq!(
+            shorten_path("/Users/rk/code/ralph/src/acp/streaming.rs"),
+            "src/acp/streaming.rs"
+        );
+    }
+
+    #[test]
+    fn test_shorten_short_path() {
+        assert_eq!(shorten_path("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn test_shorten_just_filename() {
+        assert_eq!(shorten_path("file.rs"), "file.rs");
+    }
+
+    // ---- format_tool_summary tests ------------------------------------------
+
+    #[test]
+    fn test_summary_from_locations() {
+        let result = format_tool_summary(
+            "Read File",
+            "{}",
+            &["/Users/rk/code/ralph/src/main.rs".into()],
+        );
+        // shorten_path keeps last 3 segments: ralph/src/main.rs
+        assert_eq!(result, "ralph/src/main.rs");
+    }
+
+    #[test]
+    fn test_summary_read_from_input() {
+        let input = r#"{"file_path":"/Users/rk/code/ralph/src/acp/tools.rs"}"#;
+        let result = format_tool_summary("Read File", input, &[]);
+        assert_eq!(result, "src/acp/tools.rs");
+    }
+
+    #[test]
+    fn test_summary_bash_command() {
+        let input = r#"{"command":"cargo test --lib"}"#;
+        let result = format_tool_summary("Bash", input, &[]);
+        assert_eq!(result, "cargo test --lib");
+    }
+
+    #[test]
+    fn test_summary_grep_pattern() {
+        let input = r#"{"pattern":"raw_input","path":"/Users/rk/code/ralph/src"}"#;
+        let result = format_tool_summary("Grep", input, &[]);
+        assert_eq!(result, "/raw_input/ in code/ralph/src");
+    }
+
+    #[test]
+    fn test_summary_empty_input() {
+        let result = format_tool_summary("Edit", "{}", &[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_summary_edit_from_input() {
+        let input = r#"{"file_path":"/Users/rk/code/ralph/src/main.rs","old_string":"foo","new_string":"bar"}"#;
+        let result = format_tool_summary("Edit", input, &[]);
+        // /Users/rk/code/ralph/src/main.rs → 3 segments from right: ralph/src/main.rs
+        assert_eq!(result, "ralph/src/main.rs");
     }
 }

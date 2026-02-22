@@ -158,7 +158,11 @@ pub enum SessionUpdateMsg {
     /// A chunk of agent reasoning / thought content.
     AgentThought(String),
     /// The agent invoked a tool.
-    ToolCall { name: String, input: String },
+    ToolCall {
+        name: String,
+        input: String,
+        locations: Vec<String>,
+    },
     /// A tool call returned an error.
     ToolCallError { name: String, error: String },
     /// A tool call status/content update (streaming progress).

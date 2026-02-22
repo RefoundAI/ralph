@@ -261,8 +261,17 @@ impl Client for RalphClient {
                     .as_ref()
                     .map(|v: &serde_json::Value| v.to_string())
                     .unwrap_or_default();
+                let locations: Vec<String> = tool_call
+                    .locations
+                    .iter()
+                    .map(|loc| loc.path.to_string_lossy().into_owned())
+                    .collect();
                 streaming::render_session_update(
-                    &SessionUpdateMsg::ToolCall { name, input },
+                    &SessionUpdateMsg::ToolCall {
+                        name,
+                        input,
+                        locations,
+                    },
                     &state,
                 );
             }
