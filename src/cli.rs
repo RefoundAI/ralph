@@ -31,6 +31,12 @@ pub enum Command {
         #[command(subcommand)]
         action: TaskAction,
     },
+    /// Authenticate with the agent (e.g. claude auth login)
+    Auth {
+        /// Agent command to authenticate
+        #[arg(long, env = "RALPH_AGENT")]
+        agent: Option<String>,
+    },
     /// Run the agent loop on a feature or task
     Run {
         /// Feature name or task ID (t-...) to run
