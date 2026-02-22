@@ -11,9 +11,9 @@ The run loop registers a SIGINT handler at startup via `interrupt::register_sign
 3. **Claim task**: Atomically claim one ready task with agent ID
 4. **Build context**: `build_iteration_context()` assembles parent info, blockers, spec/plan, retry info, journal entries (smart-select: recent + FTS), knowledge entries (tag-matched)
 5. **Select model**: Strategy picks opus/sonnet/haiku based on history
-6. **Spawn Claude**: `stream_claude()` with system prompt and task context
+6. **Run ACP agent**: `run_iteration()` spawns agent binary via ACP connection with system prompt and task context
 7. **Check interrupt**: If `RunResult::Interrupted`, enter interrupt flow (see interrupt-handling knowledge)
-8. **Parse output**: Extract sigils from Claude's text output
+8. **Parse output**: `extract_sigils()` in `src/acp/sigils.rs` processes agent's text output
 9. **Handle FAILURE**: If `<promise>FAILURE</promise>`, exit immediately (no DAG update)
 10. **Handle task sigils**: Process `<task-done>` or `<task-failed>`, run verification if enabled
 11. **Post-iteration**: Write journal entry (always), write knowledge entries (if any `<knowledge>` sigils)

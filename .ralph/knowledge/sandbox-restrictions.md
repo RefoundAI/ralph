@@ -1,28 +1,14 @@
 ---
-title: "macOS sandbox restrictions and allow rules"
-tags: [sandbox, macos, security, filesystem, sandbox-exec]
+title: "Sandbox and permission handling (post-ACP)"
+tags: [sandbox, permissions, acp, security]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-On macOS, Ralph wraps Claude in `sandbox-exec` to restrict filesystem writes. Implementation is in `src/sandbox/`.
+After the ACP migration, Ralph no longer manages its own macOS `sandbox-exec` wrapper. The `src/sandbox/` module has been removed.
 
-**Allowed writes** (default):
-- Project directory (and git worktree root)
-- Temp dirs (`$TMPDIR`, `/tmp`, `/private/tmp`)
-- Claude state (`~/.claude`, `~/.config/claude`)
-- Cache/state dirs (`~/.cache`, `~/.local/state`)
+Permission handling is now done through the ACP protocol:
+- The `RalphClient` in `src/acp/client_impl.rs` implements `request_permission()` from the ACP `Client` trait
+- In normal mode: auto-approves all permission requests
+- In read-only mode (`run_autonomous(read_only=true)`): rejects `fs/write_text_file` operations but permits terminal operations
 
-**Blocked**:
-- All other filesystem writes
-- `com.apple.systemevents` (prevents UI automation)
-
-**Allow rules** (`--allow=<rule>`):
-- Rules are defined in `sandbox/rules.rs`
-- Example: `--allow=aws` grants write access to `~/.aws`
-- Rules map to additional filesystem paths added to the sandbox profile
-
-**Profile generation** (`sandbox/profile.rs`):
-- Dynamically generates a `.sb` profile file
-- Written to a temp file, passed to `sandbox-exec -f`
-
-Disable with `--no-sandbox`. The sandbox is macOS-only — on other platforms it's a no-op.
+The ACP agent binary itself (e.g. `claude`) is responsible for its own sandboxing. Ralph's `--no-sandbox` and `--allow` CLI flags were removed during the ACP migration.

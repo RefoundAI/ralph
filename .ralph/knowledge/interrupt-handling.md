@@ -8,7 +8,7 @@ Ralph supports graceful Ctrl+C interrupts during the run loop via `src/interrupt
 
 **Signal registration**: `register_signal_handler()` uses `signal-hook` to set an `AtomicBool` on SIGINT. A second Ctrl+C calls `std::process::exit(130)` for hard exit. Called once at `run_loop::run()` start.
 
-**Detection**: `stream_output()` in `claude/client.rs` checks `is_interrupted()` before each streamed line. Returns `StreamResult::Interrupted` which propagates to `RunResult::Interrupted`. Both direct and sandboxed execution paths handle this — killing the child process and cleaning up.
+**Detection**: The ACP connection in `src/acp/connection.rs` checks `is_interrupted()` via `tokio::select!` racing the agent session against the interrupt flag. Returns `RunResult::Interrupted` which propagates up to the run loop. The agent process is killed and cleaned up.
 
 **Run loop interrupt flow** (in `run_loop.rs`):
 1. Print interrupted banner with iteration, task ID, and title

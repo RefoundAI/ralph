@@ -1,10 +1,10 @@
 ---
-title: "Sigil parsing from Claude output"
-tags: [sigils, parsing, events, claude, output]
+title: "Sigil parsing from agent output"
+tags: [sigils, parsing, acp, output]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-Ralph communicates with Claude via sigils — XML-like tags embedded in Claude's text output. Parsing happens in `claude/events.rs`.
+Ralph communicates with agents via sigils — XML-like tags embedded in the agent's text output. Parsing happens in `src/acp/sigils.rs` via `extract_sigils()`.
 
 Sigils and their effects:
 - `<task-done>{task_id}</task-done>` — Mark task done, trigger auto-transitions
@@ -19,6 +19,6 @@ Sigils and their effects:
 
 Parsing is string-based (indexOf + substring), not XML parsing. Sigils must be exact — no extra whitespace inside tags. The `<knowledge>` sigil attributes can appear in any order (tags before title or vice versa).
 
-In `ResultEvent`, parsed sigils populate: `task_done`, `task_failed`, `promise`, `next_model`, `journal_notes`, `knowledge_entries`, `files_modified`.
+The `extract_sigils()` function returns a `SigilResult` struct with fields: `task_done`, `task_failed`, `promise`, `next_model`, `journal_notes`, `knowledge_entries`.
 
 Important: FAILURE promise short-circuits the loop before any DAG state update. No task is marked done or failed.
