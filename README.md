@@ -1,12 +1,14 @@
 # Ralph
 
-Autonomous agent loop harness for [Claude Code][claude-code].
+Autonomous agent loop harness for AI coding agents.
 
 Ralph manages features through a structured lifecycle: specify, plan, decompose
-into a DAG of tasks, then iteratively invoke Claude Code to complete them one at
-a time. Task state lives in a SQLite database, enabling dependency tracking,
-automatic unblocking, and hierarchical task relationships. On macOS, it sandboxes
-Claude to restrict filesystem writes to the project directory.
+into a DAG of tasks, then iteratively invoke an agent to complete them one at a
+time. Task state lives in a SQLite database, enabling dependency tracking,
+automatic unblocking, and hierarchical task relationships. Ralph works with any
+[ACP][acp]-compliant agent binary -- the default is [Claude Code][claude-code],
+but you can swap in any agent via the `--agent` flag, the `RALPH_AGENT`
+environment variable, or the `[agent]` section in `.ralph.toml`.
 
 > [!WARNING]
 > Ralph can (and possibly WILL) destroy anything you have access to, according
@@ -48,31 +50,27 @@ lifecycle: `draft` -> `planned` -> `ready` -> `running` -> `done`/`failed`.
 # 1. Initialize a Ralph project
 ralph init
 
-# 2. Craft a specification (interactive Claude session)
-ralph feature spec auth
+# 2. Create a feature (interactive spec → plan → task DAG)
+ralph feature create auth
 
-# 3. Create an implementation plan from the spec (interactive Claude session)
-ralph feature plan auth
-
-# 4. Decompose the plan into a task DAG
-ralph feature build auth
-
-# 5. Run the agent loop
+# 3. Run the agent loop
 ralph run auth
 ```
 
-Each step builds on the previous one. The `spec` and `plan` commands open
-interactive Claude sessions where you collaborate to refine the specification and
-plan. The `build` command decomposes the plan into concrete tasks stored in the
-DAG. Finally, `run` picks tasks one at a time and invokes Claude to complete
-them.
+The `feature create` command runs the entire lifecycle in one shot: a spec
+interview (you collaborate with the agent to refine a specification), an
+automated review pass, a plan interview (you refine the implementation plan),
+another review pass, and finally DAG decomposition into concrete tasks. Each
+phase skips if its output file already exists on disk, so you can resume an
+interrupted `feature create` without losing progress.
 
 For quick one-off work, create standalone tasks instead:
 
 ```bash
-ralph task new              # Interactive: create a standalone task
-ralph task list             # See what you have
-ralph run t-abc123          # Run a specific task by ID
+ralph task add "Fix the login bug"   # Non-interactive, scriptable
+ralph task create                     # Interactive, Claude-assisted
+ralph task list                       # See what you have
+ralph run t-abc123                    # Run a specific task by ID
 ```
 
 ## How It Works
@@ -80,17 +78,15 @@ ralph run t-abc123          # Run a specific task by ID
 ```mermaid
 flowchart TD
     subgraph "Feature Lifecycle"
-        spec[ralph feature spec] --> plan[ralph feature plan]
-        plan --> build[ralph feature build]
-        build --> dag[(SQLite DAG)]
+        create[ralph feature create] --> dag[(SQLite DAG)]
     end
 
     subgraph "Run Loop"
         run[ralph run] --> ready{Ready tasks?}
         ready -- yes --> claim[Claim task]
         claim --> model[Model strategy selects model]
-        model --> claude[Spawn Claude]
-        claude --> sigils{Parse sigils}
+        model --> agent[Spawn agent]
+        agent --> sigils{Parse sigils}
         sigils -- task-done --> verify{Verify?}
         sigils -- task-failed --> retry{Retries left?}
         verify -- pass --> done[Complete task]
@@ -110,27 +106,25 @@ flowchart TD
     dag --> run
 ```
 
-1. `ralph feature spec <name>` creates a feature in `draft` state and opens an
-   interactive Claude session to craft a specification
-2. `ralph feature plan <name>` creates an implementation plan from the spec
-3. `ralph feature build <name>` decomposes the plan into a DAG of tasks stored
-   in `.ralph/progress.db`
-4. `ralph run <target>` picks the next ready task (by priority, then creation
-   time), claims it, and invokes Claude Code
-5. Claude works on the assigned task and signals the result:
+1. `ralph feature create <name>` runs an interactive session to craft a
+   specification, then creates an implementation plan, then decomposes the plan
+   into a DAG of tasks stored in `.ralph/progress.db` -- all in one command
+2. `ralph run <target>` picks the next ready task (by priority, then creation
+   time), claims it, and invokes the agent
+3. The agent works on the assigned task and signals the result:
    - `<task-done>{task_id}</task-done>` -- task completed, triggers
      auto-unblocking of dependents
    - `<task-failed>{task_id}</task-failed>` -- task failed, retried up to
      `--max-retries` times
-6. After each task completion, a **verification agent** (a read-only Claude
+4. After each task completion, a **verification agent** (a read-only agent
    session) checks the work. On failure, the task is retried.
-7. Ralph checks if all tasks are resolved; if not and the limit has not been
+5. Ralph checks if all tasks are resolved; if not and the limit has not been
    reached, it picks the next ready task and loops
 
 ### Project Structure
 
 ```
-.ralph.toml              # Project configuration
+.ralph.toml              # Project configuration ([execution], [agent])
 .ralph/
   progress.db            # SQLite DAG database (gitignored)
   features/              # Feature specs and plans
@@ -139,8 +133,6 @@ flowchart TD
       plan.md            # Implementation plan
   knowledge/             # Project knowledge entries
     <entry-name>.md      # Tagged markdown knowledge file
-  specs/                 # Specification documents (legacy)
-  prompts/               # Prompt files
 .claude/
   skills/                # Reusable agent skills
     <name>/
@@ -155,6 +147,9 @@ The `.ralph.toml` file controls project-level defaults:
 [execution]
 # max_retries = 3
 # verify = true
+
+[agent]
+# command = "claude"
 ```
 
 ### Task DAG
@@ -177,22 +172,23 @@ Tasks are stored in a SQLite database with:
   plans, and task DAGs. The lifecycle provides structure and traceability.
 - **DAG-first** -- All work is tracked as tasks in a SQLite DAG. No work
   happens outside the DAG.
-- **One task per iteration** -- Each Claude invocation works on exactly one
+- **One task per iteration** -- Each agent invocation works on exactly one
   claimed task, keeping context focused.
-- **Signal-driven** -- Claude communicates results via sigils (`<task-done>`,
+- **Signal-driven** -- The agent communicates results via sigils (`<task-done>`,
   `<task-failed>`, `<promise>`, `<next-model>`). Ralph never interprets
-  Claude's prose.
+  the agent's prose.
 - **Auto-transitions** -- The DAG manages cascading state changes: completing
   a task unblocks dependents; completing all children auto-completes the
   parent; failing a child auto-fails the parent.
 - **Verify then trust** -- A read-only verification agent checks each
   completed task before accepting it.
-- **Sandboxed by default** -- On macOS, Claude runs inside `sandbox-exec`
-  restricting writes to the project directory and essential paths.
+- **Agent-agnostic** -- Ralph works with any ACP-compliant agent binary,
+  configurable via `--agent` flag, `RALPH_AGENT` env var, or `[agent].command`
+  in `.ralph.toml`. The default agent is `claude`.
 
 ## Verification
 
-After each task completion, Ralph spawns a read-only Claude session that:
+After each task completion, Ralph spawns a read-only agent session that:
 
 1. Reads the relevant source files
 2. Runs applicable tests
@@ -212,9 +208,11 @@ iteration's system prompt:
   selection combines recent entries from the current run with FTS5 full-text
   search matches from prior runs, within a 3000-token budget.
 - **Project Knowledge** -- Reusable knowledge entries stored as tagged markdown
-  files in `.ralph/knowledge/`. Claude emits `<knowledge>` sigils to create
+  files in `.ralph/knowledge/`. The agent emits `<knowledge>` sigils to create
   entries. Discovery scans the directory and scores entries by tag relevance to
-  the current task, feature, and recently modified files. Rendered within a
+  the current task, feature, and recently modified files. Entries support
+  `[[Title]]` references for zettelkasten-style cross-linking; link expansion
+  pulls in related entries not directly matched by tags. Rendered within a
   2000-token budget.
 
 Both systems are always active -- there is no toggle to disable them.
@@ -258,31 +256,17 @@ Claude can override the strategy for the next iteration by emitting a
 Hints always override the strategy's choice, apply to the next iteration only,
 and are optional.
 
-## Sandbox Mode (macOS)
-
-By default, Ralph wraps Claude in `sandbox-exec` to restrict filesystem writes:
-
-- Allowed: project directory, temp dirs, `~/.claude`, `~/.config/claude`,
-  `~/.cache`, `~/.local/state`, and git worktree root
-- Blocked: everything else, plus `com.apple.systemevents` (prevents UI
-  automation)
-
-```bash
-ralph run auth --no-sandbox       # Disable sandboxing
-ralph run auth --allow=aws        # Grant write access to ~/.aws
-```
-
 ## CLI Reference
 
 ```
 ralph init                        Initialize a new Ralph project
-ralph feature spec <name>         Interactively craft a specification
-ralph feature plan <name>         Interactively create an implementation plan
-ralph feature build <name>        Decompose plan into task DAG
+ralph feature create <name>       Create feature: spec → plan → task DAG
 ralph feature list                List all features and their status
-ralph task new                    Interactively create a standalone task
-ralph task list                   List standalone tasks
+ralph task add <TITLE>            Add a standalone task (scriptable)
+ralph task create                 Interactively create a task (Claude-assisted)
+ralph task list                   List tasks
 ralph run <target>                Run the agent loop on a feature or task
+ralph auth                        Authenticate with the agent
 ```
 
 ### `ralph run` Options
@@ -302,15 +286,13 @@ Options:
                           [default: cost-optimized]
       --max-retries <N>   Maximum retries for failed tasks
       --no-verify         Disable autonomous verification
-      --no-sandbox        Disable macOS sandbox
-  -a, --allow <RULE>      Enable sandbox rule (e.g., aws)
+      --agent <CMD>       Agent command (env: RALPH_AGENT, default: claude)
   -h, --help              Print help
 ```
 
 ### `ralph feature` Options
 
-The `spec`, `plan`, and `build` subcommands each accept an optional
-`--model <MODEL>` flag to choose the Claude model (defaults to `opus`).
+The `create` subcommand accepts `--model <MODEL>` and `--agent <CMD>` flags.
 
 ### Environment Variables
 
@@ -319,6 +301,7 @@ The `spec`, `plan`, and `build` subcommands each accept an optional
 | `RALPH_LIMIT`          | Default iteration limit           |
 | `RALPH_MODEL`          | Default model (opus/sonnet/haiku) |
 | `RALPH_MODEL_STRATEGY` | Default model strategy            |
+| `RALPH_AGENT`          | Agent command (default: claude)    |
 | `RALPH_ITERATION`      | Current iteration (for resume)    |
 | `RALPH_TOTAL`          | Total iterations (for display)    |
 
@@ -330,7 +313,7 @@ The `spec`, `plan`, and `build` subcommands each accept an optional
 | 0         | LimitReached | Iteration limit hit (not an error)         |
 | 1         | Failure      | Critical failure (FAILURE sigil or error)   |
 | 2         | Blocked      | No ready tasks but incomplete tasks remain |
-| 3         | NoPlan       | DAG is empty -- run `ralph feature build`  |
+| 3         | NoPlan       | DAG is empty -- run `ralph feature create` |
 
 ## Development
 
@@ -357,6 +340,7 @@ Heavily inspired by [Chris Barrett's](https://github.com/chrisbarrett) shell-bas
 
 MIT
 
+[acp]: https://github.com/agentclientprotocol/rust-sdk
 [claude-code]: https://claude.ai/code
 [releases]: https://github.com/Studio-Sasquatch/ralph/releases
 [cargo-dist]: https://opensource.axo.dev/cargo-dist/
