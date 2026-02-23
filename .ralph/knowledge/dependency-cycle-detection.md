@@ -1,19 +1,19 @@
 ---
-title: "Dependency cycle detection via BFS"
-tags: [dependencies, cycle-detection, bfs, dag]
+title: Dependency Cycle Detection
+tags: [dag, dependencies, graph, bfs]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-Dependencies in `dag/dependencies.rs` use BFS to detect cycles before insertion.
+BFS-based cycle detection in `src/dag/dependencies.rs` prevents circular task dependencies.
 
-Edge semantics: `blocker_id` must complete before `blocked_id` can start. The `dependencies` table has a composite PRIMARY KEY (blocker_id, blocked_id) and CHECK (blocker_id != blocked_id).
+## Edge Semantics
 
-Cycle detection algorithm (`would_create_cycle()`):
-1. Start BFS from `blocked_id` (the task that would be waiting)
-2. Traverse forward: for each node, find all tasks it blocks (SELECT blocked_id WHERE blocker_id = current)
-3. If `blocker_id` is reached: adding this edge would create a cycle → reject
-4. Track visited set to avoid infinite loops in existing DAG
+`add_dependency(blocker_id, blocked_id)`: blocker must complete before blocked can start. Stored as `(blocker_id, blocked_id)` with composite PRIMARY KEY.
 
-Self-dependencies (blocker_id == blocked_id) are checked explicitly before BFS and also enforced by the SQL CHECK constraint.
+## Algorithm
 
-The BFS is O(V+E) — fine for typical DAGs but could be slow on very large graphs. Foreign key constraints ensure both task IDs exist before insertion.
+`would_create_cycle(blocker_id, blocked_id)` runs BFS from `blocked_id` following forward edges. If BFS reaches `blocker_id`, the edge would create a cycle — reject. O(V+E) complexity.
+
+Self-dependencies prevented by SQL CHECK constraint (`blocker_id != blocked_id`) and explicit check before BFS.
+
+See also: [[Auto-Transitions]], [[Task Columns Mapping]]

@@ -1,25 +1,33 @@
 ---
-title: "Verification agent for task completion"
-tags: [verification, verify, agent, acp, testing, quality]
+title: Verification Agent
+tags: [verification, agent, acp, testing, quality]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-After each task completion, Ralph spawns a read-only verification agent (`verification.rs`) that checks the work before accepting it.
+Read-only verification agent in `src/verification.rs`, spawned after each task completion.
 
-The verification agent:
-1. Runs via `run_autonomous()` with `read_only=true` — the `RalphClient` rejects `fs/write_text_file` but permits terminal operations (so it can run `cargo test`)
+## How It Works
+
+1. Runs via `run_autonomous(read_only=true)` — see [[ACP Permission Model]]
 2. Reads relevant source files
-3. Runs applicable tests
-4. Checks acceptance criteria from the task description
-5. Emits `<verify-pass/>` or `<verify-fail>reason</verify-fail>`
+3. Runs tests via terminal (terminal ops permitted, file writes rejected)
+4. Checks acceptance criteria from task description
+5. Emits `<verify-pass/>` or `<verify-fail>reason</verify-fail>` — see [[Sigil Parsing]]
 
-On verification failure:
-- The task is retried (up to `--max-retries`, default 3)
-- The failure reason is included as `RetryInfo` in the next iteration's system prompt
-- Retry count is tracked in `tasks.retry_count` column
+## On Failure
 
-If the user interrupts verification with Ctrl+C, the `RunResult::Interrupted` variant is returned and verification treats it as a failure (`passed: false`, reason: "Verification interrupted by user"). This causes the task to be retried on the next iteration.
+Task retried up to `max_retries` (default 3, configurable via `--max-retries` or `[execution] max_retries`). Failure reason included as `RetryInfo` in next iteration's [[System Prompt Construction]]. Retry count tracked in `tasks.retry_count` column.
 
-The verification agent spawns its own ACP agent process (same `--agent` command).
+## On Interrupt
 
-Disable with `--no-verify` flag. Configure max retries with `--max-retries=N` or `[execution] max_retries` in `.ralph.toml`.
+Returns `passed: false` (reason: "Verification interrupted by user") → task retried next iteration. See [[Interrupt Handling]].
+
+## No Sigil Found
+
+Treated as verification failure.
+
+## Disabling
+
+`--no-verify` flag or `[execution] verify = false` in `.ralph.toml`.
+
+See also: [[ACP Permission Model]], [[Sigil Parsing]], [[Run Loop Lifecycle]], [[Interrupt Handling]], [[System Prompt Construction]]

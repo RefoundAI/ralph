@@ -1,10 +1,12 @@
 ---
-title: "Config::from_run_args parameter contract"
-tags: [config, testing, parameters, run-args, agent, acp]
+title: Config From Run Args
+tags: [config, parameters, run-args, agent, testing]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-`Config::from_run_args()` in `config.rs` takes 9 parameters (post-ACP migration):
+`Config::from_run_args()` in `src/config.rs` constructs runtime config from CLI args and project config.
+
+## Signature (9 parameters)
 
 ```rust
 pub fn from_run_args(
@@ -20,16 +22,22 @@ pub fn from_run_args(
 ) -> Result<Self>
 ```
 
-Removed from pre-ACP: `prompt_file`, `no_sandbox`, `allow` (Vec).
-Added: `agent` (Option<String>).
+## Agent Resolution Chain
 
-The `agent` param resolves via: `agent` > `RALPH_AGENT` env var > `ralph_config.agent.command` > "claude". Validated with `shlex::split()`.
+`agent` param > `RALPH_AGENT` env var > `ralph_config.agent.command` > `"claude"`. Validated with `shlex::split()` — `None` means malformed input (unclosed quotes).
 
-Adding a new parameter requires updating ALL call sites, including test helpers in:
-- `config.rs` (test_project(), test helper calls)
-- `acp/prompt.rs` (test helper functions)
-- `strategy.rs` (test helper functions)
+## Auto-Generated Fields
 
-Test helpers use `..Default::default()` on `RalphConfig`, so new config sections must have `#[serde(default)]`.
+- `agent_id`: `agent-{8 hex}` from `DefaultHasher` over timestamp + PID
+- `run_id`: `run-{8 hex}` from SHA-256 of timestamp + counter
 
-The Config struct auto-generates `agent_id` (format `agent-{8 hex}`) and `run_id` (format `run-{8 hex}`) per invocation. The Config struct has `agent_command: String` (not Option).
+## Adding a New Parameter
+
+Update ALL call sites including test helpers in:
+- `src/config.rs` (test_project(), test calls)
+- `src/acp/prompt.rs` (test helpers)
+- `src/strategy.rs` (test helpers)
+
+Test helpers use `..Default::default()` on `RalphConfig`, so new config sections need `#[serde(default)]`.
+
+See also: [[Model Strategy Selection]], [[ACP Connection Lifecycle]], [[Configuration Layers]]

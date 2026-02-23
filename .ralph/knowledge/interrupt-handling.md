@@ -1,27 +1,33 @@
 ---
-title: "Graceful Ctrl+C interrupt handling"
-tags: [interrupt, signal, ctrl-c, run-loop, feedback, sigint]
+title: Interrupt Handling
+tags: [interrupt, signal, ctrl-c, run-loop, sigint]
 created_at: "2026-02-21T00:00:00Z"
 ---
 
-Ralph supports graceful Ctrl+C interrupts during the run loop via `src/interrupt.rs`.
+Graceful Ctrl+C support in `src/interrupt.rs`, integrated with [[Run Loop Lifecycle]] and [[ACP Connection Lifecycle]].
 
-**Signal registration**: `register_signal_handler()` uses `signal-hook` to set an `AtomicBool` on SIGINT. A second Ctrl+C calls `std::process::exit(130)` for hard exit. Called once at `run_loop::run()` start.
+## Signal Registration
 
-**Detection**: The ACP connection in `src/acp/connection.rs` checks `is_interrupted()` via `tokio::select!` racing the agent session against the interrupt flag. Returns `RunResult::Interrupted` which propagates up to the run loop. The agent process is killed and cleaned up.
+`register_signal_handler()` uses `signal-hook` to set `AtomicBool` on first SIGINT. Second Ctrl+C calls `exit(130)` for hard exit. Registered once at `run_loop::run()` start.
 
-**Run loop interrupt flow** (in `run_loop.rs`):
-1. Print interrupted banner with iteration, task ID, and title
-2. Prompt user for multi-line feedback (empty line finishes, Enter skips)
-3. If feedback given: append as `**User Guidance (iteration N):**` section to task description + add task log entry
-4. Release task claim via `release_claim()` (resets to pending)
-5. Write journal entry with outcome `"interrupted"` and user feedback as notes
-6. Clear interrupt flag for clean next iteration
-7. Ask "Continue? [Y/n]" — Y continues the loop, n returns `Outcome::Interrupted`
+## Detection
 
-**Subsystem behavior on interrupt**:
-- **Verification** (`verification.rs`): Returns `passed: false` — task will be retried
-- **Review** (`review.rs`): Returns `passed: true` — avoids infinite review loops
-- **Main exit** (`main.rs`): `Outcome::Interrupted` prints message and exits with success code
+ACP connection uses `tokio::select!` to race agent session against `poll_interrupt()`. Returns `RunResult::Interrupted`. Agent process killed and cleaned up.
 
-**Key functions**: `register_signal_handler()`, `is_interrupted()`, `clear_interrupt()`, `prompt_for_feedback(task)`, `append_feedback_to_description(desc, feedback, iteration)`, `should_continue()`.
+## Interrupt Flow
+
+1. Print interrupted banner (iteration, task ID, title)
+2. Prompt for multi-line user feedback (empty line finishes)
+3. If feedback: append as `**User Guidance (iteration N):**` to task description + task log
+4. Release claim via `release_claim()` (resets to pending)
+5. Write journal entry with outcome `"interrupted"` + feedback as notes
+6. Clear interrupt flag
+7. Ask "Continue? [Y/n]" — Y continues, n returns `Outcome::Interrupted`
+
+## Subsystem Behavior
+
+- **[[Verification Agent]]**: Interrupt → `passed: false` (task retried)
+- **Review** (`src/review.rs`): Interrupt → `passed: true` (avoids infinite loops)
+- **Main exit**: `Outcome::Interrupted` prints message, exits with success code
+
+See also: [[Run Loop Lifecycle]], [[ACP Connection Lifecycle]], [[Verification Agent]]

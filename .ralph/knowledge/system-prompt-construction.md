@@ -1,22 +1,28 @@
 ---
-title: "System prompt construction and context sections"
+title: System Prompt Construction
 tags: [prompt, system-prompt, acp, context, iteration]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-The system prompt is built dynamically in `src/acp/prompt.rs` via `build_prompt_text()`. It assembles optional context sections in this order:
+System prompt assembled in `src/acp/prompt.rs` via `build_prompt_text()`. Single `TextContent` block (ACP has no separate system prompt channel).
 
-1. **Base prompt**: DAG task assignment rules, sigil instructions, tool constraints
-2. **Task context**: Assigned task details (title, description, parent, completed blockers)
-3. **Spec content** (if feature target): Full spec.md contents
-4. **Plan content** (if feature target): Full plan.md contents
-5. **Retry info** (if retrying): "This is retry attempt X of Y" + previous failure reason
-6. **Journal context** (if non-empty): Pre-rendered markdown from `journal::render_journal_context()`, 3000-token budget
-7. **Knowledge context** (if non-empty): Pre-rendered markdown from `knowledge::render_knowledge_context()`, 2000-token budget
-8. **Memory section** (always): Instructions for `<journal>` and `<knowledge>` sigils
+## Section Order
 
-Journal and knowledge contexts are pre-rendered as markdown strings in `run_loop.rs::build_iteration_context()` and passed verbatim into the prompt. They are not JSON — just markdown sections.
+1. **Base prompt**: DAG task rules, [[Sigil Parsing]] instructions, tool constraints
+2. **Task context**: Assigned task (title, description, parent, completed blockers)
+3. **Spec content** (if feature target): Full `spec.md` — see [[Feature Lifecycle]]
+4. **Plan content** (if feature target): Full `plan.md`
+5. **Retry info** (if retrying): Attempt count, max retries, previous failure reason
+6. **Journal context** (if non-empty): Pre-rendered markdown, 3000-token budget — see [[Journal System]]
+7. **Knowledge context** (if non-empty): Pre-rendered markdown with link graph, 2000-token budget — see [[Knowledge System]]
+8. **Memory section** (always): Sigil format docs, [[Roam Protocol Bidirectional Linking]] instructions
 
-The prompt is assembled as a single `TextContent` block (ACP has no separate system prompt channel). The function signature is `build_prompt_text(config: &Config, context: &IterationContext) -> String`.
+## Adding a New Section
 
-When adding a new optional context section, insert it between retry_info and the Memory section. Follow the pattern: check if non-empty, push a newline, push the content.
+Insert between retry_info and Memory section. Pattern: check if non-empty, push newline, push content.
+
+## Context Pre-Rendering
+
+Journal and knowledge contexts are pre-rendered as markdown strings in `build_iteration_context()` ([[Run Loop Lifecycle]]) and passed verbatim — not JSON.
+
+See also: [[Sigil Parsing]], [[Journal System]], [[Knowledge System]], [[Feature Lifecycle]], [[Run Loop Lifecycle]], [[Roam Protocol Bidirectional Linking]]

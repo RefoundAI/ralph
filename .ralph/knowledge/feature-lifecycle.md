@@ -1,19 +1,40 @@
 ---
-title: "Feature lifecycle and workflow"
-tags: [feature, spec, plan, build, lifecycle, workflow]
+title: Feature Lifecycle
+tags: [feature, workflow, spec, plan, build, cli]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-Features progress through a defined lifecycle: `draft` → `planned` → `ready` → `running` → `done`/`failed`.
+Feature workflow from creation to execution via `ralph feature create <name>`.
 
-Workflow stages:
-1. **`ralph feature spec <name>`**: Creates feature in `draft` state. Opens interactive Claude session to write `.ralph/features/<name>/spec.md`.
-2. **`ralph feature plan <name>`**: Creates implementation plan from spec. Writes `.ralph/features/<name>/plan.md`. Feature becomes `planned`.
-3. **`ralph feature build <name>`**: Decomposes plan into task DAG via interactive Claude session. Claude uses `ralph task add` and `ralph task deps add` CLI commands (not JSON). Feature becomes `ready`.
-4. **`ralph run <name>`**: Picks ready tasks one at a time, invokes Claude to complete them. Feature becomes `running`, then `done`/`failed`.
+## Unified Create Command
 
-Feature context (spec + plan content) is loaded by `resolve_feature_context()` in `run_loop.rs` and included in each iteration's system prompt.
+Single command runs three sequential phases (replaces separate spec/plan/build commands):
 
-Feature management functions in `feature.rs`: `create_feature`, `get_feature` (by name), `get_feature_by_id`, `list_features`, `update_feature_status/spec_path/plan_path`, `ensure_feature_dirs`, `read_spec`, `read_plan`.
+1. **Spec**: Interactive ACP interview → writes `.ralph/features/<name>/spec.md` → iterative review (max 5 rounds)
+2. **Plan**: Interactive ACP interview (spec as context) → writes `.ralph/features/<name>/plan.md` → iterative review
+3. **Build**: Autonomous ACP session reads spec+plan → emits task DAG via CLI commands
 
-For quick one-off work, standalone tasks bypass the feature lifecycle: `ralph task add` + `ralph run <task-id>`.
+Each phase **skips if its output file already exists** on disk — natural resume on interruption. The `FeatureAction` enum only has `Create` and `List` variants. `--model` and `--agent` flags apply to all phases.
+
+## Status Flow
+
+`draft` → `planned` → `ready` → `running` → `done` | `failed`
+
+## Context in Runs
+
+`resolve_feature_context()` in [[Run Loop Lifecycle]] loads spec and plan content. Included in system prompt via [[System Prompt Construction]]. `get_scoped_ready_tasks()` filters by `feature_id`.
+
+## Artifact Flow
+
+Spec and plan are not consumed and discarded — they flow through the entire pipeline:
+- **Plan** reads the **spec** to know what to design
+- **Build** reads both to decompose work into tasks
+- Every **execution iteration** reads both, giving Claude the full picture even when the immediate task is narrow
+
+This means a Claude session implementing a narrow task still has access to the full spec's acceptance criteria and the plan's architectural decisions.
+
+## Standalone Tasks
+
+For one-off work: `ralph task add <title>` + `ralph run <task-id>` bypasses the feature lifecycle entirely. See [[One-Shot vs Feature Workflow]] for comparison and decision guide.
+
+See also: [[Run Loop Lifecycle]], [[System Prompt Construction]], [[Verification Agent]], [[Execution Modes]], [[One-Shot vs Feature Workflow]]

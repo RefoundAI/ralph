@@ -1,10 +1,12 @@
 ---
-title: "TASK_COLUMNS and task_from_row mapping"
-tags: [task, sqlite, dag, columns, mapping]
+title: Task Columns Mapping
+tags: [dag, tasks, sqlite, schema, columns]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-All Task queries must use `TASK_COLUMNS` (defined in `dag/mod.rs`) and `task_from_row()` for consistent SQL-to-struct mapping. There are 14 columns in exact positional order:
+Centralized SQL-to-Task mapping in `src/dag/mod.rs` via `TASK_COLUMNS` constant and `task_from_row()` helper.
+
+## Column Order (14 columns, strict positional)
 
 ```
 0: id, 1: title, 2: description, 3: status, 4: parent_id,
@@ -13,18 +15,22 @@ All Task queries must use `TASK_COLUMNS` (defined in `dag/mod.rs`) and `task_fro
 12: updated_at, 13: claimed_by
 ```
 
-Nullable columns use `row.get::<_, Option<T>>(N)?.unwrap_or(default)`:
-- description (pos 2): unwrap_or_default (empty string)
-- task_type (pos 6): unwrap_or_else "feature"
-- priority (pos 7): unwrap_or 0
-- retry_count (pos 8): unwrap_or 0
-- max_retries (pos 9): unwrap_or 3
+## Nullable Column Pattern
 
-When adding a new Task field:
-1. Add column to CREATE TABLE in `db.rs` (or migration)
-2. Add to end of `TASK_COLUMNS` string
-3. Add field to `Task` struct
+```rust
+row.get::<_, Option<T>>(N)?.unwrap_or(default)
+```
+
+Nullable: `parent_id`, `claimed_by`, `task_type` (default "feature"), `feature_id`, `verification_status`, `priority` (default 0), `retry_count` (default 0), `max_retries` (default 3).
+
+## Adding a New Column
+
+1. Add migration in `src/dag/db.rs` (see [[Schema Migrations]])
+2. Add field to `Task` struct in `src/dag/mod.rs`
+3. Append to `TASK_COLUMNS` constant
 4. Add extraction at the next index in `task_from_row()`
-5. Update all test helpers that construct Task manually
+5. Update all test helpers that construct `Task` manually
 
 Index mismatch causes silent wrong-value assignment — Rust won't catch this at compile time.
+
+See also: [[Schema Migrations]], [[Auto-Transitions]]

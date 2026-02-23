@@ -1,24 +1,31 @@
 ---
-title: "Sigil parsing from agent output"
-tags: [sigils, parsing, acp, output]
+title: Sigil Parsing
+tags: [sigils, parsing, acp, output, xml]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-Ralph communicates with agents via sigils — XML-like tags embedded in the agent's text output. Parsing happens in `src/acp/sigils.rs` via `extract_sigils()`.
+Ralph communicates with agents via XML-like sigils in text output. Parsing in `src/acp/sigils.rs` via `extract_sigils()`.
 
-Sigils and their effects:
-- `<task-done>{task_id}</task-done>` — Mark task done, trigger auto-transitions
-- `<task-failed>{task_id}</task-failed>` — Mark task failed, trigger auto-fail parent
-- `<promise>COMPLETE</promise>` — All tasks done, exit loop with code 0
-- `<promise>FAILURE</promise>` — Critical failure, short-circuits BEFORE DAG update, exit code 1
-- `<next-model>opus|sonnet|haiku</next-model>` — Override model strategy for next iteration only
-- `<verify-pass/>` — Verification agent: task passed
-- `<verify-fail>reason</verify-fail>` — Verification agent: task failed
-- `<journal>notes</journal>` — Iteration notes written to journal table
-- `<knowledge tags="..." title="...">body</knowledge>` — Creates/updates knowledge entry file
+## Sigils
 
-Parsing is string-based (indexOf + substring), not XML parsing. Sigils must be exact — no extra whitespace inside tags. The `<knowledge>` sigil attributes can appear in any order (tags before title or vice versa).
+| Sigil | Effect |
+|-------|--------|
+| `<task-done>{id}</task-done>` | Mark task done, trigger [[Auto-Transitions]] |
+| `<task-failed>{id}</task-failed>` | Mark task failed, trigger auto-fail parent |
+| `<promise>COMPLETE</promise>` | All tasks done, exit 0 |
+| `<promise>FAILURE</promise>` | Critical failure, short-circuits before DAG update, exit 1 |
+| `<next-model>opus\|sonnet\|haiku</next-model>` | Override [[Model Strategy Selection]] for next iteration |
+| `<verify-pass/>` | [[Verification Agent]]: passed |
+| `<verify-fail>reason</verify-fail>` | [[Verification Agent]]: failed |
+| `<journal>notes</journal>` | Write to [[Journal System]] |
+| `<knowledge tags="..." title="...">body</knowledge>` | Write to [[Knowledge System]] |
 
-The `extract_sigils()` function returns a `SigilResult` struct with fields: `task_done`, `task_failed`, `promise`, `next_model`, `journal_notes`, `knowledge_entries`.
+## Implementation
 
-Important: FAILURE promise short-circuits the loop before any DAG state update. No task is marked done or failed.
+String-based parsing (indexOf + substring), not XML. Whitespace trimmed inside tags. `<knowledge>` attributes can appear in any order. First `<next-model>` wins if duplicated.
+
+## FAILURE Short-Circuit
+
+`<promise>FAILURE</promise>` exits *before* any DAG state update. No task is marked done or failed. See [[Run Loop Lifecycle]] step 9.
+
+See also: [[Run Loop Lifecycle]], [[Auto-Transitions]], [[Model Strategy Selection]], [[Verification Agent]], [[Journal System]], [[Knowledge System]]

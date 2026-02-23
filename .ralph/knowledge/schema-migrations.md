@@ -1,25 +1,32 @@
 ---
-title: "SQLite schema migration pattern"
-tags: [sqlite, schema, migration, dag, database]
+title: Schema Migrations
+tags: [sqlite, schema, migrations, dag, database]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-Schema migrations in `dag/db.rs` use version-range checks against the SQLite `user_version` pragma. Current schema version is 3.
+SQLite schema versioning via `user_version` pragma in `src/dag/db.rs`.
 
-Pattern for adding a new migration:
+## Pattern
+
+Migrations use version-range checks so fresh databases jump straight to the latest version:
+
 ```rust
 if from_version < N && to_version >= N {
     conn.execute_batch("CREATE TABLE ...; ALTER TABLE ...;")?;
 }
 ```
 
-Migration history:
-- **v1**: Base tables (`tasks`, `dependencies`, `task_logs`)
-- **v2**: Adds `features` table, extends `tasks` with `feature_id`, `task_type`, `retry_count`, `max_retries`, `verification_status`
-- **v3**: Adds `journal` table with FTS5 virtual table (`journal_fts`) and INSERT/UPDATE/DELETE triggers to maintain the FTS index
+## Current Schema (v3)
 
-Gotchas:
-- FTS5 triggers must mirror each other (INSERT/UPDATE/DELETE) to keep the content-synced virtual table consistent.
+- **v1**: `tasks`, `dependencies`, `task_logs` tables
+- **v2**: `features` table; extends `tasks` with `feature_id`, `task_type`, `retry_count`, `max_retries`, `verification_status` (see [[Task Columns Mapping]])
+- **v3**: `journal` table + FTS5 virtual table with auto-update triggers (see [[Journal System]])
+
+## Gotchas
+
+- FTS5 content-sync triggers must cover INSERT, UPDATE, and DELETE. Missing the UPDATE trigger causes stale search results.
 - Version is stored in pragma `user_version`, not a table row.
 - Migrations use `execute_batch()` for atomicity within a version step.
-- Always test the upgrade path from the previous version (e.g., `test_schema_v3_migration_from_v2`).
+- WAL mode and foreign keys are set at connection time, not in schema.
+
+See also: [[Task Columns Mapping]], [[Journal System]], [[Knowledge System]]

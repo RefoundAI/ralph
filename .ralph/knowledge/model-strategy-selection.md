@@ -1,16 +1,28 @@
 ---
-title: "Model strategy selection and escalation"
-tags: [model, strategy, escalation, cost, opus, sonnet, haiku]
+title: Model Strategy Selection
+tags: [strategy, model, config, run-loop]
 created_at: "2026-02-18T00:00:00Z"
 ---
 
-Model selection in `strategy.rs` determines which Claude model to use each iteration:
+Model selection strategies in `src/strategy.rs` determine which Claude model runs each iteration.
 
-- **Fixed**: Always uses `--model` value. No swapping.
-- **CostOptimized** (default): Starts with sonnet. Escalates to opus on error signals (compile errors, test failures, panics). Drops to haiku on clean task completions.
-- **Escalate**: Starts at haiku. On failure signals, escalates haiku→sonnet→opus. Monotonic — never auto-de-escalates. Only a `<next-model>` hint from Claude can step back down.
-- **PlanThenExecute**: Opus for iteration 1 (planning), sonnet for all subsequent iterations.
+## Strategies
 
-Claude can override any strategy for the next iteration via `<next-model>opus|sonnet|haiku</next-model>`. Hints apply to the next iteration only and always override the strategy's choice.
+- **Fixed**: Always uses `--model` value. Implied when `--model` passed without `--model-strategy`.
+- **CostOptimized** (default): Starts at `sonnet`; escalates to `opus` on error signals; drops to `haiku` on clean completions.
+- **Escalate**: Starts at `haiku`, monotonically escalates on failure. Only `<next-model>` hint can de-escalate.
+- **PlanThenExecute**: `opus` for iteration 1, `sonnet` thereafter.
 
-The escalation level is tracked in `Config.escalation_level` (0=haiku, 1=sonnet, 2=opus) and persisted across iterations via `config.next_iteration()`.
+## Claude Override
+
+`<next-model>opus|sonnet|haiku</next-model>` always wins — overrides strategy for the next iteration only. See [[Sigil Parsing]].
+
+## Escalation Tracking
+
+`Config.escalation_level` (0=haiku, 1=sonnet, 2=opus) persists across iterations within a run.
+
+## CLI Resolution
+
+`--model` alone → Fixed. `--model-strategy=fixed` requires `--model`. Default: CostOptimized with sonnet. See [[Config From Run Args]].
+
+See also: [[Run Loop Lifecycle]], [[Sigil Parsing]], [[Config From Run Args]]
