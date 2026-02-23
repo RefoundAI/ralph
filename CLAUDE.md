@@ -146,32 +146,25 @@ Environment variables: `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RA
 
 ## Understanding Design Decisions
 
-Before modifying code, check two resources that explain the **why** behind implementation choices:
-
-### Documentation (`docs/`)
-
-Prose documentation covering system design, data flows, and architectural rationale. **Read the relevant doc before changing a subsystem** — they contain design constraints and tradeoffs that aren't obvious from code alone.
-
-- **architecture.md** — Full system design: module structure, data model, schema, execution modes, ACP protocol. Read when adding a new subsystem or understanding how pieces connect.
-- **agent-loop.md** — The ten-step iteration lifecycle inside `run_loop.rs`: context assembly, model selection, sigil parsing, outcome handling. Read when debugging loop behavior or modifying prompt construction.
-- **task-management.md** — Task data model, SQLite schema, status state machine, parent-child hierarchies, dependency edges, cycle detection, ready queries, retries. Read when changing task internals or query logic.
-- **interactive-flows.md** — Three Claude spawning modes (interactive, streaming, loop iteration), their CLI arguments, and output handling. Read when working on `feature create` or output formatting.
-- **specs-plans-tasks.md** — The four-phase feature workflow (spec → plan → build → run), decomposition rules, how context flows from spec through execution. Read when modifying the feature pipeline.
-- **oneshot-vs-features.md** — Tradeoffs between one-shot tasks and the feature workflow. Read when changing how run targets are resolved or adding new execution modes.
-- **memory-and-learning.md** — Journal/knowledge system, skills (SKILL.md), discovery, system prompt integration. Read when working on journal entries, knowledge persistence, or skill creation.
-- **getting-started.md** — User-facing walkthrough of install, init, features, tasks, and running. Read when changing CLI UX or onboarding behavior.
+Before modifying code, check the project knowledge base that explains the **why** behind implementation choices.
 
 ### Project Knowledge (`.ralph/knowledge/`)
 
-Targeted knowledge entries that capture specific gotchas, patterns, and decisions learned during development. Each file has YAML frontmatter with `title` and `tags`, followed by a focused explanation. **Scan these before working on a subsystem** — they record pitfalls and constraints that prevent repeated mistakes.
+Atomic knowledge entries with YAML frontmatter (`title`, `tags`) and `[[Title]]` bidirectional links. **Scan relevant entries before working on a subsystem** — they record pitfalls, patterns, and design constraints that prevent repeated mistakes.
 
-Examples of what's in here:
-- Parameter contracts and call-site update requirements (`config-from-run-args.md`)
-- Schema migration patterns and FTS5 trigger gotchas (`schema-migrations.md`)
-- ACP connection lifecycle patterns (`acp-connection-lifecycle-pattern-with-localset-and-owned-data.md`)
-- Run loop iteration sequence and outcome handling (`run-loop-lifecycle.md`)
-- Interrupt flow and signal handling details (`interrupt-handling.md`)
-- Testing patterns for ACP mock agents and LocalSet (`mock-acp-agent-binary-pattern-with-agentsideconnection.md`)
+**By subsystem:**
+- **Run loop**: `run-loop-lifecycle.md`, `error-handling-resilience.md`, `execution-modes.md`
+- **ACP**: `acp-connection-lifecycle.md`, `acp-permission-model.md`, `acp-trait-imports.md`, `acp-schema-types-import-path.md`
+- **DAG/tasks**: `auto-transitions.md`, `task-columns-mapping.md`, `task-crud-operations.md`, `parent-status-derivation.md`, `dependency-cycle-detection.md`
+- **Features**: `feature-lifecycle.md`, `oneshot-vs-features.md`
+- **Config**: `config-from-run-args.md`, `configuration-layers.md`, `model-strategy-selection.md`
+- **Memory**: `journal-system.md`, `knowledge-system.md`, `roam-protocol-bidirectional-linking.md`
+- **Sigils/prompts**: `sigil-parsing.md`, `system-prompt-construction.md`
+- **Verification**: `verification-agent.md`, `interrupt-handling.md`
+- **Schema**: `schema-migrations.md`
+- **Testing**: `tokio-localset-testing.md`, `mock-acp-agent-binary.md`, `integration-test-binary-paths.md`
+- **Releases**: `release-process.md`
+- **Tooling**: `linter-hook-reverts-files-on-compile-error.md`
 
 To find relevant entries, match the tags in frontmatter against the subsystem you're working on. File names are descriptive — browse the directory listing to find what's relevant.
 
