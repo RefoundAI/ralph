@@ -188,6 +188,24 @@ pub fn build_prompt_text(config: &Config, context: &IterationContext) -> String 
     prompt.push_str("```\n<knowledge tags=\"tag1,tag2\" title=\"Short descriptive title\">\nDetailed explanation of the knowledge. Maximum ~500 words.\n</knowledge>\n```\n\n");
     prompt
         .push_str("Tags should be lowercase, relevant keywords. At least one tag is required.\n\n");
+    prompt.push_str("#### Bidirectional Linking (Roam protocol)\n\n");
+    prompt.push_str(
+        "Knowledge entries support `[[Title]]` links to other entries. Use these to create\n",
+    );
+    prompt.push_str("a densely linked graph of atomic notes (zettelkasten style):\n\n");
+    prompt.push_str(
+        "- Link to related entries: `See [[SQLite schema migration pattern]] for details.`\n",
+    );
+    prompt.push_str(
+        "- Ralph automatically tracks backlinks — if entry A links to entry B, both entries\n",
+    );
+    prompt.push_str("  know about the connection.\n");
+    prompt.push_str(
+        "- Linked entries are automatically pulled into context when a directly-matched\n",
+    );
+    prompt.push_str("  entry references them, so linking helps build richer context.\n");
+    prompt
+        .push_str("- Keep entries atomic: one concept per entry, linked to related concepts.\n\n");
     prompt.push_str(
         "You should also continue to update CLAUDE.md with project-wide knowledge that\n",
     );

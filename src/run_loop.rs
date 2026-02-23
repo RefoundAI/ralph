@@ -593,7 +593,7 @@ fn build_iteration_context(
     .unwrap_or_default();
     let journal_context = journal::render_journal_context(&journal_entries);
 
-    // Knowledge: discover and tag-match entries for system prompt context (FR-6.1-FR-6.4)
+    // Knowledge: discover, tag-match, and expand via link graph (FR-6.1-FR-6.4)
     let all_knowledge = knowledge::discover_knowledge(&config.project_root);
     let last_files: Vec<String> = journal_entries
         .last()
@@ -603,14 +603,24 @@ fn build_iteration_context(
         Some(RunTarget::Feature(name)) => Some(name.as_str()),
         _ => None,
     };
-    let matched_knowledge = knowledge::match_knowledge_entries(
+    let mut matched_knowledge = knowledge::match_knowledge_entries(
         &all_knowledge,
         &task.title,
         &task.description,
         feature_name,
         &last_files,
     );
-    let knowledge_context = knowledge::render_knowledge_context(&matched_knowledge);
+
+    // Build link graph and expand matched set via bidirectional links
+    let link_graph = knowledge::build_link_graph(&all_knowledge);
+    let linked_entries =
+        knowledge::expand_via_links(&all_knowledge, &matched_knowledge, &link_graph, 2, 2);
+    matched_knowledge.extend(linked_entries);
+    // Re-sort by score after expansion
+    matched_knowledge.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let knowledge_context =
+        knowledge::render_knowledge_context_with_graph(&matched_knowledge, Some(&link_graph));
 
     Ok(IterationContext {
         task: task_info,

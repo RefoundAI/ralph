@@ -88,6 +88,8 @@ Persistent iteration records stored in SQLite with FTS5 full-text search. Each `
 ### Knowledge Base (`src/knowledge.rs`)
 Tag-based project knowledge stored as markdown files in `.ralph/knowledge/`. Each `KnowledgeEntry` has YAML frontmatter (`title`, `tags`, optional `feature`, `created_at`) and a body (max ~500 words). Discovery scans the directory; matching scores entries by tag relevance to the current task, feature, and recently modified files. Deduplication on write: exact title match replaces, >50% tag overlap merges, otherwise creates new. Rendered into the system prompt within a 2000-token budget.
 
+**Roam-protocol bidirectional linking**: Entries can reference each other using `[[Title]]` syntax in their body text. `extract_links()` parses these references, `build_link_graph()` builds a bidirectional adjacency map (outlinks + backlinks), and `expand_via_links()` traverses the graph to pull in related entries that weren't directly matched by tags but are linked from matched entries. The link graph enables zettelkasten-style densely connected atomic notes. Rendered context includes backlinks and outlinks for each entry.
+
 ### Sigils
 Claude's output is scanned for:
 - `<task-done>{task_id}</task-done>` - Mark assigned task as done
@@ -98,7 +100,7 @@ Claude's output is scanned for:
 - `<verify-pass/>` - Verification passed (emitted by verification agent)
 - `<verify-fail>reason</verify-fail>` - Verification failed (emitted by verification agent)
 - `<journal>notes</journal>` - Iteration notes for run journal
-- `<knowledge tags="..." title="...">body</knowledge>` - Reusable project knowledge entry
+- `<knowledge tags="..." title="...">body</knowledge>` - Reusable project knowledge entry (body supports `[[Title]]` links to other entries)
 
 ### Key Files
 - `.ralph.toml` - Project configuration (discovered by walking up directory tree)
