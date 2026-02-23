@@ -16,7 +16,7 @@
 
 use std::path::PathBuf;
 
-use ralph::acp::connection::run_autonomous;
+use ralph::acp::connection::{run_autonomous, SessionRestrictions};
 use ralph::acp::sigils::extract_sigils;
 use tempfile::TempDir;
 
@@ -30,7 +30,7 @@ use tempfile::TempDir;
 ///   `target/debug/deps/<test-binary-name>`
 ///
 /// Walking up two levels gives us `target/debug/`, which is where Cargo
-/// places `[[bin]]` outputs like `mock-agent` and `mock-agent-tools`.
+/// places `[[example]]` outputs under `examples/`.
 fn target_dir() -> PathBuf {
     let exe = std::env::current_exe().expect("could not read current_exe path");
     // exe → target/debug/deps/<test-binary>
@@ -42,23 +42,14 @@ fn target_dir() -> PathBuf {
         .expect("could not navigate to target directory from current_exe")
 }
 
-/// Path to the compiled `mock-agent` binary.
-///
-/// Tries `CARGO_BIN_EXE_mock_agent` first (set by Cargo for non-required-features
-/// bins), then falls back to the `target_dir()` heuristic.
+/// Path to the compiled `mock-agent` example binary.
 fn mock_agent_path() -> PathBuf {
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_mock_agent") {
-        return PathBuf::from(p);
-    }
-    target_dir().join("mock-agent")
+    target_dir().join("examples").join("mock-agent")
 }
 
-/// Path to the compiled `mock-agent-tools` binary.
+/// Path to the compiled `mock-agent-tools` example binary.
 fn mock_agent_tools_path() -> PathBuf {
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_mock_agent_tools") {
-        return PathBuf::from(p);
-    }
-    target_dir().join("mock-agent-tools")
+    target_dir().join("examples").join("mock-agent-tools")
 }
 
 /// Quote a string for safe use in a shell-style command parsed by `shlex::split`.
@@ -131,6 +122,7 @@ async fn test_iteration_with_mock_agent() {
         "task message",
         false,
         None,
+        SessionRestrictions::default(),
     )
     .await
     .expect("run_autonomous should succeed");
@@ -169,6 +161,7 @@ async fn test_iteration_task_failed_sigil() {
         "task message",
         false,
         None,
+        SessionRestrictions::default(),
     )
     .await
     .expect("run_autonomous should succeed");
@@ -201,6 +194,7 @@ async fn test_iteration_no_sigil() {
         "task message",
         false,
         None,
+        SessionRestrictions::default(),
     )
     .await
     .expect("run_autonomous should succeed");
@@ -248,6 +242,7 @@ async fn test_iteration_journal_and_knowledge() {
         "task message",
         false,
         None,
+        SessionRestrictions::default(),
     )
     .await
     .expect("run_autonomous should succeed");
@@ -295,6 +290,7 @@ async fn test_iteration_model_env_passed() {
         "task message",
         false,
         Some(expected_model),
+        SessionRestrictions::default(),
     )
     .await
     .expect("run_autonomous should succeed");
@@ -332,6 +328,7 @@ async fn test_agent_reads_file() {
         "task message",
         false,
         None,
+        SessionRestrictions::default(),
     )
     .await
     .expect("run_autonomous should succeed with file read");
@@ -367,6 +364,7 @@ async fn test_agent_writes_file() {
         "task message",
         false,
         None,
+        SessionRestrictions::default(),
     )
     .await
     .expect("run_autonomous should succeed with file write");
@@ -414,6 +412,10 @@ async fn test_agent_runs_terminal() {
         "task message",
         false,
         None,
+        SessionRestrictions {
+            allow_terminal: true,
+            ..Default::default()
+        },
     )
     .await
     .expect("run_autonomous should succeed with terminal creation");
@@ -443,9 +445,17 @@ async fn test_read_only_rejects_writes() {
     );
 
     // read_only = true means write_text_file calls are rejected.
-    let result = run_autonomous(&cmd, tmp.path(), "instructions", "task message", true, None)
-        .await
-        .expect("run_autonomous should succeed even when writes are rejected");
+    let result = run_autonomous(
+        &cmd,
+        tmp.path(),
+        "instructions",
+        "task message",
+        true,
+        None,
+        SessionRestrictions::default(),
+    )
+    .await
+    .expect("run_autonomous should succeed even when writes are rejected");
 
     // The file must NOT have been created (write was rejected by the read-only client).
     assert!(
@@ -480,6 +490,10 @@ async fn test_terminal_wait_for_exit() {
         "task message",
         false,
         None,
+        SessionRestrictions {
+            allow_terminal: true,
+            ..Default::default()
+        },
     )
     .await
     .expect("run_autonomous should succeed after terminal wait-for-exit");

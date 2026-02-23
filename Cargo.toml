@@ -14,12 +14,12 @@ autotests = false
 # Usage: cargo build --features test-mock-agents
 test-mock-agents = []
 
-[[bin]]
+[[example]]
 name = "mock-agent"
 path = "tests/mock_agent.rs"
 required-features = ["test-mock-agents"]
 
-[[bin]]
+[[example]]
 name = "mock-agent-tools"
 path = "tests/mock_agent_tools.rs"
 required-features = ["test-mock-agents"]
