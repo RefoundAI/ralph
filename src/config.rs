@@ -123,7 +123,6 @@ impl Config {
     /// Build config from run command args and project config.
     #[allow(clippy::too_many_arguments)]
     pub fn from_run_args(
-        once: bool,
         limit: Option<u32>,
         model_strategy: Option<String>,
         model: Option<String>,
@@ -133,11 +132,6 @@ impl Config {
         no_verify: bool,
         agent: Option<String>,
     ) -> Result<Self> {
-        // Check for mutually exclusive flags
-        if once && limit.is_some() && limit.unwrap() > 0 {
-            bail!("--once and --limit are mutually exclusive");
-        }
-
         // Resolve model strategy early
         let (strategy_str, model) =
             cli::resolve_model_strategy(&model, &model_strategy).map_err(|e| anyhow::anyhow!(e))?;
@@ -157,7 +151,7 @@ impl Config {
             ModelStrategy::PlanThenExecute => "opus".to_string(),
         };
 
-        let limit = if once { 1 } else { limit.unwrap_or(0) };
+        let limit = limit.unwrap_or(0);
 
         let iteration = env::var("RALPH_ITERATION")
             .ok()
@@ -236,7 +230,6 @@ mod tests {
     /// Helper to build config from run args.
     fn config_from_run(model: Option<&str>, strategy: Option<&str>) -> Result<Config> {
         Config::from_run_args(
-            false,
             None,
             strategy.map(String::from),
             model.map(String::from),
@@ -412,7 +405,6 @@ verify = true
     fn test_config_agent_override() {
         // Passing an agent param overrides the default
         let config = Config::from_run_args(
-            false,
             None,
             None,
             None,
@@ -466,7 +458,6 @@ command = "gemini-cli"
     fn test_shlex_parse_error() {
         // Malformed agent command (unclosed quote) should return an error
         let result = Config::from_run_args(
-            false,
             None,
             None,
             None,

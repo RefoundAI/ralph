@@ -12,7 +12,7 @@ environment variable, or the `[agent]` section in `.ralph.toml`.
 
 > [!WARNING]
 > Ralph can (and possibly WILL) destroy anything you have access to, according
-> to the whims of the LLM. Use `ralph run --once` to test before unleashing
+> to the whims of the LLM. Use `ralph run --limit=1` to test before unleashing
 > unattended loops.
 
 ## Installation
@@ -278,7 +278,6 @@ Arguments:
   <TARGET>                Feature name or task ID (t-...)
 
 Options:
-  -o, --once              Run exactly once
       --limit <N>         Maximum iterations (0 = unlimited)
       --model <MODEL>     Model: opus, sonnet, haiku (implies --model-strategy=fixed)
       --model-strategy <STRATEGY>

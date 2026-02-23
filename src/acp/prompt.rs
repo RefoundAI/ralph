@@ -227,7 +227,6 @@ mod tests {
             config: RalphConfig::default(),
         };
         Config::from_run_args(
-            false,
             None,
             Some("cost-optimized".to_string()),
             None,

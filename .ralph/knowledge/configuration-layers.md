@@ -32,7 +32,6 @@ Flags on `ralph run` override `.ralph.toml`:
 | `--max-retries N` | `execution.max_retries` |
 | `--no-verify` | `execution.verify` (sets false) |
 | `--agent CMD` | `agent.command` |
-| `--once` | Sets limit to 1 |
 | `--limit N` | Iteration limit (0 = unlimited) |
 
 **`--model` alone implies `--model-strategy=fixed`**. `--model-strategy=fixed` requires `--model` to be set. Validated in `cli::resolve_model_strategy()`.

@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 /// Ralph is an autonomous, iterative coding workflow harness.
 ///
 /// DANGER: Ralph can (and possibly WILL) destroy anything you have access to,
-/// according to the whims of the LLM. Use --once to test before unleashing
+/// according to the whims of the LLM. Use --limit=1 to test before unleashing
 /// unattended loops.
 #[derive(Parser, Debug)]
 #[command(name = "ralph", version, about, long_about = None)]
@@ -42,10 +42,6 @@ pub enum Command {
         /// Feature name or task ID (t-...) to run
         #[arg(value_name = "TARGET")]
         target: String,
-
-        /// Run exactly once (conflicts with --limit)
-        #[arg(short = 'o', long)]
-        once: bool,
 
         /// Maximum iterations; 0 = forever
         #[arg(long, value_name = "N", env = "RALPH_LIMIT")]

@@ -94,7 +94,7 @@ ralph task deps rm <A> <B>
 ralph task deps list <ID>
 ralph task tree <ID> [--json]
 ralph run <target>                # Run agent loop (feature name or task ID)
-  --once / --limit=N / --model=MODEL / --model-strategy=STRAT
+  --limit=N / --model=MODEL / --model-strategy=STRAT
   --agent=CMD / --max-retries=N / --no-verify
 ```
 

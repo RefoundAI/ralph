@@ -6,11 +6,10 @@ created_at: "2026-02-18T00:00:00Z"
 
 `Config::from_run_args()` in `src/config.rs` constructs runtime config from CLI args and project config.
 
-## Signature (9 parameters)
+## Signature (8 parameters)
 
 ```rust
 pub fn from_run_args(
-    once: bool,
     limit: Option<u32>,
     model_strategy: Option<String>,
     model: Option<String>,

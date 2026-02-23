@@ -254,7 +254,6 @@ mod tests {
             config: RalphConfig::default(),
         };
         Config::from_run_args(
-            false,
             None,
             Some("fixed".to_string()),
             Some(model.to_string()),
@@ -395,7 +394,6 @@ mod tests {
             config: RalphConfig::default(),
         };
         let mut config = Config::from_run_args(
-            false,
             None,
             Some("cost-optimized".to_string()),
             None,
@@ -418,7 +416,6 @@ mod tests {
             config: RalphConfig::default(),
         };
         Config::from_run_args(
-            false,
             None,
             Some("escalate".to_string()),
             None,
@@ -549,7 +546,6 @@ mod tests {
             config: RalphConfig::default(),
         };
         Config::from_run_args(
-            false,
             None,
             Some("plan-then-execute".to_string()),
             None,

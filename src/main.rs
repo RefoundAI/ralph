@@ -272,7 +272,6 @@ async fn run() -> Result<ExitCode> {
         Some(cli::Command::Task { action }) => handle_task(action).await,
         Some(cli::Command::Run {
             target,
-            once,
             limit,
             model_strategy,
             model,
@@ -303,7 +302,6 @@ async fn run() -> Result<ExitCode> {
             };
 
             let config = config::Config::from_run_args(
-                once,
                 limit,
                 model_strategy,
                 model,
