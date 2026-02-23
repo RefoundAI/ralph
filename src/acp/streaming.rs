@@ -58,12 +58,24 @@ fn flush_line_buffer(state: &RenderState) {
     }
 }
 
+/// Check whether a tool call has enough data for a useful summary line.
+///
+/// Returns `true` if there are locations or non-trivial input to display.
+pub fn has_useful_summary(input: &str, locations: &[String]) -> bool {
+    if !locations.is_empty() {
+        return true;
+    }
+    let trimmed = input.trim();
+    !trimmed.is_empty() && trimmed != "{}" && trimmed != "null"
+}
+
 /// Render a single ACP session update to the terminal.
 ///
 /// Output style per variant:
 /// - `AgentText`         — `{model.purple()} -> ` prefix on first chunk, then markdown-formatted
 /// - `AgentThought`      — dim/gray, truncated to 100 chars
-/// - `ToolCall`          — newline separator + `{name.blue()} -> {input.bright_black()}`
+/// - `ToolCallPreamble`  — flush text buffer + newline separator + reset first_chunk
+/// - `ToolCall`          — `{name.blue()} -> {input.bright_black()}` (summary + detail lines)
 /// - `ToolCallError`     — `ERROR.red() -> {error.bright_red()}`
 /// - `ToolCallProgress`  — suppressed
 /// - `Finished`          — flush buffer + newline
@@ -113,11 +125,7 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
                 flush_stdout();
             }
         }
-        SessionUpdateMsg::ToolCall {
-            name,
-            input,
-            locations,
-        } => {
+        SessionUpdateMsg::ToolCallPreamble => {
             // Flush any buffered text before the tool call line.
             let was_streaming = !*state.is_first_chunk.borrow();
             flush_line_buffer(state);
@@ -129,6 +137,12 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
 
             // Reset first-chunk flag so the next text chunk gets a model prefix.
             *state.is_first_chunk.borrow_mut() = true;
+        }
+        SessionUpdateMsg::ToolCall {
+            name,
+            input,
+            locations,
+        } => {
             let summary = format_tool_summary(name, input, locations);
             println!(
                 "{} {} {}",
@@ -872,5 +886,37 @@ mod tests {
         let result = format_tool_summary("Edit", input, &[]);
         // /Users/rk/code/ralph/src/main.rs → 3 segments from right: ralph/src/main.rs
         assert_eq!(result, "ralph/src/main.rs");
+    }
+
+    // ---- has_useful_summary tests -------------------------------------------
+
+    #[test]
+    fn test_useful_summary_with_locations() {
+        assert!(has_useful_summary("", &["/some/path".into()]));
+    }
+
+    #[test]
+    fn test_useful_summary_with_json_input() {
+        assert!(has_useful_summary(r#"{"file_path":"src/main.rs"}"#, &[]));
+    }
+
+    #[test]
+    fn test_useful_summary_empty_input() {
+        assert!(!has_useful_summary("", &[]));
+    }
+
+    #[test]
+    fn test_useful_summary_empty_json() {
+        assert!(!has_useful_summary("{}", &[]));
+    }
+
+    #[test]
+    fn test_useful_summary_null() {
+        assert!(!has_useful_summary("null", &[]));
+    }
+
+    #[test]
+    fn test_useful_summary_whitespace_only() {
+        assert!(!has_useful_summary("   ", &[]));
     }
 }

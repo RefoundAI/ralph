@@ -37,6 +37,8 @@ use crate::acp::tools::{self, SessionUpdateMsg, TerminalSession};
 struct PendingToolCall {
     name: String,
     metadata_rendered: bool,
+    /// `true` when the summary line has not yet been printed (deferred until data arrives).
+    deferred: bool,
 }
 
 pub struct RalphClient {
@@ -102,6 +104,27 @@ impl RalphClient {
             line_buffer: Rc::clone(&self.line_buffer),
             in_code_block: Rc::clone(&self.in_code_block),
             in_sigil: Rc::clone(&self.in_sigil),
+        }
+    }
+
+    /// Flush any deferred tool call summary lines as minimal `Name ->` lines.
+    ///
+    /// Safety net for edge cases: if a deferred tool call never receives a
+    /// `ToolCallUpdate` with `raw_input`, this ensures it still appears in output.
+    fn flush_deferred_tool_calls(&self, state: &RenderState) {
+        let mut pending = self.pending_tool_calls.borrow_mut();
+        for entry in pending.values_mut() {
+            if entry.deferred {
+                entry.deferred = false;
+                streaming::render_session_update(
+                    &SessionUpdateMsg::ToolCall {
+                        name: entry.name.clone(),
+                        input: String::new(),
+                        locations: vec![],
+                    },
+                    state,
+                );
+            }
         }
     }
 
@@ -250,6 +273,8 @@ impl Client for RalphClient {
         match notification.update {
             SessionUpdate::AgentMessageChunk(chunk) => {
                 if let Some(text) = Self::content_block_text(&chunk.content) {
+                    // Flush any deferred tool call lines before rendering agent text.
+                    self.flush_deferred_tool_calls(&state);
                     // Accumulate for sigil extraction.
                     self.text_accumulator.borrow_mut().push_str(text);
                     // Render to terminal.
@@ -269,7 +294,6 @@ impl Client for RalphClient {
             }
             SessionUpdate::ToolCall(tool_call) => {
                 let name = tool_call.title.clone();
-                let has_raw_input = tool_call.raw_input.is_some();
                 let input = tool_call
                     .raw_input
                     .as_ref()
@@ -280,14 +304,25 @@ impl Client for RalphClient {
                     .iter()
                     .map(|loc| loc.path.to_string_lossy().into_owned())
                     .collect();
-                streaming::render_session_update(
-                    &SessionUpdateMsg::ToolCall {
-                        name: name.clone(),
-                        input,
-                        locations,
-                    },
-                    &state,
-                );
+
+                // Flush any previous deferred tool call lines.
+                self.flush_deferred_tool_calls(&state);
+
+                // Always emit the preamble (flush text buffer, separator, reset first_chunk).
+                streaming::render_session_update(&SessionUpdateMsg::ToolCallPreamble, &state);
+
+                let useful = streaming::has_useful_summary(&input, &locations);
+                if useful {
+                    // Render the summary + detail lines immediately.
+                    streaming::render_session_update(
+                        &SessionUpdateMsg::ToolCall {
+                            name: name.clone(),
+                            input,
+                            locations,
+                        },
+                        &state,
+                    );
+                }
 
                 // Register for potential ToolCallUpdate with raw_input.
                 let tool_call_id = tool_call.tool_call_id.0.as_ref().to_owned();
@@ -295,18 +330,34 @@ impl Client for RalphClient {
                     tool_call_id,
                     PendingToolCall {
                         name,
-                        metadata_rendered: has_raw_input,
+                        metadata_rendered: useful,
+                        deferred: !useful,
                     },
                 );
             }
             SessionUpdate::ToolCallUpdate(update) => {
                 let tool_call_id = update.tool_call_id.0.as_ref().to_owned();
 
-                // If raw_input arrived and we haven't rendered metadata yet, render detail lines.
                 if let Some(ref raw_input) = update.fields.raw_input {
                     let mut pending = self.pending_tool_calls.borrow_mut();
                     if let Some(entry) = pending.get_mut(&tool_call_id) {
-                        if !entry.metadata_rendered {
+                        if entry.deferred {
+                            // Deferred tool call: render the full summary + detail lines now.
+                            entry.deferred = false;
+                            entry.metadata_rendered = true;
+                            let name = entry.name.clone();
+                            let input_str = raw_input.to_string();
+                            drop(pending);
+                            streaming::render_session_update(
+                                &SessionUpdateMsg::ToolCall {
+                                    name,
+                                    input: input_str,
+                                    locations: vec![],
+                                },
+                                &state,
+                            );
+                        } else if !entry.metadata_rendered {
+                            // Not deferred but metadata not yet rendered: render detail lines only.
                             entry.metadata_rendered = true;
                             let name = entry.name.clone();
                             drop(pending);

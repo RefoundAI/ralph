@@ -175,6 +175,8 @@ pub enum SessionUpdateMsg {
         name: String,
         detail_lines: Vec<String>,
     },
+    /// Flush text buffer and separator before a tool call, even when the line is deferred.
+    ToolCallPreamble,
     /// The session has finished (prompt completed).
     Finished,
 }
