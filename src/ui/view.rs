@@ -82,9 +82,22 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
         .split(body[1]);
 
     // Agent Stream: respect user scroll pin, or auto-scroll to bottom.
+    // Count wrapped visual lines so auto-scroll reaches the actual bottom.
     let inner_height = right[0].height.saturating_sub(2) as usize; // subtract border
-    let all_lines: Vec<&str> = state.agent_text.lines().collect();
-    let total_lines = all_lines.len();
+    let inner_width = right[0].width.saturating_sub(2).max(1) as usize; // subtract border
+    let total_lines: usize = state
+        .agent_text
+        .lines()
+        .map(|line| {
+            let char_count = line.len();
+            if char_count == 0 {
+                1
+            } else {
+                (char_count + inner_width - 1) / inner_width
+            }
+        })
+        .sum::<usize>()
+        .max(if state.agent_text.is_empty() { 0 } else { 1 });
     let max_offset = total_lines.saturating_sub(inner_height);
     let scroll_offset = match state.agent_scroll {
         Some(pinned) => pinned.min(max_offset),
@@ -178,28 +191,71 @@ fn render_modal(frame: &mut Frame<'_>, modal: &UiModal) {
             lines,
             current_line,
         } => {
-            let input_preview = lines
-                .iter()
-                .chain(std::iter::once(current_line))
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("\n");
-            let text = format!(
-                "{}\n\n{}\n\n{}",
-                hint,
-                input_preview,
-                "Enter sends line. Empty line submits. Empty buffer exits. Ctrl+C interrupts."
-            );
-            let widget = Paragraph::new(text)
+            // Build structured content with visual differentiation:
+            // 1. Hint text (subdued)
+            // 2. Separator
+            // 3. Input area with prompt markers
+            // 4. Hint bar at bottom
+            let mut content: Vec<Line<'_>> = Vec::new();
+
+            // Hint text in subdued style
+            for hint_line in hint.lines() {
+                content.push(Line::from(Span::styled(hint_line, theme::subdued())));
+            }
+            content.push(Line::from(""));
+            content.push(Line::from(Span::styled(
+                "─── Input ───────────────────────────────────────────",
+                Style::default().fg(Color::DarkGray),
+            )));
+
+            // Committed lines with prompt markers
+            for line in lines {
+                content.push(Line::from(vec![
+                    Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(line.as_str(), theme::modal_text()),
+                ]));
+            }
+
+            // Current line with cursor marker
+            content.push(Line::from(vec![
+                Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+                Span::styled(current_line.as_str(), theme::modal_text()),
+                Span::styled("█", Style::default().fg(Color::Cyan)),
+            ]));
+
+            content.push(Line::from(""));
+            content.push(Line::from(Span::styled(
+                "Enter=newline  Empty Enter=submit  Esc=exit  Ctrl+C=interrupt",
+                Style::default().fg(Color::DarkGray),
+            )));
+
+            let widget = Paragraph::new(content)
                 .block(
                     Block::default()
                         .title(title.as_str())
                         .borders(Borders::ALL)
                         .border_style(theme::modal_border()),
                 )
-                .style(theme::modal_text())
                 .wrap(Wrap { trim: false });
             frame.render_widget(widget, area);
+
+            // Place the real terminal cursor at the typing position.
+            // inner area = area minus 1-cell border on each side.
+            let inner_x = area.x + 1;
+            let inner_y = area.y + 1;
+            // The cursor sits after "│ " (2 chars) + current_line length,
+            // offset by the number of content lines above the current line.
+            let lines_above = hint.lines().count() // hint lines
+                + 1  // blank line
+                + 1  // separator
+                + lines.len(); // committed input lines
+            let cursor_col = 2 + current_line.len() as u16;
+            let cursor_x = inner_x + cursor_col;
+            let cursor_y = inner_y + lines_above as u16;
+            // Only set cursor if it fits within the modal area
+            if cursor_x < area.x + area.width - 1 && cursor_y < area.y + area.height - 1 {
+                frame.set_cursor_position((cursor_x, cursor_y));
+            }
         }
         UiModal::Confirm {
             title,

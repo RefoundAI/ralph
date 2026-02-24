@@ -127,9 +127,14 @@ impl AppState {
     }
 
     /// Scroll the Agent Stream panel up by `n` lines. Activates pinned scroll
-    /// mode, disabling auto-scroll.
+    /// mode, disabling auto-scroll. When auto-scrolling (None), we start from
+    /// the approximate bottom so the first scroll-up moves up by `n` lines
+    /// rather than jumping to the top.
     pub fn agent_scroll_up(&mut self, n: usize) {
-        let current = self.agent_scroll.unwrap_or(0);
+        let current = self.agent_scroll.unwrap_or_else(|| {
+            // Approximate current bottom offset from total line count.
+            self.agent_text.lines().count()
+        });
         self.agent_scroll = Some(current.saturating_sub(n));
     }
 

@@ -15,6 +15,7 @@ use std::rc::Rc;
 use colored::Colorize;
 
 use crate::acp::tools::SessionUpdateMsg;
+use crate::ui::{self, UiEvent, UiLevel};
 
 /// State carried across render calls within a single session.
 ///
@@ -80,6 +81,61 @@ pub fn has_useful_summary(input: &str, locations: &[String]) -> bool {
 /// - `ToolCallProgress`  — suppressed
 /// - `Finished`          — flush buffer + newline
 pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
+    if ui::is_active() {
+        match update {
+            SessionUpdateMsg::AgentText(text) => {
+                ui::emit(UiEvent::AgentText(text.to_owned()));
+            }
+            SessionUpdateMsg::AgentThought(text) => {
+                let truncated = truncate_to_line(text, 100);
+                if !truncated.is_empty() {
+                    ui::emit(UiEvent::Log {
+                        level: UiLevel::Info,
+                        message: format!("thought: {truncated}"),
+                    });
+                }
+            }
+            SessionUpdateMsg::ToolCall {
+                name,
+                input,
+                locations,
+            } => {
+                let summary = format_tool_summary(name, input, locations);
+                let line = if summary.is_empty() {
+                    format!("{name} ->")
+                } else {
+                    format!("{name} -> {summary}")
+                };
+                ui::emit(UiEvent::ToolActivity(line));
+
+                if !input.is_empty() && input != "{}" && input != "null" {
+                    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(input) {
+                        for detail in format_tool_detail_lines(name, &obj) {
+                            ui::emit(UiEvent::ToolActivity(format!("  {detail}")));
+                        }
+                    }
+                }
+            }
+            SessionUpdateMsg::ToolCallDetail { detail_lines, .. } => {
+                for detail in detail_lines {
+                    ui::emit(UiEvent::ToolActivity(format!("  {detail}")));
+                }
+            }
+            SessionUpdateMsg::ToolCallError { name, error } => {
+                ui::emit(UiEvent::Log {
+                    level: UiLevel::Error,
+                    message: format!("{name}: {error}"),
+                });
+            }
+            SessionUpdateMsg::ToolCallPreamble => {
+                // Visually separate successive agent responses in the Agent Stream.
+                ui::emit(UiEvent::AgentText("\n\n───\n\n".to_owned()));
+            }
+            SessionUpdateMsg::ToolCallProgress { .. } | SessionUpdateMsg::Finished => {}
+        }
+        return;
+    }
+
     match update {
         SessionUpdateMsg::AgentText(text) => {
             let mut is_first = state.is_first_chunk.borrow_mut();

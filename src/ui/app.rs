@@ -65,6 +65,16 @@ pub(super) fn run(rx: Receiver<UiCommand>) -> io::Result<()> {
         }
 
         handle_keys(&mut state, &mut interaction);
+
+        // Show terminal cursor when multiline modal is active (for typing feedback),
+        // hide it otherwise so it doesn't flicker over the dashboard.
+        let in_multiline = matches!(interaction, Interaction::Multiline { .. });
+        if in_multiline {
+            let _ = execute!(terminal.backend_mut(), Show);
+        } else {
+            let _ = execute!(terminal.backend_mut(), Hide);
+        }
+
         terminal.draw(|frame| view::render(frame, &state))?;
     }
 
@@ -123,22 +133,33 @@ fn apply_command(state: &mut AppState, interaction: &mut Interaction, cmd: UiCom
 }
 
 fn handle_keys(state: &mut AppState, interaction: &mut Interaction) {
-    let Ok(has_event) = event::poll(Duration::from_millis(0)) else {
-        return;
-    };
-    if !has_event {
-        return;
+    // Drain ALL available key events before returning, so paste and held-key
+    // repeats are batched into a single redraw cycle.
+    loop {
+        let Ok(has_event) = event::poll(Duration::from_millis(0)) else {
+            return;
+        };
+        if !has_event {
+            return;
+        }
+        let Ok(ev) = event::read() else {
+            return;
+        };
+        let Event::Key(key) = ev else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        process_key(state, interaction, key);
     }
-    let Ok(ev) = event::read() else {
-        return;
-    };
-    let Event::Key(key) = ev else {
-        return;
-    };
-    if key.kind != KeyEventKind::Press {
-        return;
-    }
+}
 
+fn process_key(
+    state: &mut AppState,
+    interaction: &mut Interaction,
+    key: crossterm::event::KeyEvent,
+) {
     match interaction {
         Interaction::Multiline {
             reply,
