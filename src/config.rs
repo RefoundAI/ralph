@@ -6,6 +6,7 @@ use std::env;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cli;
@@ -44,9 +45,11 @@ impl fmt::Display for ModelStrategy {
     }
 }
 
-impl ModelStrategy {
+impl FromStr for ModelStrategy {
+    type Err = anyhow::Error;
+
     /// Parse a strategy name string into a ModelStrategy enum variant.
-    pub fn from_str(s: &str) -> Result<Self> {
+    fn from_str(s: &str) -> Result<Self> {
         match s {
             "fixed" => Ok(ModelStrategy::Fixed),
             "cost-optimized" => Ok(ModelStrategy::CostOptimized),
@@ -136,7 +139,7 @@ impl Config {
         let (strategy_str, model) =
             cli::resolve_model_strategy(&model, &model_strategy).map_err(|e| anyhow::anyhow!(e))?;
 
-        let model_strategy = ModelStrategy::from_str(&strategy_str)?;
+        let model_strategy = strategy_str.parse::<ModelStrategy>()?;
 
         // Validate: fixed strategy requires a model
         if model_strategy == ModelStrategy::Fixed && model.is_none() {
@@ -308,26 +311,26 @@ mod tests {
     #[test]
     fn model_strategy_from_str_valid() {
         assert_eq!(
-            ModelStrategy::from_str("fixed").unwrap(),
+            "fixed".parse::<ModelStrategy>().unwrap(),
             ModelStrategy::Fixed
         );
         assert_eq!(
-            ModelStrategy::from_str("cost-optimized").unwrap(),
+            "cost-optimized".parse::<ModelStrategy>().unwrap(),
             ModelStrategy::CostOptimized
         );
         assert_eq!(
-            ModelStrategy::from_str("escalate").unwrap(),
+            "escalate".parse::<ModelStrategy>().unwrap(),
             ModelStrategy::Escalate
         );
         assert_eq!(
-            ModelStrategy::from_str("plan-then-execute").unwrap(),
+            "plan-then-execute".parse::<ModelStrategy>().unwrap(),
             ModelStrategy::PlanThenExecute
         );
     }
 
     #[test]
     fn model_strategy_from_str_invalid() {
-        assert!(ModelStrategy::from_str("invalid").is_err());
+        assert!("invalid".parse::<ModelStrategy>().is_err());
     }
 
     #[test]
