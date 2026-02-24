@@ -15,7 +15,7 @@ use serde::Serialize;
 #[allow(unused_imports)]
 pub use crud::{
     add_log, create_task, create_task_with_feature, delete_task, get_task, get_task_tree,
-    update_task, TaskUpdate,
+    update_task, CreateTaskParams, TaskUpdate,
 };
 #[allow(unused_imports)]
 pub use crud::{
@@ -146,7 +146,31 @@ pub fn get_task_counts(db: &Db) -> Result<TaskCounts> {
         .conn()
         .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
 
-    let ready = get_ready_tasks(db)?.len();
+    let ready: usize = db.conn().query_row(
+        r#"
+        SELECT COUNT(*)
+        FROM tasks t
+        WHERE t.status = 'pending'
+          AND NOT EXISTS (
+              SELECT 1 FROM tasks c WHERE c.parent_id = t.id
+          )
+          AND (
+              t.parent_id IS NULL
+              OR NOT EXISTS (
+                  SELECT 1 FROM tasks p WHERE p.id = t.parent_id AND p.status = 'failed'
+              )
+          )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM dependencies d
+              JOIN tasks b ON d.blocker_id = b.id
+              WHERE d.blocked_id = t.id
+                AND b.status != 'done'
+          )
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
 
     let done: usize = db.conn().query_row(
         "SELECT COUNT(*) FROM tasks WHERE status = 'done'",

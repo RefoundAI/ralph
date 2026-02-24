@@ -14,6 +14,18 @@ pub struct TaskUpdate {
     pub priority: Option<i32>,
 }
 
+/// Inputs for creating a task with optional feature association.
+#[derive(Debug, Clone)]
+pub struct CreateTaskParams<'a> {
+    pub title: &'a str,
+    pub description: Option<&'a str>,
+    pub parent_id: Option<&'a str>,
+    pub priority: i32,
+    pub feature_id: Option<&'a str>,
+    pub task_type: &'a str,
+    pub max_retries: i32,
+}
+
 /// Create a new task.
 pub fn create_task(
     db: &Db,
@@ -24,27 +36,30 @@ pub fn create_task(
 ) -> Result<Task> {
     create_task_with_feature(
         db,
-        title,
-        description,
-        parent_id,
-        priority,
-        None,
-        "feature",
-        3,
+        CreateTaskParams {
+            title,
+            description,
+            parent_id,
+            priority,
+            feature_id: None,
+            task_type: "feature",
+            max_retries: 3,
+        },
     )
 }
 
 /// Create a new task with feature association and task type.
-pub fn create_task_with_feature(
-    db: &Db,
-    title: &str,
-    description: Option<&str>,
-    parent_id: Option<&str>,
-    priority: i32,
-    feature_id: Option<&str>,
-    task_type: &str,
-    max_retries: i32,
-) -> Result<Task> {
+pub fn create_task_with_feature(db: &Db, params: CreateTaskParams<'_>) -> Result<Task> {
+    let CreateTaskParams {
+        title,
+        description,
+        parent_id,
+        priority,
+        feature_id,
+        task_type,
+        max_retries,
+    } = params;
+
     // Validate parent exists if specified
     if let Some(pid) = parent_id {
         let exists: bool = db

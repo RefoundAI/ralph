@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use std::path::Path;
 
 /// Current schema version.
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 /// SQLite database wrapper.
 pub struct Db {
@@ -160,6 +160,24 @@ fn migrate(conn: &Connection, from_version: i32, to_version: i32) -> Result<()> 
             "#,
         )
         .context("Failed to create schema v3")?;
+    }
+
+    if from_version < 4 && to_version >= 4 {
+        conn.execute_batch(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_tasks_status_priority_created
+                ON tasks(status, priority, created_at);
+            CREATE INDEX IF NOT EXISTS idx_tasks_parent_id
+                ON tasks(parent_id);
+            CREATE INDEX IF NOT EXISTS idx_tasks_feature_status_priority_created
+                ON tasks(feature_id, status, priority, created_at);
+            CREATE INDEX IF NOT EXISTS idx_dependencies_blocked_id
+                ON dependencies(blocked_id);
+            CREATE INDEX IF NOT EXISTS idx_task_logs_task_id_timestamp
+                ON task_logs(task_id, timestamp);
+            "#,
+        )
+        .context("Failed to create schema v4 indexes")?;
     }
 
     // Set schema version
@@ -385,14 +403,14 @@ mod tests {
             conn.pragma_update(None, "user_version", 2)?;
         }
 
-        // Now open via init_db which should migrate from v2 to v3
+        // Now open via init_db which should migrate from v2 to current schema.
         let db = init_db(path)?;
 
-        // Verify version is now 3
+        // Verify version is now current schema version.
         let version: i32 = db
             .conn()
             .pragma_query_value(None, "user_version", |row| row.get(0))?;
-        assert_eq!(version, 3);
+        assert_eq!(version, SCHEMA_VERSION);
 
         // Verify journal table exists
         let count: i32 = db.conn().query_row(
