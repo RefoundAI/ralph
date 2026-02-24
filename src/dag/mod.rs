@@ -14,8 +14,8 @@ use serde::Serialize;
 
 #[allow(unused_imports)]
 pub use crud::{
-    add_log, create_task, create_task_with_feature, delete_task, get_task, get_task_tree,
-    update_task, CreateTaskParams, TaskUpdate,
+    add_log, create_task, create_task_with_feature, delete_task, delete_tasks_for_feature,
+    get_task, get_task_tree, update_task, CreateTaskParams, TaskUpdate,
 };
 #[allow(unused_imports)]
 pub use crud::{

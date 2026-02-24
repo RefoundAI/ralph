@@ -618,6 +618,78 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
 
             Ok(ExitCode::SUCCESS)
         }
+        cli::FeatureAction::Delete { name, yes } => {
+            let feat = feature::get_feature(&db, &name)?;
+            let counts = dag::get_feature_task_counts(&db, &feat.id)?;
+
+            // Show what will be deleted
+            println!("Feature: {}", feat.name.bold());
+            println!("Status:  {}", colorize_status(&feat.status));
+            if counts.total > 0 {
+                let in_progress: usize = db.conn().query_row(
+                    "SELECT COUNT(*) FROM tasks WHERE feature_id = ? AND status = 'in_progress'",
+                    [&feat.id],
+                    |row| row.get(0),
+                )?;
+                println!(
+                    "Tasks:   {} total ({} done, {} in progress, {} blocked)",
+                    counts.total, counts.done, in_progress, counts.blocked
+                );
+                if counts.done > 0 && counts.done < counts.total {
+                    println!(
+                        "{}",
+                        "Warning: this feature is partially completed.".yellow()
+                    );
+                }
+                if in_progress > 0 {
+                    println!(
+                        "{}",
+                        "Warning: some tasks are currently in progress.".yellow()
+                    );
+                }
+            }
+
+            // Check for feature directory on disk
+            let feature_dir = project.root.join(".ralph/features").join(&name);
+            if feature_dir.exists() {
+                println!("Files:   {}/", feature_dir.display());
+            }
+
+            // Confirm unless --yes
+            if !yes {
+                eprint!(
+                    "\nDelete feature '{}' and all associated data? [y/N] ",
+                    name
+                );
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Cancelled.");
+                    return Ok(ExitCode::SUCCESS);
+                }
+            }
+
+            // Delete tasks
+            let deleted_tasks = dag::delete_tasks_for_feature(&db, &feat.id)?;
+
+            // Delete feature directory on disk
+            if feature_dir.exists() {
+                std::fs::remove_dir_all(&feature_dir)?;
+            }
+
+            // Delete feature from DB
+            feature::delete_feature(&db, &feat.id)?;
+
+            println!(
+                "{}",
+                format!(
+                    "Deleted feature '{}' ({} tasks removed).",
+                    name, deleted_tasks
+                )
+                .bright_green()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
         cli::FeatureAction::List => {
             let features = feature::list_features(&db)?;
 

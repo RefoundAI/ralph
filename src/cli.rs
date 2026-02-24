@@ -21,7 +21,7 @@ pub struct Args {
 pub enum Command {
     /// Initialize a new Ralph project
     Init,
-    /// Manage features (create, list)
+    /// Manage features (create, list, delete)
     Feature {
         #[command(subcommand)]
         action: FeatureAction,
@@ -88,6 +88,16 @@ pub enum FeatureAction {
     },
     /// List all features and their status
     List,
+    /// Delete a feature and all its tasks
+    Delete {
+        /// Feature name
+        #[arg(value_name = "NAME")]
+        name: String,
+
+        /// Skip confirmation prompt
+        #[arg(long, short)]
+        yes: bool,
+    },
 }
 
 /// Task subcommands.

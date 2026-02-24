@@ -173,6 +173,17 @@ pub fn read_plan(project_root: &Path, name: &str) -> Result<String> {
         .with_context(|| format!("Failed to read plan: {}", plan_path.display()))
 }
 
+/// Delete a feature from the database.
+pub fn delete_feature(db: &Db, id: &str) -> Result<()> {
+    let updated = db
+        .conn()
+        .execute("DELETE FROM features WHERE id = ?", [id])?;
+    if updated == 0 {
+        return Err(anyhow!("Feature '{}' not found", id));
+    }
+    Ok(())
+}
+
 /// Check if a feature name exists in the database.
 pub fn feature_exists(db: &Db, name: &str) -> Result<bool> {
     let exists: bool = db.conn().query_row(
@@ -265,6 +276,27 @@ mod tests {
         assert!(!feature_exists(&db, "auth").unwrap());
         create_feature(&db, "auth").unwrap();
         assert!(feature_exists(&db, "auth").unwrap());
+    }
+
+    #[test]
+    fn test_delete_feature() {
+        let temp = NamedTempFile::new().unwrap();
+        let db = init_db(temp.path().to_str().unwrap()).unwrap();
+
+        let feature = create_feature(&db, "auth").unwrap();
+        assert!(feature_exists(&db, "auth").unwrap());
+
+        delete_feature(&db, &feature.id).unwrap();
+        assert!(!feature_exists(&db, "auth").unwrap());
+    }
+
+    #[test]
+    fn test_delete_nonexistent_feature() {
+        let temp = NamedTempFile::new().unwrap();
+        let db = init_db(temp.path().to_str().unwrap()).unwrap();
+
+        let result = delete_feature(&db, "f-nonexistent");
+        assert!(result.is_err());
     }
 
     #[test]

@@ -228,6 +228,62 @@ pub fn delete_task(db: &Db, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Delete all tasks associated with a feature.
+///
+/// Removes dependencies, logs, journal entries, and the tasks themselves.
+pub fn delete_tasks_for_feature(db: &Db, feature_id: &str) -> Result<usize> {
+    // Get all task IDs for this feature
+    let task_ids: Vec<String> = db
+        .conn()
+        .prepare("SELECT id FROM tasks WHERE feature_id = ?")?
+        .query_map([feature_id], |row| row.get(0))?
+        .collect::<Result<_, _>>()
+        .context("Failed to get feature tasks")?;
+
+    if task_ids.is_empty() {
+        return Ok(0);
+    }
+
+    let count = task_ids.len();
+    let placeholders: Vec<&str> = task_ids.iter().map(|_| "?").collect();
+    let placeholder_str = placeholders.join(", ");
+
+    // Delete dependencies involving these tasks
+    let sql = format!(
+        "DELETE FROM dependencies WHERE blocker_id IN ({ph}) OR blocked_id IN ({ph})",
+        ph = placeholder_str,
+    );
+    let mut stmt = db.conn().prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = task_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .chain(task_ids.iter().map(|id| id as &dyn rusqlite::types::ToSql))
+        .collect();
+    stmt.execute(params.as_slice())?;
+
+    // Delete task logs
+    let sql = format!(
+        "DELETE FROM task_logs WHERE task_id IN ({})",
+        placeholder_str
+    );
+    let mut stmt = db.conn().prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = task_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::types::ToSql)
+        .collect();
+    stmt.execute(params.as_slice())?;
+
+    // Delete journal entries referencing this feature
+    db.conn()
+        .execute("DELETE FROM journal WHERE feature_id = ?", [feature_id])?;
+
+    // Delete the tasks themselves
+    let sql = format!("DELETE FROM tasks WHERE feature_id = ?");
+    db.conn().execute(&sql, [feature_id])?;
+
+    Ok(count)
+}
+
 /// Get task tree rooted at a task.
 ///
 /// Returns the root task and all its descendants in a flat list.
@@ -601,6 +657,72 @@ mod tests {
         let result = add_log(&db, "t-nonexistent", "Message");
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_delete_tasks_for_feature() {
+        let temp = NamedTempFile::new().unwrap();
+        let db = init_db(temp.path().to_str().unwrap()).unwrap();
+
+        // Create a feature
+        let feat = crate::feature::create_feature(&db, "test-feat").unwrap();
+
+        // Create tasks for the feature
+        let t1 = create_task_with_feature(
+            &db,
+            CreateTaskParams {
+                title: "Task 1",
+                description: None,
+                parent_id: None,
+                priority: 0,
+                feature_id: Some(&feat.id),
+                task_type: "feature",
+                max_retries: 3,
+            },
+        )
+        .unwrap();
+        let t2 = create_task_with_feature(
+            &db,
+            CreateTaskParams {
+                title: "Task 2",
+                description: None,
+                parent_id: Some(&t1.id),
+                priority: 0,
+                feature_id: Some(&feat.id),
+                task_type: "feature",
+                max_retries: 3,
+            },
+        )
+        .unwrap();
+
+        // Add a log entry
+        add_log(&db, &t1.id, "some log").unwrap();
+
+        // Add a dependency between feature tasks
+        add_dependency(&db, &t1.id, &t2.id).unwrap();
+
+        // Create a standalone task that should NOT be deleted
+        let standalone = create_task(&db, "Standalone", None, None, 0).unwrap();
+
+        // Delete feature tasks
+        let count = delete_tasks_for_feature(&db, &feat.id).unwrap();
+        assert_eq!(count, 2);
+
+        // Feature tasks should be gone
+        assert!(get_task(&db, &t1.id).is_err());
+        assert!(get_task(&db, &t2.id).is_err());
+
+        // Standalone task should still exist
+        assert!(get_task(&db, &standalone.id).is_ok());
+    }
+
+    #[test]
+    fn test_delete_tasks_for_feature_no_tasks() {
+        let temp = NamedTempFile::new().unwrap();
+        let db = init_db(temp.path().to_str().unwrap()).unwrap();
+
+        let count = delete_tasks_for_feature(&db, "f-nonexistent").unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

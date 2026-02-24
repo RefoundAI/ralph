@@ -79,6 +79,7 @@ src/
 ralph init                        # Initialize project
 ralph feature create <name>       # Interview -> spec -> plan -> task DAG
 ralph feature list                # List features and status
+ralph feature delete <name>      # Delete feature and all its tasks
 ralph task add <TITLE> [flags]    # Non-interactive task creation
 ralph task create [--model M]     # Interactive task creation
 ralph task show <ID> [--json]     # Task details
