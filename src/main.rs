@@ -1009,13 +1009,26 @@ Your ONLY deliverable is the spec document at `{spec_path}`. You must NOT:
 
 IMPORTANT: Once you have written the spec document to `{spec_path}`, your work is DONE.
 Do NOT proceed to implement anything. Do NOT try to create tasks. Do NOT run any commands.
-Tell the user the spec is written and wait for their feedback. The user exits by pressing Enter on an empty line.
+Tell the user the spec is written and wait for their feedback. The user exits by pressing Enter twice on blank lines.
 
 ## Workflow
 
 1. **Interview** — Ask the user about requirements, constraints, edge cases, and acceptance criteria.
 2. **Write** — Once you have enough information, write the spec to `{spec_path}`.
 3. **Stop** — After writing the spec file, tell the user it's done. Do NOT continue working.
+
+## Interview Style
+
+- Ask ONE focused question at a time. Wait for the user's answer before asking the next.
+- For choices, present numbered options so the user can reply with just a number:
+  ```
+  How should auth tokens be stored?
+  1. HTTP-only cookies
+  2. localStorage
+  3. In-memory only
+  ```
+- Summarize what you've learned periodically and ask if anything is missing.
+- The user has multi-line input — they can provide detailed answers. Don't rush them.
 
 ## Guidelines
 
@@ -1078,7 +1091,7 @@ Your ONLY deliverable is the plan document at `{plan_path}`. You must NOT:
 
 IMPORTANT: Once you have written the plan document to `{plan_path}`, your work is DONE.
 Do NOT proceed to implement anything. Do NOT try to create tasks. Do NOT run any commands.
-Tell the user the plan is written and wait for their feedback. The user exits by pressing Enter on an empty line.
+Tell the user the plan is written and wait for their feedback. The user exits by pressing Enter twice on blank lines.
 
 ## Workflow
 
@@ -1087,6 +1100,19 @@ Tell the user the plan is written and wait for their feedback. The user exits by
    understand existing patterns relevant to planning.
 2. **Write** — Once the user agrees on the approach, write the plan to `{plan_path}`.
 3. **Stop** — After writing the plan file, tell the user it's done. Do NOT continue working.
+
+## Interview Style
+
+- Ask ONE focused question at a time. Wait for the user's answer before asking the next.
+- For choices, present numbered options so the user can reply with just a number:
+  ```
+  Which pattern should we use for state management?
+  1. Single global store
+  2. Per-component local state
+  3. Hybrid approach
+  ```
+- Summarize what you've learned periodically and ask if anything is missing.
+- The user has multi-line input — they can provide detailed answers. Don't rush them.
 
 ## Guidelines
 
@@ -1209,6 +1235,12 @@ fn build_task_new_system_prompt(context: &str) -> String {
 ## Your Role
 
 Interview the user about what they want done, then create a standalone task in the Ralph database.
+
+## Interview Style
+
+- Ask ONE focused question at a time. Wait for the user's answer before asking the next.
+- For choices, present numbered options so the user can reply with just a number.
+- The user has multi-line input — they can provide detailed answers. Don't rush them.
 
 ## Guidelines
 

@@ -17,6 +17,7 @@ use agent_client_protocol::{
     PromptRequest, ProtocolVersion, TextContent,
 };
 use anyhow::{anyhow, Result};
+use colored::Colorize;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -34,7 +35,10 @@ use crate::interrupt;
 ///
 /// The `instructions` are prepended to `initial_message` in the first prompt.
 /// Subsequent user inputs are sent as standalone prompts.
-/// The session ends when the user sends an empty line or EOF (Ctrl+D).
+///
+/// Input supports multi-line: type lines, then press Enter on a blank line to send.
+/// The session ends when the user presses Enter on a blank line with no accumulated
+/// input (i.e. two consecutive blank lines), or EOF (Ctrl+D) with empty buffer.
 ///
 /// If `model` is provided, sets `RALPH_MODEL` env var on the spawned agent process.
 /// If `allow_terminal` is false, terminal (bash) capability is disabled — use this
@@ -107,6 +111,70 @@ pub async fn run_streaming(
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+/// Result of reading multi-line user input.
+enum MultilineResult {
+    /// User submitted non-empty input (blank line terminates).
+    Input(String),
+    /// User exited the session (two consecutive blank lines, or EOF on empty buffer).
+    Exit,
+    /// Ctrl+C was pressed during input.
+    Interrupted,
+}
+
+/// Read multi-line input from the user.
+///
+/// Prompts with `> ` on the first line and `| ` on continuation lines.
+/// A blank line submits the accumulated buffer. If the buffer is empty when
+/// a blank line is entered, that means the user wants to exit the session.
+/// EOF (Ctrl+D) submits whatever is in the buffer, or exits if empty.
+async fn read_multiline_input(stdin: &mut BufReader<tokio::io::Stdin>) -> MultilineResult {
+    let mut lines: Vec<String> = Vec::new();
+
+    loop {
+        // Show appropriate prompt: `> ` for first line, `| ` for continuations.
+        if lines.is_empty() {
+            print!("\n{} ", ">".bright_cyan());
+        } else {
+            print!("{} ", "|".bright_black());
+        }
+        let _ = std::io::stdout().flush();
+
+        // Check interrupt before blocking on stdin.
+        if interrupt::is_interrupted() {
+            return MultilineResult::Interrupted;
+        }
+
+        let mut line_buf = String::new();
+        let n = stdin.read_line(&mut line_buf).await.unwrap_or(0);
+        if n == 0 {
+            // EOF (Ctrl+D).
+            if lines.is_empty() {
+                return MultilineResult::Exit;
+            }
+            // Submit what we have.
+            return MultilineResult::Input(lines.join("\n"));
+        }
+
+        // Trim trailing newline/CR.
+        let line = line_buf
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
+            .to_owned();
+
+        if line.is_empty() {
+            // Blank line: submit or exit.
+            if lines.is_empty() {
+                // No content accumulated — user wants to exit.
+                return MultilineResult::Exit;
+            }
+            // Submit the accumulated input.
+            return MultilineResult::Input(lines.join("\n"));
+        }
+
+        lines.push(line);
+    }
+}
 
 /// Poll the interrupt flag every 100 ms.
 ///
@@ -305,30 +373,36 @@ async fn run_interactive_inner(
     println!();
 
     // ── 7. Interactive loop: read user input → send prompt → render ────────
+    //
+    // Multi-line input:
+    //   - User types lines; a blank line SENDS the accumulated input.
+    //   - A second consecutive blank line (i.e. blank input) EXITS the session.
+    //   - EOF (Ctrl+D) on a non-empty buffer sends it; on empty buffer exits.
+    //   - Continuation lines are prompted with `| ` instead of `> `.
     let mut user_stdin = BufReader::new(tokio::io::stdin());
+    let mut first_prompt = true;
     loop {
-        // Print the user prompt indicator.
-        print!("\n> ");
-        let _ = std::io::stdout().flush();
-
-        // Read one line from the user's terminal asynchronously.
-        let mut line_buf = String::new();
-        let n = user_stdin.read_line(&mut line_buf).await.unwrap_or(0);
-        if n == 0 {
-            // EOF (Ctrl+D) — exit gracefully.
-            break;
+        // Show input help on first prompt only.
+        if first_prompt {
+            eprintln!(
+                "{}",
+                "  (multi-line: blank line sends, two blank lines exits, Ctrl+D sends/exits)"
+                    .dimmed()
+            );
+            first_prompt = false;
         }
 
-        // Trim the trailing newline (and any CR on Windows).
-        let user_input = line_buf
-            .trim_end_matches('\n')
-            .trim_end_matches('\r')
-            .to_owned();
-
-        if user_input.is_empty() {
-            // Empty line — exit gracefully.
-            break;
-        }
+        // Collect multi-line input.
+        let user_input = match read_multiline_input(&mut user_stdin).await {
+            MultilineResult::Input(text) => text,
+            MultilineResult::Exit => break,
+            MultilineResult::Interrupted => {
+                let _ = conn
+                    .cancel(CancelNotification::new(session_id.clone()))
+                    .await;
+                break;
+            }
+        };
 
         // Check the interrupt flag before sending the next prompt.
         // (Handles Ctrl+C pressed while the blocking stdin read was completing.)
@@ -438,5 +512,13 @@ mod tests {
             true,
             None,
         ));
+    }
+
+    #[test]
+    fn test_multiline_result_variants_exist() {
+        // Verify all variants of MultilineResult can be constructed.
+        let _input = MultilineResult::Input("hello\nworld".to_string());
+        let _exit = MultilineResult::Exit;
+        let _interrupted = MultilineResult::Interrupted;
     }
 }
