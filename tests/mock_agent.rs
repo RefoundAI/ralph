@@ -40,7 +40,7 @@ struct MockAgent {
     /// returns it. The agent uses it inside `prompt()` to send session notifications
     /// back to Ralph. Rc<RefCell<>> is safe here because all ACP futures are !Send
     /// and everything runs on a single-threaded LocalSet.
-    conn: Rc<RefCell<Option<AgentSideConnection>>>,
+    conn: Rc<RefCell<Option<Rc<AgentSideConnection>>>>,
 }
 
 #[async_trait(?Send)]
@@ -73,11 +73,8 @@ impl Agent for MockAgent {
         };
 
         // Send an AgentMessageChunk notification back to Ralph.
-        // The borrow is held across the .await but this is safe in ?Send / single-threaded context:
-        // - We never mutably borrow conn_slot after main() populates it.
-        // - All ACP futures run on the same LocalSet thread; no concurrent borrow conflicts.
-        let borrow = self.conn.borrow();
-        if let Some(conn) = borrow.as_ref() {
+        let conn = { self.conn.borrow().as_ref().cloned() };
+        if let Some(conn) = conn {
             conn.session_notification(SessionNotification::new(
                 args.session_id,
                 SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
@@ -86,7 +83,6 @@ impl Agent for MockAgent {
             ))
             .await?;
         }
-        drop(borrow);
 
         Ok(PromptResponse::new(StopReason::EndTurn))
     }
@@ -107,7 +103,8 @@ async fn main() {
         .run_until(async {
             // Shared slot: populated after AgentSideConnection::new() so the
             // Agent impl can call Client methods on it during prompt().
-            let conn_slot: Rc<RefCell<Option<AgentSideConnection>>> = Rc::new(RefCell::new(None));
+            let conn_slot: Rc<RefCell<Option<Rc<AgentSideConnection>>>> =
+                Rc::new(RefCell::new(None));
 
             let agent = MockAgent {
                 conn: conn_slot.clone(),
@@ -127,7 +124,7 @@ async fn main() {
                 });
 
             // Populate the shared slot so prompt() can use the connection.
-            *conn_slot.borrow_mut() = Some(conn);
+            *conn_slot.borrow_mut() = Some(Rc::new(conn));
 
             // Drive the JSON-RPC transport loop.
             // This future completes when the client closes the connection.

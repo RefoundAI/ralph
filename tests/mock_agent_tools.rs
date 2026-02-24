@@ -40,7 +40,7 @@ type Result<T> = std::result::Result<T, AcpError>;
 struct MockAgentTools {
     /// Shared slot for the AgentSideConnection.
     /// See mock_agent.rs for the design rationale.
-    conn: Rc<RefCell<Option<AgentSideConnection>>>,
+    conn: Rc<RefCell<Option<Rc<AgentSideConnection>>>>,
 }
 
 #[async_trait(?Send)]
@@ -63,12 +63,11 @@ impl Agent for MockAgentTools {
     async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse> {
         let session_id = args.session_id.clone();
 
-        // All tool calls share the same borrow.  We hold it across multiple
-        // awaits — safe in single-threaded LocalSet because we never mutably
-        // borrow the slot after main() populates it.
-        let borrow = self.conn.borrow();
-        let conn = borrow
+        let conn = self
+            .conn
+            .borrow()
             .as_ref()
+            .cloned()
             .expect("AgentSideConnection not yet initialised");
 
         // ------------------------------------------------------------------ //
@@ -103,8 +102,7 @@ impl Agent for MockAgentTools {
         // ------------------------------------------------------------------ //
         // 3. Spawn a terminal (terminal/create_terminal) and wait for exit   //
         // ------------------------------------------------------------------ //
-        // Pass the full shell command as the `command` field; Ralph's handler
-        // wraps it with `sh -c`.
+        // Request a simple command without shell interpolation.
         let terminal_result = conn
             .create_terminal(CreateTerminalRequest::new(session_id.clone(), "echo hello"))
             .await;
@@ -134,8 +132,6 @@ impl Agent for MockAgentTools {
         ))
         .await?;
 
-        drop(borrow);
-
         Ok(PromptResponse::new(StopReason::EndTurn))
     }
 
@@ -153,7 +149,8 @@ async fn main() {
     let local = LocalSet::new();
     local
         .run_until(async {
-            let conn_slot: Rc<RefCell<Option<AgentSideConnection>>> = Rc::new(RefCell::new(None));
+            let conn_slot: Rc<RefCell<Option<Rc<AgentSideConnection>>>> =
+                Rc::new(RefCell::new(None));
 
             let agent = MockAgentTools {
                 conn: conn_slot.clone(),
@@ -167,7 +164,7 @@ async fn main() {
                     tokio::task::spawn_local(fut);
                 });
 
-            *conn_slot.borrow_mut() = Some(conn);
+            *conn_slot.borrow_mut() = Some(Rc::new(conn));
 
             let _ = io_task.await;
         })
