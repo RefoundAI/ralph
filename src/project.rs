@@ -31,7 +31,7 @@ pub struct RalphConfig {
 /// Agent configuration section.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentConfig {
-    /// Command to spawn the ACP agent (default: "claude").
+    /// Command to spawn the ACP agent (default: "claude-agent-acp").
     #[serde(default = "default_agent_command")]
     pub command: String,
 }
@@ -45,7 +45,7 @@ impl Default for AgentConfig {
 }
 
 fn default_agent_command() -> String {
-    "claude".to_string()
+    "claude-agent-acp".to_string()
 }
 
 /// Execution configuration section.

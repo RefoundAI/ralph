@@ -399,9 +399,9 @@ verify = true
 
     #[test]
     fn test_config_default_agent_command() {
-        // Default agent_command should be "claude" when no agent is specified
+        // Default agent_command should be "claude-agent-acp" when no agent is specified
         let config = config_from_run(None, None).unwrap();
-        assert_eq!(config.agent_command, "claude");
+        assert_eq!(config.agent_command, "claude-agent-acp");
     }
 
     #[test]
@@ -431,8 +431,8 @@ max_retries = 3
 verify = true
 "#;
         let ralph_config: RalphConfig = toml::from_str(toml_content).unwrap();
-        // Default agent command is "claude"
-        assert_eq!(ralph_config.agent.command, "claude");
+        // Default agent command is "claude-agent-acp"
+        assert_eq!(ralph_config.agent.command, "claude-agent-acp");
     }
 
     #[test]
