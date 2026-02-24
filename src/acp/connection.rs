@@ -30,11 +30,13 @@ use agent_client_protocol::{
     PromptRequest, ProtocolVersion, StopReason, TextContent,
 };
 use anyhow::{anyhow, Result};
+use colored::Colorize;
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use crate::acp::client_impl::RalphClient;
 use crate::acp::prompt;
+use crate::acp::streaming::flush_stdout;
 use crate::acp::types::{IterationContext, RunResult, StreamingResult};
 use crate::config::Config;
 use crate::interrupt;
@@ -291,6 +293,9 @@ async fn run_acp_session(params: RunAcpSessionParams) -> Result<RunResult> {
     });
 
     // ── 4. ACP handshake ──────────────────────────────────────────────────
+    print!("{}", "  Connecting...".dimmed());
+    flush_stdout();
+
     let fs_caps = FileSystemCapability::new()
         .read_text_file(true)
         .write_text_file(!read_only);
@@ -313,6 +318,9 @@ async fn run_acp_session(params: RunAcpSessionParams) -> Result<RunResult> {
             None => anyhow!("ACP initialize failed: {e}"),
         })?;
 
+    print!("{}", " initialized...".dimmed());
+    flush_stdout();
+
     // Attempt authentication if the agent advertises auth methods.
     // Failures are non-fatal: some agents (e.g. claude-agent-acp) advertise methods
     // but don't implement the authenticate RPC, expecting out-of-band auth instead.
@@ -332,6 +340,7 @@ async fn run_acp_session(params: RunAcpSessionParams) -> Result<RunResult> {
         })?;
 
     let session_id = session_resp.session_id;
+    println!("{}", " ready".dimmed());
 
     // ── 6. Send prompt (racing against interrupt) ─────────────────────────
     let prompt_req = PromptRequest::new(
