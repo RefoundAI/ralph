@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use crate::acp;
 use crate::acp::connection::SessionRestrictions;
@@ -48,7 +48,7 @@ pub async fn review_document(
     for round in 1..=MAX_REVIEW_ROUNDS {
         formatter::print_review_round(round, MAX_REVIEW_ROUNDS, label);
 
-        let result = run_review_agent(
+        let req = ReviewRoundRequest {
             document_path,
             kind,
             feature_name,
@@ -57,8 +57,9 @@ pub async fn review_document(
             round,
             agent_command,
             project_root,
-        )
-        .await?;
+        };
+
+        let result = run_review_agent(&req).await?;
 
         if result.passed {
             formatter::print_review_result(round, true, "", label);
@@ -79,56 +80,56 @@ struct ReviewResult {
     changes_summary: String,
 }
 
-/// Run a single review agent on the document.
-async fn run_review_agent(
-    document_path: &str,
+/// Inputs required to run one review round.
+struct ReviewRoundRequest<'a> {
+    document_path: &'a str,
     kind: DocumentKind,
-    feature_name: &str,
-    spec_content: Option<&str>,
-    project_context: &str,
+    feature_name: &'a str,
+    spec_content: Option<&'a str>,
+    project_context: &'a str,
     round: u32,
-    agent_command: &str,
-    project_root: &Path,
-) -> Result<ReviewResult> {
+    agent_command: &'a str,
+    project_root: &'a Path,
+}
+
+/// Run a single review agent on the document.
+async fn run_review_agent(req: &ReviewRoundRequest<'_>) -> Result<ReviewResult> {
     let system_prompt = build_review_prompt(
-        document_path,
-        kind,
-        feature_name,
-        spec_content,
-        project_context,
-        round,
+        req.document_path,
+        req.kind,
+        req.feature_name,
+        req.spec_content,
+        req.project_context,
+        req.round,
     );
 
     let message = format!(
         "Review the {} at {} and improve it.",
-        kind.label(),
-        document_path
+        req.kind.label(),
+        req.document_path
     );
 
     let result = acp::connection::run_autonomous(
-        agent_command,
-        project_root,
+        req.agent_command,
+        req.project_root,
         &system_prompt,
         &message,
         false,        // read_only = false (review agent can write)
         Some("opus"), // matching current hardcoded --model opus behavior
         SessionRestrictions {
             allow_terminal: false, // review is document-only, no bash
-            allowed_write_paths: Some(vec![PathBuf::from(document_path)]),
+            allowed_write_paths: Some(vec![PathBuf::from(req.document_path)]),
         },
     )
-    .await;
-
-    let result = match result {
-        Ok(r) => r,
-        Err(_) => {
-            // On agent error, treat as pass to prevent infinite loops
-            return Ok(ReviewResult {
-                passed: true,
-                changes_summary: String::new(),
-            });
-        }
-    };
+    .await
+    .map_err(|e| {
+        anyhow!(
+            "review agent failed on round {} for {} '{}': {e}",
+            req.round,
+            req.kind.label(),
+            req.feature_name
+        )
+    })?;
 
     let text = &result.full_text;
 
@@ -145,11 +146,12 @@ async fn run_review_agent(
         });
     }
 
-    // No sigil found — treat as pass to prevent infinite loops
-    Ok(ReviewResult {
-        passed: true,
-        changes_summary: String::new(),
-    })
+    Err(anyhow!(
+        "review agent did not emit review sigil on round {} for {} '{}'",
+        req.round,
+        req.kind.label(),
+        req.feature_name
+    ))
 }
 
 fn build_review_prompt(
