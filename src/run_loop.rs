@@ -230,8 +230,8 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
             }
             StopReason::MaxTokens | StopReason::MaxTurnRequests => {
                 eprintln!(
-                    "ralph: agent hit token/turn limit ({}), releasing task claim",
-                    format!("{:?}", streaming_result.stop_reason)
+                    "ralph: agent hit token/turn limit ({:?}), releasing task claim",
+                    streaming_result.stop_reason
                 );
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);

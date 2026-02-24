@@ -611,12 +611,11 @@ pub fn format_inline_markdown(line: &str) -> String {
 
 /// Find the position of a closing single character after `start`.
 fn find_closing_char(chars: &[char], start: usize, close: char) -> Option<usize> {
-    for j in start..chars.len() {
-        if chars[j] == close {
-            return Some(j);
-        }
-    }
-    None
+    chars
+        .iter()
+        .enumerate()
+        .skip(start)
+        .find_map(|(j, ch)| if *ch == close { Some(j) } else { None })
 }
 
 /// Find the position of a closing two-character pair (e.g. `**`) after `start`.
@@ -626,12 +625,8 @@ fn find_closing_pair(chars: &[char], start: usize, c1: char, c2: char) -> Option
     if chars.len() < 2 {
         return None;
     }
-    for j in start..chars.len() - 1 {
-        if chars[j] == c1 && chars[j + 1] == c2 {
-            return Some(j);
-        }
-    }
-    None
+
+    (start..(chars.len() - 1)).find(|&j| chars[j] == c1 && chars[j + 1] == c2)
 }
 
 /// Find a closing single `*` that is not part of `**`.

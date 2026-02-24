@@ -1342,7 +1342,7 @@ Body content.
         assert!(b_backlinks.contains("entry a"));
 
         // B has no outlinks
-        assert!(graph.outlinks.get("entry b").is_none());
+        assert!(!graph.outlinks.contains_key("entry b"));
     }
 
     #[test]
@@ -1375,7 +1375,7 @@ Body content.
         let graph = build_link_graph(&entries);
 
         // Should not have any outlinks (target doesn't exist)
-        assert!(graph.outlinks.get("entry a").is_none());
+        assert!(!graph.outlinks.contains_key("entry a"));
     }
 
     #[test]
@@ -1567,7 +1567,7 @@ Body content.
 
     #[test]
     fn test_render_without_graph_no_links() {
-        let entries = vec![make_entry_with_body(
+        let entries = [make_entry_with_body(
             "Entry A",
             &["rust"],
             "Links to [[Entry B]].",
@@ -1637,7 +1637,7 @@ Body content.
         assert!(migrations_back.contains("task columns"));
 
         // Python Tips has no links
-        assert!(graph.outlinks.get("python tips").is_none());
-        assert!(graph.backlinks.get("python tips").is_none());
+        assert!(!graph.outlinks.contains_key("python tips"));
+        assert!(!graph.backlinks.contains_key("python tips"));
     }
 }
