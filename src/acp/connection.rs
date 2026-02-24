@@ -39,6 +39,19 @@ use crate::acp::types::{IterationContext, RunResult, StreamingResult};
 use crate::config::Config;
 use crate::interrupt;
 
+/// Inputs for executing one ACP session lifecycle.
+struct RunAcpSessionParams {
+    agent_command: String,
+    project_root: PathBuf,
+    iteration: u32,
+    total: u32,
+    model: String,
+    prompt_text: String,
+    read_only: bool,
+    model_override: Option<String>,
+    restrictions: SessionRestrictions,
+}
+
 /// Check if an ACP error looks like an authentication failure and return
 /// a user-friendly message directing them to `ralph auth`.
 pub(crate) fn auth_hint(err: &dyn std::fmt::Display) -> Option<String> {
@@ -80,20 +93,20 @@ pub async fn run_iteration(config: &Config, context: &IterationContext) -> Resul
 
     let local = LocalSet::new();
     local
-        .run_until(run_acp_session(
+        .run_until(run_acp_session(RunAcpSessionParams {
             agent_command,
             project_root,
             iteration,
             total,
-            current_model,
+            model: current_model,
             prompt_text,
-            false, // read_only
-            None,  // model override
-            SessionRestrictions {
+            read_only: false,
+            model_override: None,
+            restrictions: SessionRestrictions {
                 allow_terminal: true,
                 ..Default::default()
             },
-        ))
+        }))
         .await
 }
 
@@ -123,17 +136,17 @@ pub async fn run_autonomous(
 
     let local = LocalSet::new();
     let result = local
-        .run_until(run_acp_session(
+        .run_until(run_acp_session(RunAcpSessionParams {
             agent_command,
             project_root,
-            0, // iteration (not tracked for autonomous sessions)
-            0, // total
-            model.clone().unwrap_or_else(|| "claude".to_owned()),
+            iteration: 0,
+            total: 0,
+            model: model.clone().unwrap_or_else(|| "claude".to_owned()),
             prompt_text,
             read_only,
-            model,
+            model_override: model,
             restrictions,
-        ))
+        }))
         .await?;
 
     match result {
@@ -178,17 +191,19 @@ async fn poll_interrupt() {
 ///
 /// This is `async` (not `async fn spawn_local(...)`) so it can be driven directly
 /// by `LocalSet::run_until()` without extra boxing.
-async fn run_acp_session(
-    agent_command: String,
-    project_root: PathBuf,
-    iteration: u32,
-    total: u32,
-    model: String,
-    prompt_text: String,
-    read_only: bool,
-    model_override: Option<String>,
-    restrictions: SessionRestrictions,
-) -> Result<RunResult> {
+async fn run_acp_session(params: RunAcpSessionParams) -> Result<RunResult> {
+    let RunAcpSessionParams {
+        agent_command,
+        project_root,
+        iteration,
+        total,
+        model,
+        prompt_text,
+        read_only,
+        model_override,
+        restrictions,
+    } = params;
+
     let start = Instant::now();
 
     // ── 1. Parse + spawn agent process ────────────────────────────────────
