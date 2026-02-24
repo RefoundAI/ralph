@@ -6,6 +6,8 @@
 //! with `spawn_local` for the same reason.
 
 use std::cell::RefCell;
+use std::io;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncReadExt;
@@ -29,25 +31,34 @@ pub struct TerminalSession {
     pub(crate) stderr_reader: tokio::task::JoinHandle<()>,
 }
 
-/// Spawn a shell command and return a terminal ID plus a managed session.
+/// Spawn a command and return a terminal ID plus a managed session.
 ///
-/// The command is executed as `sh -c <command>` so shell features (pipes,
-/// redirects, etc.) work correctly. Two `spawn_local` tasks continuously
-/// drain stdout and stderr into 1 MB ring buffers.
+/// This executes a program with explicit arguments (no intermediate shell),
+/// which prevents shell-injection bugs from argument concatenation.
+/// Two `spawn_local` tasks continuously drain stdout and stderr into 1 MB ring buffers.
 ///
 /// Must be called from within a `tokio::task::LocalSet` context because
 /// it calls `spawn_local` internally.
-pub fn create_terminal(command: &str) -> (String, TerminalSession) {
-    let mut child = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
+pub fn create_terminal(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+) -> io::Result<(String, TerminalSession)> {
+    let mut child = tokio::process::Command::new(program)
+        .args(args)
+        .current_dir(cwd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("failed to spawn terminal command");
+        .spawn()?;
 
-    let stdout = child.stdout.take().expect("child stdout not piped");
-    let stderr = child.stderr.take().expect("child stderr not piped");
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("failed to capture child stdout pipe"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("failed to capture child stderr pipe"))?;
 
     let stdout_buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
     let stderr_buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
@@ -104,7 +115,7 @@ pub fn create_terminal(command: &str) -> (String, TerminalSession) {
         stderr_reader,
     };
 
-    (terminal_id, session)
+    Ok((terminal_id, session))
 }
 
 /// Drain all buffered output (stdout then stderr) from the session and return
@@ -197,10 +208,15 @@ mod tests {
         }};
     }
 
+    fn as_args(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn test_terminal_create_and_output() {
         with_local_set!(async {
-            let (id, session) = create_terminal("echo hello");
+            let cwd = std::env::current_dir().unwrap();
+            let (id, session) = create_terminal("echo", &as_args(&["hello"]), &cwd).unwrap();
 
             // Terminal ID must be non-empty and contain the counter.
             assert!(!id.is_empty(), "terminal ID should not be empty");
@@ -233,7 +249,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn test_terminal_kill() {
         with_local_set!(async {
-            let (_, mut session) = create_terminal("sleep 60");
+            let cwd = std::env::current_dir().unwrap();
+            let (_, mut session) = create_terminal("sleep", &as_args(&["60"]), &cwd).unwrap();
 
             // Kill the long-running process.
             kill_terminal(&mut session).await;
@@ -249,7 +266,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn test_terminal_release_cleanup() {
         with_local_set!(async {
-            let (_, session) = create_terminal("echo cleanup test && sleep 10");
+            let cwd = std::env::current_dir().unwrap();
+            let (_, session) = create_terminal("sleep", &as_args(&["10"]), &cwd).unwrap();
 
             // Allow a brief moment for output to be buffered.
             tokio::time::sleep(Duration::from_millis(50)).await;

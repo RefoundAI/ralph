@@ -9,6 +9,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -33,6 +34,7 @@ use crate::acp::tools::{self, SessionUpdateMsg, TerminalSession};
 /// - Terminal session management
 /// - Permission requests (auto-approve or read-only deny)
 /// - Session update notifications (streaming display + text accumulation)
+///
 /// Tracks a pending tool call waiting for its `raw_input` via `ToolCallUpdate`.
 struct PendingToolCall {
     name: String,
@@ -72,6 +74,116 @@ pub struct RalphClient {
 }
 
 impl RalphClient {
+    /// Resolve a request path relative to the project root when needed.
+    fn resolve_request_path(&self, path: &Path) -> PathBuf {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.project_root.join(path)
+        }
+    }
+
+    /// Canonicalize a path while allowing the final path to not exist.
+    ///
+    /// Canonicalizes the nearest existing ancestor and appends missing suffix
+    /// components, preserving path intent while still resolving symlinks in the
+    /// existing portion.
+    fn canonicalize_allow_missing(path: &Path) -> io::Result<PathBuf> {
+        if path.exists() {
+            return path.canonicalize();
+        }
+
+        let mut missing_suffix: Vec<OsString> = Vec::new();
+        let mut cursor = path;
+
+        loop {
+            if cursor.exists() {
+                let mut canonical = cursor.canonicalize()?;
+                for part in missing_suffix.iter().rev() {
+                    canonical.push(part);
+                }
+                return Ok(canonical);
+            }
+
+            let part = cursor.file_name().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("path has no existing ancestor: {}", path.display()),
+                )
+            })?;
+            missing_suffix.push(part.to_os_string());
+
+            cursor = cursor.parent().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("path has no parent: {}", path.display()),
+                )
+            })?;
+        }
+    }
+
+    /// Return canonicalized project root if possible.
+    fn canonical_project_root(&self) -> PathBuf {
+        self.project_root
+            .canonicalize()
+            .unwrap_or_else(|_| self.project_root.clone())
+    }
+
+    /// Return true when path resolves to a location under the project root.
+    fn is_within_project_root(&self, path: &Path) -> bool {
+        path.starts_with(self.canonical_project_root())
+    }
+
+    /// Resolve and validate an ACP filesystem path against project boundaries.
+    fn resolve_path_for_fs(&self, req_path: &Path) -> io::Result<(PathBuf, PathBuf)> {
+        let resolved = self.resolve_request_path(req_path);
+        let canonical = Self::canonicalize_allow_missing(&resolved)?;
+        Ok((resolved, canonical))
+    }
+
+    /// Validate that a path is allowed by the explicit allow-list.
+    fn write_allowed_by_policy(&self, canonical: &Path, allow_list: &[PathBuf]) -> bool {
+        allow_list.iter().any(|allowed| {
+            Self::canonicalize_allow_missing(&self.resolve_request_path(allowed))
+                .map(|allowed_canonical| allowed_canonical == canonical)
+                .unwrap_or(false)
+        })
+    }
+
+    /// Parse terminal request command + args without invoking a shell.
+    fn parse_terminal_request(
+        req: &CreateTerminalRequest,
+    ) -> agent_client_protocol::Result<(String, Vec<String>)> {
+        use agent_client_protocol::Error;
+
+        if req.args.is_empty() {
+            let parts = shlex::split(&req.command).ok_or_else(|| {
+                Error::invalid_params().data(serde_json::json!(format!(
+                    "invalid terminal command: failed to parse {:?}",
+                    req.command
+                )))
+            })?;
+
+            if parts.is_empty() {
+                return Err(
+                    Error::invalid_params().data(serde_json::json!("terminal command is empty"))
+                );
+            }
+
+            let mut iter = parts.into_iter();
+            let program = iter.next().unwrap_or_default();
+            let args = iter.collect::<Vec<_>>();
+            Ok((program, args))
+        } else {
+            if req.command.trim().is_empty() {
+                return Err(
+                    Error::invalid_params().data(serde_json::json!("terminal command is empty"))
+                );
+            }
+            Ok((req.command.clone(), req.args.clone()))
+        }
+    }
+
     /// Create a new `RalphClient`.
     ///
     /// # Arguments
@@ -171,7 +283,11 @@ impl RalphClient {
     /// If `path` is under `project_root`, strips the prefix and returns the
     /// relative path as a string. Otherwise returns the absolute path string.
     fn normalize_path(&self, path: &Path) -> String {
-        match path.strip_prefix(&self.project_root) {
+        let canonical_root = self.canonical_project_root();
+        match path
+            .strip_prefix(&canonical_root)
+            .or_else(|_| path.strip_prefix(&self.project_root))
+        {
             Ok(rel) => rel.to_string_lossy().into_owned(),
             Err(_) => path.to_string_lossy().into_owned(),
         }
@@ -394,9 +510,8 @@ impl Client for RalphClient {
     ) -> agent_client_protocol::Result<ReadTextFileResponse> {
         use agent_client_protocol::Error;
 
-        // Read the full file contents.
-        let content = match std::fs::read_to_string(&req.path) {
-            Ok(c) => c,
+        let (resolved, canonical) = match self.resolve_path_for_fs(&req.path) {
+            Ok(p) => p,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return Err(Error::invalid_params().data(serde_json::json!(format!(
                     "file not found: {}",
@@ -404,9 +519,33 @@ impl Client for RalphClient {
                 ))));
             }
             Err(e) => {
+                return Err(Error::invalid_params().data(serde_json::json!(format!(
+                    "invalid file path {}: {e}",
+                    req.path.display()
+                ))));
+            }
+        };
+
+        if !self.is_within_project_root(&canonical) {
+            return Err(Error::invalid_params().data(serde_json::json!(format!(
+                "file path is outside project root: {}",
+                req.path.display()
+            ))));
+        }
+
+        // Read the full file contents.
+        let content = match std::fs::read_to_string(&canonical) {
+            Ok(c) => c,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(Error::invalid_params().data(serde_json::json!(format!(
+                    "file not found: {}",
+                    resolved.display()
+                ))));
+            }
+            Err(e) => {
                 return Err(Error::internal_error().data(serde_json::json!(format!(
                     "failed to read file {}: {e}",
-                    req.path.display()
+                    resolved.display()
                 ))));
             }
         };
@@ -441,13 +580,26 @@ impl Client for RalphClient {
             )));
         }
 
+        let (resolved, canonical) = match self.resolve_path_for_fs(&req.path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Err(Error::invalid_params().data(serde_json::json!(format!(
+                    "invalid file path {}: {e}",
+                    req.path.display()
+                ))));
+            }
+        };
+
+        if !self.is_within_project_root(&canonical) {
+            return Err(Error::invalid_params().data(serde_json::json!(format!(
+                "write not allowed outside project root: {}",
+                req.path.display()
+            ))));
+        }
+
         // If write paths are restricted, check the requested path against the allow-list.
         if let Some(ref allowed) = self.allowed_write_paths {
-            let canonical = req.path.canonicalize().unwrap_or_else(|_| req.path.clone());
-            let is_allowed = allowed.iter().any(|p| {
-                let allowed_canonical = p.canonicalize().unwrap_or_else(|_| p.clone());
-                canonical == allowed_canonical
-            });
+            let is_allowed = self.write_allowed_by_policy(&canonical, allowed);
             if !is_allowed {
                 return Err(Error::invalid_params().data(serde_json::json!(format!(
                     "write not allowed: this session can only write to {}",
@@ -461,25 +613,25 @@ impl Client for RalphClient {
         }
 
         // Create parent directories as needed.
-        if let Some(parent) = req.path.parent() {
+        if let Some(parent) = canonical.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 return Err(Error::internal_error().data(serde_json::json!(format!(
                     "failed to create parent directories for {}: {e}",
-                    req.path.display()
+                    resolved.display()
                 ))));
             }
         }
 
         // Write the file.
-        if let Err(e) = std::fs::write(&req.path, &req.content) {
+        if let Err(e) = std::fs::write(&canonical, &req.content) {
             return Err(Error::internal_error().data(serde_json::json!(format!(
                 "failed to write file {}: {e}",
-                req.path.display()
+                resolved.display()
             ))));
         }
 
         // Track the path (normalized to project-relative).
-        let normalized = self.normalize_path(&req.path);
+        let normalized = self.normalize_path(&canonical);
         self.files_modified.borrow_mut().push(normalized);
 
         Ok(WriteTextFileResponse::new())
@@ -493,14 +645,16 @@ impl Client for RalphClient {
         &self,
         req: CreateTerminalRequest,
     ) -> agent_client_protocol::Result<CreateTerminalResponse> {
-        // Build the command string: command + args, shell-joined.
-        let command_str = if req.args.is_empty() {
-            req.command.clone()
-        } else {
-            format!("{} {}", req.command, req.args.join(" "))
-        };
+        use agent_client_protocol::Error;
 
-        let (terminal_id, session) = tools::create_terminal(&command_str);
+        let (program, args) = Self::parse_terminal_request(&req)?;
+        let (terminal_id, session) = tools::create_terminal(&program, &args, &self.project_root)
+            .map_err(|e| {
+                Error::internal_error().data(serde_json::json!(format!(
+                    "failed to spawn terminal command '{}': {e}",
+                    program
+                )))
+            })?;
 
         // Store the session in the map.
         self.terminals
@@ -536,14 +690,18 @@ impl Client for RalphClient {
         use agent_client_protocol::Error;
 
         let terminal_id = req.terminal_id.0.as_ref().to_owned();
-        let mut terminals = self.terminals.borrow_mut();
-        let session = terminals.get_mut(&terminal_id).ok_or_else(|| {
-            Error::invalid_params().data(serde_json::json!(format!(
-                "terminal not found: {terminal_id}"
-            )))
-        })?;
+        let mut session = self
+            .terminals
+            .borrow_mut()
+            .remove(&terminal_id)
+            .ok_or_else(|| {
+                Error::invalid_params().data(serde_json::json!(format!(
+                    "terminal not found: {terminal_id}"
+                )))
+            })?;
 
-        let exit_code = tools::wait_for_exit(session).await;
+        let exit_code = tools::wait_for_exit(&mut session).await;
+        self.terminals.borrow_mut().insert(terminal_id, session);
 
         // Build exit status; exit_code is i32 from tools.rs (-1 = signal killed).
         let exit_status = if exit_code >= 0 {
@@ -562,14 +720,18 @@ impl Client for RalphClient {
         use agent_client_protocol::Error;
 
         let terminal_id = req.terminal_id.0.as_ref().to_owned();
-        let mut terminals = self.terminals.borrow_mut();
-        let session = terminals.get_mut(&terminal_id).ok_or_else(|| {
-            Error::invalid_params().data(serde_json::json!(format!(
-                "terminal not found: {terminal_id}"
-            )))
-        })?;
+        let mut session = self
+            .terminals
+            .borrow_mut()
+            .remove(&terminal_id)
+            .ok_or_else(|| {
+                Error::invalid_params().data(serde_json::json!(format!(
+                    "terminal not found: {terminal_id}"
+                )))
+            })?;
 
-        tools::kill_terminal(session).await;
+        tools::kill_terminal(&mut session).await;
+        self.terminals.borrow_mut().insert(terminal_id, session);
 
         Ok(KillTerminalCommandResponse::new())
     }
@@ -686,6 +848,20 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn test_read_text_file_outside_project_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let outside_file = outside.path().join("outside.txt");
+        std::fs::write(&outside_file, "secret").unwrap();
+
+        let client = make_client(&tmp, false);
+        let req = ReadTextFileRequest::new(SessionId::new("s"), outside_file);
+        let result = client.read_text_file(req).await;
+
+        assert!(result.is_err(), "expected outside-root read to be rejected");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn test_read_text_file_with_line_limit() {
         let tmp = TempDir::new().unwrap();
         let file_path = tmp.path().join("multi.txt");
@@ -794,6 +970,40 @@ mod tests {
             !rel.starts_with('/'),
             "path should be project-relative, got: {rel}"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_write_text_file_outside_project_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let outside_file = outside.path().join("should-not-write.txt");
+
+        let client = make_client(&tmp, false);
+        let req = WriteTextFileRequest::new(SessionId::new("s"), &outside_file, "forbidden");
+        let result = client.write_text_file(req).await;
+
+        assert!(
+            result.is_err(),
+            "expected outside-root write to be rejected"
+        );
+        assert!(!outside_file.exists(), "outside file should not be created");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_write_text_file_parent_traversal_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let candidate = tmp
+            .path()
+            .join("..")
+            .join(outside.path().file_name().unwrap())
+            .join("escape.txt");
+
+        let client = make_client(&tmp, false);
+        let req = WriteTextFileRequest::new(SessionId::new("s"), &candidate, "nope");
+        let result = client.write_text_file(req).await;
+
+        assert!(result.is_err(), "expected traversal write to be rejected");
     }
 
     // ------------------------------------------------------------------ //
