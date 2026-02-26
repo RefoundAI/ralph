@@ -15,6 +15,16 @@ pub struct LogLine {
     pub message: String,
 }
 
+/// Cached rectangle positions of dashboard frames from the last render pass.
+/// Used by the event loop to route mouse scroll events to the correct panel.
+#[derive(Debug, Clone, Default)]
+pub struct FrameAreas {
+    pub logs: Option<ratatui::layout::Rect>,
+    pub tools: Option<ratatui::layout::Rect>,
+    pub agent: Option<ratatui::layout::Rect>,
+    pub input: Option<ratatui::layout::Rect>,
+}
+
 /// Optional modal rendered above the base screen.
 #[derive(Debug, Clone)]
 pub enum UiModal {
@@ -48,6 +58,12 @@ pub struct AppState {
     /// When `None`, Agent Stream auto-scrolls to the bottom.
     /// When `Some(offset)`, the user has pinned the scroll position.
     pub agent_scroll: Option<usize>,
+    /// Scroll offset for the Events (logs) panel.
+    pub logs_scroll: usize,
+    /// Scroll offset for the Tool Activity panel.
+    pub tools_scroll: usize,
+    /// Scroll offset for the Input pane content (when it overflows).
+    pub input_scroll: usize,
     pub screen: UiScreen,
     pub modal: Option<UiModal>,
     /// Whether the persistent Input pane is accepting keystrokes.
@@ -76,6 +92,9 @@ impl Default for AppState {
             tools: VecDeque::new(),
             agent_text: String::new(),
             agent_scroll: None,
+            logs_scroll: 0,
+            tools_scroll: 0,
+            input_scroll: 0,
             screen: UiScreen::Dashboard,
             modal: None,
             input_active: false,
@@ -196,6 +215,36 @@ impl AppState {
         self.agent_scroll = None;
     }
 
+    /// Scroll the Events (logs) panel up by `n` lines.
+    pub fn logs_scroll_up(&mut self, n: usize) {
+        self.logs_scroll = self.logs_scroll.saturating_sub(n);
+    }
+
+    /// Scroll the Events (logs) panel down by `n` lines.
+    pub fn logs_scroll_down(&mut self, n: usize, max_offset: usize) {
+        self.logs_scroll = (self.logs_scroll + n).min(max_offset);
+    }
+
+    /// Scroll the Tool Activity panel up by `n` lines.
+    pub fn tools_scroll_up(&mut self, n: usize) {
+        self.tools_scroll = self.tools_scroll.saturating_sub(n);
+    }
+
+    /// Scroll the Tool Activity panel down by `n` lines.
+    pub fn tools_scroll_down(&mut self, n: usize, max_offset: usize) {
+        self.tools_scroll = (self.tools_scroll + n).min(max_offset);
+    }
+
+    /// Scroll the Input pane up by `n` lines.
+    pub fn input_scroll_up(&mut self, n: usize) {
+        self.input_scroll = self.input_scroll.saturating_sub(n);
+    }
+
+    /// Scroll the Input pane down by `n` lines.
+    pub fn input_scroll_down(&mut self, n: usize, max_offset: usize) {
+        self.input_scroll = (self.input_scroll + n).min(max_offset);
+    }
+
     /// Activate the input pane for a new prompt.
     pub fn activate_input(&mut self, title: String, hint: String, choices: Option<Vec<String>>) {
         self.input_active = true;
@@ -205,6 +254,7 @@ impl AppState {
         self.input_cursor = 0;
         self.input_choices = choices;
         self.input_choice_cursor = 0;
+        self.input_scroll = 0;
     }
 
     /// Deactivate the input pane (return to idle).
@@ -216,6 +266,7 @@ impl AppState {
         self.input_cursor = 0;
         self.input_choices = None;
         self.input_choice_cursor = 0;
+        self.input_scroll = 0;
     }
 
     pub fn explorer_scroll_up(&mut self) {

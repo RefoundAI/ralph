@@ -2,24 +2,27 @@
 
 use ratatui::prelude::*;
 use ratatui::style::Modifier;
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use crate::ui::state::{AppState, UiModal, UiScreen};
+use crate::ui::state::{AppState, FrameAreas, UiModal, UiScreen};
 use crate::ui::theme;
 
 /// Draw one frame of the UI.
-pub fn render(frame: &mut Frame<'_>, state: &AppState) {
+pub fn render(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAreas) {
     // Paint the entire frame with the theme background so no terminal background bleeds through.
     let bg = Block::default().style(Style::default().bg(theme::background()));
     frame.render_widget(bg, frame.area());
 
     match &state.screen {
-        UiScreen::Dashboard => render_dashboard(frame, state),
+        UiScreen::Dashboard => render_dashboard(frame, state, areas),
         UiScreen::Explorer {
             title,
             lines,
             scroll,
-        } => render_explorer(frame, title, lines, *scroll),
+        } => {
+            *areas = FrameAreas::default();
+            render_explorer(frame, title, lines, *scroll);
+        }
     }
 
     if let Some(modal) = &state.modal {
@@ -27,7 +30,7 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState) {
     }
 }
 
-fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
+fn render_dashboard(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAreas) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -68,22 +71,38 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(body[0]);
 
-    let logs: Vec<ListItem<'_>> = state
+    // Events panel with scroll support.
+    let log_lines: Vec<Line<'_>> = state
         .logs
         .iter()
         .rev()
         .take(120)
-        .map(|line| ListItem::new(Line::styled(line.message.clone(), theme::level(line.level))))
+        .map(|line| Line::styled(line.message.clone(), theme::level(line.level)))
         .collect();
-    let logs_panel = List::new(logs).block(
-        Block::default()
-            .title("Events")
-            .borders(Borders::ALL)
-            .border_style(theme::border()),
-    );
+    let logs_inner_h = left[0].height.saturating_sub(2) as usize;
+    let logs_max_offset = log_lines.len().saturating_sub(logs_inner_h);
+    let logs_scroll_clamped = state.logs_scroll.min(logs_max_offset);
+    let logs_title = if logs_scroll_clamped > 0 {
+        format!(
+            "Events [scroll {}/{}]",
+            logs_scroll_clamped, logs_max_offset
+        )
+    } else {
+        "Events".to_string()
+    };
+    let logs_panel = Paragraph::new(log_lines)
+        .block(
+            Block::default()
+                .title(logs_title)
+                .borders(Borders::ALL)
+                .border_style(theme::border()),
+        )
+        .scroll((logs_scroll_clamped as u16, 0));
     frame.render_widget(logs_panel, left[0]);
+    areas.logs = Some(left[0]);
 
-    let tool_items: Vec<ListItem<'_>> = state
+    // Tool Activity panel with scroll support.
+    let tool_lines: Vec<Line<'_>> = state
         .tools
         .iter()
         .rev()
@@ -91,10 +110,10 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
         .map(|tl| {
             if tl.name.is_empty() {
                 // Detail line (indented, no tool name).
-                ListItem::new(Line::from(vec![
+                Line::from(vec![
                     Span::styled("  ", theme::subdued()),
                     Span::styled(tl.summary.clone(), theme::subdued()),
-                ]))
+                ])
             } else {
                 let mut spans = vec![
                     Span::styled(tl.name.clone(), theme::tool_name()),
@@ -103,17 +122,31 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
                 if !tl.summary.is_empty() {
                     spans.push(Span::styled(tl.summary.clone(), theme::subdued()));
                 }
-                ListItem::new(Line::from(spans))
+                Line::from(spans)
             }
         })
         .collect();
-    let tools = List::new(tool_items).block(
-        Block::default()
-            .title("Tool Activity")
-            .borders(Borders::ALL)
-            .border_style(theme::border()),
-    );
-    frame.render_widget(tools, left[1]);
+    let tools_inner_h = left[1].height.saturating_sub(2) as usize;
+    let tools_max_offset = tool_lines.len().saturating_sub(tools_inner_h);
+    let tools_scroll_clamped = state.tools_scroll.min(tools_max_offset);
+    let tools_title = if tools_scroll_clamped > 0 {
+        format!(
+            "Tool Activity [scroll {}/{}]",
+            tools_scroll_clamped, tools_max_offset
+        )
+    } else {
+        "Tool Activity".to_string()
+    };
+    let tools_panel = Paragraph::new(tool_lines)
+        .block(
+            Block::default()
+                .title(tools_title)
+                .borders(Borders::ALL)
+                .border_style(theme::border()),
+        )
+        .scroll((tools_scroll_clamped as u16, 0));
+    frame.render_widget(tools_panel, left[1]);
+    areas.tools = Some(left[1]);
 
     // Right column: Agent Stream (fills remaining) over Input (dynamic height).
     let right_column_height = body[1].height;
@@ -178,15 +211,17 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
         .wrap(Wrap { trim: false })
         .scroll((scroll_offset as u16, 0));
     frame.render_widget(agent, right[0]);
+    areas.agent = Some(right[0]);
 
     render_input_pane(frame, right[1], state);
+    areas.input = Some(right[1]);
 
     let footer_text = if state.input_active && state.input_choices.is_some() {
-        "PgUp/PgDn scroll agent stream · ↑/↓ navigate choices · 1-9 quick-select · Esc exit"
+        "PgUp/PgDn scroll agent · ↑/↓ choices · 1-9 quick-select · Mouse wheel scrolls panels · Esc exit"
     } else if state.input_active {
-        "Enter=submit · Shift+Enter=newline · ↑/↓/←/→ navigate · PgUp/PgDn scroll agent"
+        "Enter=submit · Shift+Enter=newline · ↑/↓/←/→ navigate · Mouse wheel scrolls panels"
     } else {
-        "↑/↓ scroll agent stream · End resume auto-scroll · --no-ui for plain output"
+        "↑/↓ scroll agent · End auto-scroll · Mouse wheel scrolls panels · --no-ui for plain"
     };
     let footer = Paragraph::new(footer_text).style(theme::subdued());
     frame.render_widget(footer, root[2]);
@@ -431,6 +466,7 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             vertical: 1,
         });
         let inner_w = pane_inner.width.max(1) as usize;
+        let inner_h = pane_inner.height as usize;
 
         let mut lines: Vec<Line<'_>> = Vec::new();
 
@@ -572,6 +608,33 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             theme::subdued(),
         ));
 
+        // Compute scroll offset to keep cursor visible.
+        // cursor_row is relative to the start of the text lines (after hint lines).
+        // Total content rows = hint_line_count + visual_row + 2 (hint bar).
+        let total_content_lines = (hint_line_count as u16) + visual_row + 2;
+        let abs_cursor_line = (hint_line_count as u16) + cursor_row;
+        let scroll_offset = if inner_h == 0 || total_content_lines <= inner_h as u16 {
+            // Everything fits, no scroll needed.
+            0u16
+        } else {
+            // Auto-scroll to keep cursor visible.
+            let max_scroll = total_content_lines.saturating_sub(inner_h as u16);
+            // Use manual scroll if set, but clamp to keep cursor visible.
+            let manual = state.input_scroll as u16;
+            // Cursor must be within [scroll_offset, scroll_offset + inner_h - 1].
+            if abs_cursor_line < manual {
+                // Cursor above viewport — scroll up to it.
+                abs_cursor_line
+            } else if abs_cursor_line >= manual + (inner_h as u16) {
+                // Cursor below viewport — scroll down to show it.
+                (abs_cursor_line + 1).saturating_sub(inner_h as u16)
+            } else {
+                // Cursor is visible at current manual scroll position.
+                manual
+            }
+            .min(max_scroll)
+        };
+
         let widget = Paragraph::new(lines)
             .block(
                 Block::default()
@@ -579,14 +642,16 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                     .borders(Borders::ALL)
                     .border_style(theme::modal_border()),
             )
-            .style(theme::subdued());
+            .style(theme::subdued())
+            .scroll((scroll_offset, 0));
         frame.render_widget(widget, area);
 
         // Position terminal cursor for blinking effect.
         if pane_inner.width > 0 && pane_inner.height > 0 {
-            let abs_cursor_y = pane_inner.y + (hint_line_count as u16) + cursor_row;
+            let abs_cursor_y = pane_inner.y + (hint_line_count as u16) + cursor_row - scroll_offset;
             let abs_cursor_x = pane_inner.x + cursor_col;
             if abs_cursor_x < pane_inner.x + pane_inner.width
+                && abs_cursor_y >= pane_inner.y
                 && abs_cursor_y < pane_inner.y + pane_inner.height
             {
                 frame.set_cursor_position((abs_cursor_x, abs_cursor_y));
@@ -762,7 +827,12 @@ mod tests {
             level: UiLevel::Info,
             message: "hello".to_string(),
         });
-        terminal.draw(|f| render(f, &state)).unwrap();
+        terminal
+            .draw(|f| {
+                let mut areas = FrameAreas::default();
+                render(f, &state, &mut areas);
+            })
+            .unwrap();
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Run"));
         assert!(text.contains("Events"));
@@ -780,7 +850,12 @@ mod tests {
             "Task Explorer".to_string(),
             vec!["t-1 done foo".to_string(), "t-2 pending bar".to_string()],
         );
-        terminal.draw(|f| render(f, &state)).unwrap();
+        terminal
+            .draw(|f| {
+                let mut areas = FrameAreas::default();
+                render(f, &state, &mut areas);
+            })
+            .unwrap();
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Task Explorer"));
         assert!(text.contains("Explorer:"));
@@ -796,7 +871,12 @@ mod tests {
             prompt: "Delete?".to_string(),
             default_yes: false,
         });
-        terminal.draw(|f| render(f, &state)).unwrap();
+        terminal
+            .draw(|f| {
+                let mut areas = FrameAreas::default();
+                render(f, &state, &mut areas);
+            })
+            .unwrap();
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Confirm"));
         assert!(text.contains("Delete?"));
@@ -807,7 +887,12 @@ mod tests {
         let backend = TestBackend::new(1, 1);
         let mut terminal = Terminal::new(backend).unwrap();
         let state = AppState::default();
-        terminal.draw(|f| render(f, &state)).unwrap();
+        terminal
+            .draw(|f| {
+                let mut areas = FrameAreas::default();
+                render(f, &state, &mut areas);
+            })
+            .unwrap();
     }
 
     #[test]
@@ -815,7 +900,12 @@ mod tests {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let state = AppState::default();
-        terminal.draw(|f| render(f, &state)).unwrap();
+        terminal
+            .draw(|f| {
+                let mut areas = FrameAreas::default();
+                render(f, &state, &mut areas);
+            })
+            .unwrap();
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Input"), "Input title should appear");
         assert!(
@@ -834,7 +924,12 @@ mod tests {
         state.input_hint = "Type your response".to_string();
         state.input_text = "hello\nworld\ntyping".to_string();
         state.input_cursor = state.input_text.len(); // cursor at end
-        terminal.draw(|f| render(f, &state)).unwrap();
+        terminal
+            .draw(|f| {
+                let mut areas = FrameAreas::default();
+                render(f, &state, &mut areas);
+            })
+            .unwrap();
         let text = buffer_text(terminal.backend().buffer());
         // All lines should appear in the input.
         assert!(text.contains("hello"), "First line should appear: {text}");
@@ -857,7 +952,12 @@ mod tests {
         state.input_hint = "Pick one".to_string();
         state.input_choices = Some(vec!["Option A".to_string(), "Option B".to_string()]);
         state.input_choice_cursor = 1; // Option B is highlighted
-        terminal.draw(|f| render(f, &state)).unwrap();
+        terminal
+            .draw(|f| {
+                let mut areas = FrameAreas::default();
+                render(f, &state, &mut areas);
+            })
+            .unwrap();
         let text = buffer_text(terminal.backend().buffer());
 
         // Both choices should appear with numbers.
@@ -923,7 +1023,12 @@ mod tests {
             name: "Read".to_string(),
             summary: "tool_call: Read".to_string(),
         }));
-        terminal.draw(|f| render(f, &state)).unwrap();
+        terminal
+            .draw(|f| {
+                let mut areas = FrameAreas::default();
+                render(f, &state, &mut areas);
+            })
+            .unwrap();
         let buf = terminal.backend().buffer();
 
         // Find the x-coordinate of "Tool Activity" title in the buffer.

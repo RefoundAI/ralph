@@ -5,7 +5,10 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    MouseEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -13,7 +16,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::ui::state::AppState;
+use crate::ui::state::{AppState, FrameAreas};
 use crate::ui::view;
 use crate::ui::{UiCommand, UiPromptResult};
 
@@ -36,7 +39,7 @@ enum Interaction {
 /// Execute the UI loop until a shutdown command is received.
 pub(super) fn run(rx: Receiver<UiCommand>) -> io::Result<()> {
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, Hide)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture, Hide)?;
     enable_raw_mode()?;
 
     let backend = CrosstermBackend::new(stdout);
@@ -45,6 +48,7 @@ pub(super) fn run(rx: Receiver<UiCommand>) -> io::Result<()> {
 
     let mut state = AppState::default();
     let mut interaction = Interaction::None;
+    let mut areas = FrameAreas::default();
     let mut should_exit = false;
 
     while !should_exit {
@@ -62,7 +66,7 @@ pub(super) fn run(rx: Receiver<UiCommand>) -> io::Result<()> {
             Err(RecvTimeoutError::Disconnected) => break,
         }
 
-        handle_keys(&mut state, &mut interaction);
+        handle_terminal_events(&mut state, &mut interaction, &areas);
 
         // Show terminal cursor when input pane is active in free-text mode,
         // hide it otherwise so it doesn't flicker over the dashboard.
@@ -72,12 +76,17 @@ pub(super) fn run(rx: Receiver<UiCommand>) -> io::Result<()> {
             let _ = execute!(terminal.backend_mut(), Hide);
         }
 
-        terminal.draw(|frame| view::render(frame, &state))?;
+        terminal.draw(|frame| view::render(frame, &state, &mut areas))?;
     }
 
     let _ = terminal.show_cursor();
     let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, Show);
+    let _ = execute!(
+        terminal.backend_mut(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        Show
+    );
     Ok(())
 }
 
@@ -135,9 +144,9 @@ fn apply_command(state: &mut AppState, interaction: &mut Interaction, cmd: UiCom
     }
 }
 
-fn handle_keys(state: &mut AppState, interaction: &mut Interaction) {
-    // Drain ALL available key events before returning, so paste and held-key
-    // repeats are batched into a single redraw cycle.
+fn handle_terminal_events(state: &mut AppState, interaction: &mut Interaction, areas: &FrameAreas) {
+    // Drain ALL available events before returning, so paste, held-key
+    // repeats, and scroll gestures are batched into a single redraw cycle.
     loop {
         let Ok(has_event) = event::poll(Duration::from_millis(0)) else {
             return;
@@ -148,13 +157,18 @@ fn handle_keys(state: &mut AppState, interaction: &mut Interaction) {
         let Ok(ev) = event::read() else {
             return;
         };
-        let Event::Key(key) = ev else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
+        match ev {
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                process_key(state, interaction, key);
+            }
+            Event::Mouse(mouse) => {
+                process_mouse(state, interaction, mouse, areas);
+            }
+            _ => continue,
         }
-        process_key(state, interaction, key);
     }
 }
 
@@ -417,6 +431,80 @@ fn process_key(
                     state.agent_scroll_to_bottom();
                 }
                 _ => {}
+            }
+        }
+    }
+}
+
+fn process_mouse(
+    state: &mut AppState,
+    _interaction: &mut Interaction,
+    mouse: crossterm::event::MouseEvent,
+    areas: &FrameAreas,
+) {
+    let scroll_lines: i32 = match mouse.kind {
+        MouseEventKind::ScrollUp => -3,
+        MouseEventKind::ScrollDown => 3,
+        _ => return,
+    };
+
+    let col = mouse.column;
+    let row = mouse.row;
+
+    // Determine which frame the cursor is over.
+    let in_rect = |r: &ratatui::layout::Rect| -> bool {
+        col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height
+    };
+
+    if let Some(ref r) = areas.agent {
+        if in_rect(r) {
+            if scroll_lines < 0 {
+                state.agent_scroll_up((-scroll_lines) as usize);
+            } else {
+                let line_count = state.agent_text.lines().count();
+                state.agent_scroll_down(scroll_lines as usize, line_count);
+            }
+            return;
+        }
+    }
+
+    if let Some(ref r) = areas.logs {
+        if in_rect(r) {
+            let inner_h = r.height.saturating_sub(2) as usize;
+            let total = state.logs.len().min(120);
+            let max_offset = total.saturating_sub(inner_h);
+            if scroll_lines < 0 {
+                state.logs_scroll_up((-scroll_lines) as usize);
+            } else {
+                state.logs_scroll_down(scroll_lines as usize, max_offset);
+            }
+            return;
+        }
+    }
+
+    if let Some(ref r) = areas.tools {
+        if in_rect(r) {
+            let inner_h = r.height.saturating_sub(2) as usize;
+            let total = state.tools.len().min(80);
+            let max_offset = total.saturating_sub(inner_h);
+            if scroll_lines < 0 {
+                state.tools_scroll_up((-scroll_lines) as usize);
+            } else {
+                state.tools_scroll_down(scroll_lines as usize, max_offset);
+            }
+            return;
+        }
+    }
+
+    if let Some(ref r) = areas.input {
+        if in_rect(r) {
+            // input_scroll is used as a hint by the renderer; auto-scroll
+            // overrides it when the cursor would be off-screen.
+            if scroll_lines < 0 {
+                state.input_scroll_up((-scroll_lines) as usize);
+            } else {
+                // Use a generous max — the renderer will clamp.
+                state.input_scroll_down(scroll_lines as usize, 10_000);
             }
         }
     }
