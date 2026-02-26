@@ -861,6 +861,7 @@ async fn handle_task_done(
     if config.verify {
         // Run verification agent
         formatter::print_verification_start(config.iteration, task_id);
+        formatter::emit_event_info("verify", &format!("verifying {}", task.id));
 
         let v_result =
             verification::verify_task(config, task, spec_content, plan_content, log_file).await?;
@@ -873,10 +874,16 @@ async fn handle_task_done(
                 [task_id.as_str()],
             )?;
             formatter::print_verification_passed(config.iteration, task_id);
+            formatter::emit_event_info("verify", &format!("{} passed", task.id));
             formatter::emit_event_info("task", &format!("{} done", task_id));
         } else {
             // Verification failed
             formatter::print_verification_failed(config.iteration, task_id, &v_result.reason);
+            formatter::emit_event(
+                "verify",
+                &format!("{} failed \u{2014} {}", task.id, v_result.reason),
+                true,
+            );
 
             // Log the failure
             dag::add_log(
