@@ -145,10 +145,12 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
 
     render_input_pane(frame, right[1], state);
 
-    let footer = Paragraph::new(
-        "↑/↓ scroll agent stream · End resume auto-scroll · --no-ui for plain output",
-    )
-    .style(theme::subdued());
+    let footer_text = if state.input_active && state.input_choices.is_some() {
+        "PgUp/PgDn scroll agent stream · ↑/↓ navigate choices · 1-9 quick-select · Esc exit"
+    } else {
+        "↑/↓ scroll agent stream · End resume auto-scroll · --no-ui for plain output"
+    };
+    let footer = Paragraph::new(footer_text).style(theme::subdued());
     frame.render_widget(footer, root[2]);
 }
 
