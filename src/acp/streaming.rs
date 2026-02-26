@@ -16,7 +16,7 @@ use colored::Colorize;
 
 use crate::acp::tools::SessionUpdateMsg;
 use crate::ui::event::ToolLine;
-use crate::ui::{self, UiEvent, UiLevel};
+use crate::ui::{self, UiEvent};
 
 /// State carried across render calls within a single session.
 ///
@@ -117,10 +117,10 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
                 }
             }
             SessionUpdateMsg::ToolCallError { name, error } => {
-                ui::emit(UiEvent::Log {
-                    level: UiLevel::Error,
-                    message: format!("{name}: {error}"),
-                });
+                ui::emit(UiEvent::ToolActivity(ToolLine {
+                    name: format!("ERROR {name}"),
+                    summary: error.to_string(),
+                }));
             }
             SessionUpdateMsg::ToolCallPreamble => {
                 // Add a newline after the LLM response text before tool calls.

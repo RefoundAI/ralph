@@ -4,40 +4,29 @@ use colored::Colorize;
 use std::process::Command;
 
 use crate::config::Config;
-use crate::ui::{self, UiEvent, UiLevel};
+use crate::ui::{self, UiEvent};
 
-fn ui_log(level: UiLevel, message: impl Into<String>) {
-    if ui::is_active() {
-        ui::emit(UiEvent::Log {
-            level,
-            message: message.into(),
-        });
-    }
-}
-
-/// Print a plain info line (or emit to TUI).
+/// Print a plain info line.
+///
+/// When the TUI is active these are silently dropped — the dashboard panels
+/// (status line, DAG summary, tool activity, agent stream) carry all the
+/// information the operator needs.
 pub fn print_info(message: &str) {
-    if ui::is_active() {
-        ui_log(UiLevel::Info, message.to_string());
-    } else {
+    if !ui::is_active() {
         println!("{message}");
     }
 }
 
-/// Print a warning line (or emit to TUI).
+/// Print a warning line.
 pub fn print_warning(message: &str) {
-    if ui::is_active() {
-        ui_log(UiLevel::Warn, message.to_string());
-    } else {
+    if !ui::is_active() {
         eprintln!("{}", message.yellow());
     }
 }
 
-/// Print an error line (or emit to TUI).
+/// Print an error line.
 pub fn print_error(message: &str) {
-    if ui::is_active() {
-        ui_log(UiLevel::Error, message.to_string());
-    } else {
+    if !ui::is_active() {
         eprintln!("{}", message.red());
     }
 }
@@ -57,7 +46,6 @@ pub fn print_iteration_info(config: &Config) {
             "{line} | model={} | strategy={}",
             config.current_model, config.model_strategy
         )));
-        ui_log(UiLevel::Info, line);
     } else {
         println!("{line}");
     }
@@ -68,7 +56,6 @@ pub fn print_dag_summary(total: usize, ready: usize, done: usize, blocked: usize
     let line = format!("DAG: {total} tasks, {ready} ready, {done} done, {blocked} blocked");
     if ui::is_active() {
         ui::emit(UiEvent::DagSummary(line.clone()));
-        ui_log(UiLevel::Info, line);
     } else {
         println!("{line}");
     }
@@ -96,16 +83,13 @@ pub fn print_failure() {
 pub fn print_limit_reached() {
     if ui::is_active() {
         ui::emit(UiEvent::StatusLine("Iteration limit reached".to_string()));
-        ui_log(UiLevel::Info, "Iteration limit reached.");
     }
     speak("Ralph finished--limit hit.");
 }
 
 /// Print iteration separator.
 pub fn print_separator() {
-    if ui::is_active() {
-        ui_log(UiLevel::Info, "─".repeat(40));
-    } else {
+    if !ui::is_active() {
         let width = terminal_width();
         println!("{}", "-".repeat(width).dimmed());
     }
@@ -113,18 +97,14 @@ pub fn print_separator() {
 
 /// Print a clickable file hyperlink.
 pub fn hyperlink(path: &str) {
-    if ui::is_active() {
-        ui_log(UiLevel::Info, path.to_string());
-    } else {
+    if !ui::is_active() {
         println!("\x1b]8;;file://{}\x1b\\{}\x1b]8;;\x1b\\", path, path);
     }
 }
 
 /// Print a file location line with label.
 pub fn print_log_location(label: &str, path: &str) {
-    if ui::is_active() {
-        ui_log(UiLevel::Info, format!("{label} {path}"));
-    } else {
+    if !ui::is_active() {
         println!("{label}");
         hyperlink(path);
     }
@@ -132,12 +112,7 @@ pub fn print_log_location(label: &str, path: &str) {
 
 /// Print verification start message.
 pub fn print_verification_start(iteration: u32, task_id: &str) {
-    if ui::is_active() {
-        ui_log(
-            UiLevel::Info,
-            format!("[iter {iteration}] Verifying task {task_id}"),
-        );
-    } else {
+    if !ui::is_active() {
         println!(
             "[iter {}] {} {}",
             iteration,
@@ -149,12 +124,7 @@ pub fn print_verification_start(iteration: u32, task_id: &str) {
 
 /// Print verification passed message.
 pub fn print_verification_passed(iteration: u32, task_id: &str) {
-    if ui::is_active() {
-        ui_log(
-            UiLevel::Info,
-            format!("[iter {iteration}] Done (verified): {task_id}"),
-        );
-    } else {
+    if !ui::is_active() {
         println!(
             "[iter {}] {} (verified): {}",
             iteration,
@@ -166,12 +136,7 @@ pub fn print_verification_passed(iteration: u32, task_id: &str) {
 
 /// Print verification failed message.
 pub fn print_verification_failed(iteration: u32, task_id: &str, reason: &str) {
-    if ui::is_active() {
-        ui_log(
-            UiLevel::Warn,
-            format!("[iter {iteration}] Failed verification: {task_id} - {reason}"),
-        );
-    } else {
+    if !ui::is_active() {
         println!(
             "[iter {}] {} verification: {} — {}",
             iteration,
@@ -184,12 +149,7 @@ pub fn print_verification_failed(iteration: u32, task_id: &str, reason: &str) {
 
 /// Print retry message.
 pub fn print_retry(iteration: u32, task_id: &str, attempt: i32, max: i32) {
-    if ui::is_active() {
-        ui_log(
-            UiLevel::Warn,
-            format!("[iter {iteration}] Retrying {task_id} (attempt {attempt}/{max})"),
-        );
-    } else {
+    if !ui::is_active() {
         println!(
             "[iter {}] Retrying {} (attempt {}/{})",
             iteration,
@@ -202,12 +162,7 @@ pub fn print_retry(iteration: u32, task_id: &str, attempt: i32, max: i32) {
 
 /// Print max retries exhausted message.
 pub fn print_max_retries_exhausted(iteration: u32, task_id: &str) {
-    if ui::is_active() {
-        ui_log(
-            UiLevel::Error,
-            format!("[iter {iteration}] Failed (max retries exhausted): {task_id}"),
-        );
-    } else {
+    if !ui::is_active() {
         println!(
             "[iter {}] {} (max retries exhausted): {}",
             iteration,
@@ -219,9 +174,7 @@ pub fn print_max_retries_exhausted(iteration: u32, task_id: &str) {
 
 /// Print task done message.
 pub fn print_task_done(iteration: u32, task_id: &str) {
-    if ui::is_active() {
-        ui_log(UiLevel::Info, format!("[iter {iteration}] Done: {task_id}"));
-    } else {
+    if !ui::is_active() {
         println!(
             "[iter {}] {}: {}",
             iteration,
@@ -233,12 +186,7 @@ pub fn print_task_done(iteration: u32, task_id: &str) {
 
 /// Print task failed message.
 pub fn print_task_failed(iteration: u32, task_id: &str) {
-    if ui::is_active() {
-        ui_log(
-            UiLevel::Error,
-            format!("[iter {iteration}] Failed: {task_id}"),
-        );
-    } else {
+    if !ui::is_active() {
         println!(
             "[iter {}] {}: {}",
             iteration,
@@ -250,12 +198,7 @@ pub fn print_task_failed(iteration: u32, task_id: &str) {
 
 /// Print task incomplete (no sigil) message.
 pub fn print_task_incomplete(iteration: u32, task_id: &str) {
-    if ui::is_active() {
-        ui_log(
-            UiLevel::Warn,
-            format!("[iter {iteration}] Incomplete (no sigil): {task_id}"),
-        );
-    } else {
+    if !ui::is_active() {
         println!(
             "[iter {}] Incomplete (no sigil): {}",
             iteration,
@@ -276,10 +219,8 @@ pub fn emit_iteration_divider(iteration: u32) {
 
 /// Print task working message.
 pub fn print_task_working(iteration: u32, task_id: &str, title: &str) {
-    let line = format!("[iter {iteration}] Working on: {task_id} -- {title}");
     if ui::is_active() {
         ui::emit(UiEvent::CurrentTask(format!("Task: {task_id} — {title}")));
-        ui_log(UiLevel::Info, line);
     } else {
         println!(
             "[iter {}] Working on: {} -- {}",
@@ -292,20 +233,16 @@ pub fn print_task_working(iteration: u32, task_id: &str, title: &str) {
 
 /// Print review loop start message.
 pub fn print_review_start(kind: &str, feature_name: &str) {
-    let line = format!("Reviewing {kind} for '{feature_name}'...");
-    if ui::is_active() {
-        ui_log(UiLevel::Info, line);
-    } else {
+    if !ui::is_active() {
+        let line = format!("Reviewing {kind} for '{feature_name}'...");
         println!("\n{}", line.cyan());
     }
 }
 
 /// Print review round start message.
 pub fn print_review_round(round: u32, max: u32, kind: &str) {
-    let line = format!("{kind} review round {round}/{max}");
-    if ui::is_active() {
-        ui_log(UiLevel::Info, line);
-    } else {
+    if !ui::is_active() {
+        let line = format!("{kind} review round {round}/{max}");
         println!("  {} {}", line.cyan(), "→".dimmed());
     }
 }
@@ -314,17 +251,6 @@ pub fn print_review_round(round: u32, max: u32, kind: &str) {
 pub fn print_review_result(round: u32, passed: bool, changes_summary: &str, kind: &str) {
     let _ = round;
     if ui::is_active() {
-        if passed {
-            ui_log(
-                UiLevel::Info,
-                format!("Pass {kind} review: no major issues found"),
-            );
-        } else {
-            ui_log(
-                UiLevel::Warn,
-                format!("Changes in {kind} review: {changes_summary}"),
-            );
-        }
         return;
     }
 
@@ -347,37 +273,29 @@ pub fn print_review_result(round: u32, passed: bool, changes_summary: &str, kind
 
 /// Print review complete message.
 pub fn print_review_complete(kind: &str, feature_name: &str, rounds: u32) {
-    let rounds_text = if rounds == 1 {
-        "1 round".to_string()
-    } else {
-        format!("{rounds} rounds")
-    };
-    let line = format!("Review complete: '{feature_name}' {kind} finalized after {rounds_text}.");
-    if ui::is_active() {
-        ui_log(UiLevel::Info, line);
-    } else {
+    if !ui::is_active() {
+        let rounds_text = if rounds == 1 {
+            "1 round".to_string()
+        } else {
+            format!("{rounds} rounds")
+        };
+        let line =
+            format!("Review complete: '{feature_name}' {kind} finalized after {rounds_text}.");
         println!("{}", line.green());
     }
 }
 
 /// Print review max rounds reached message.
 pub fn print_review_max_rounds(kind: &str, feature_name: &str, max: u32) {
-    let line = format!("Review limit: '{feature_name}' {kind} stabilized after {max} rounds.");
-    if ui::is_active() {
-        ui_log(UiLevel::Warn, line);
-    } else {
+    if !ui::is_active() {
+        let line = format!("Review limit: '{feature_name}' {kind} stabilized after {max} rounds.");
         println!("{}", line.yellow());
     }
 }
 
 /// Print interrupted message.
 pub fn print_interrupted(iteration: u32, task_id: &str, title: &str) {
-    if ui::is_active() {
-        ui_log(
-            UiLevel::Warn,
-            format!("[iter {iteration}] Interrupted {task_id} -- \"{title}\""),
-        );
-    } else {
+    if !ui::is_active() {
         println!(
             "\n[iter {}] {} {} — \"{}\"",
             iteration,

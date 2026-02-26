@@ -2,22 +2,10 @@
 
 use std::collections::VecDeque;
 
-use crate::ui::event::{ToolLine, UiEvent, UiLevel};
+use crate::ui::event::{ToolLine, UiEvent};
 
-const MAX_LOG_LINES: usize = 300;
 const MAX_TOOL_LINES: usize = 200;
 const MAX_AGENT_CHARS: usize = 60_000;
-
-/// One line in the operator event log.
-///
-/// Events are collected even though the Events panel was removed from the
-/// dashboard; they remain available for future use (e.g. explorer views).
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct LogLine {
-    pub level: UiLevel,
-    pub message: String,
-}
 
 /// Cached rectangle positions of dashboard frames from the last render pass.
 /// Used by the event loop to route mouse scroll events to the correct panel.
@@ -55,7 +43,6 @@ pub struct AppState {
     pub status_line: String,
     pub dag_summary: String,
     pub current_task: String,
-    pub logs: VecDeque<LogLine>,
     pub tools: VecDeque<ToolLine>,
     pub agent_text: String,
     /// Cached line count for `agent_text` to avoid repeated scans in hot paths.
@@ -93,7 +80,6 @@ impl Default for AppState {
             status_line: "Starting".to_string(),
             dag_summary: "DAG: n/a".to_string(),
             current_task: "Task: idle".to_string(),
-            logs: VecDeque::new(),
             tools: VecDeque::new(),
             agent_text: String::new(),
             agent_line_count: 0,
@@ -125,12 +111,6 @@ impl AppState {
             }
             UiEvent::CurrentTask(line) => {
                 self.current_task = line;
-            }
-            UiEvent::Log { level, message } => {
-                self.logs.push_back(LogLine { level, message });
-                while self.logs.len() > MAX_LOG_LINES {
-                    self.logs.pop_front();
-                }
             }
             UiEvent::AgentText(text) => {
                 // Trim leading whitespace from the very first text chunk.
@@ -334,22 +314,6 @@ mod tests {
         let mut state = AppState::default();
         state.apply(UiEvent::StatusLine("iter 2".to_string()));
         assert_eq!(state.status_line, "iter 2");
-    }
-
-    #[test]
-    fn log_ring_buffer_is_capped() {
-        let mut state = AppState::default();
-        for i in 0..400 {
-            state.apply(UiEvent::Log {
-                level: UiLevel::Info,
-                message: format!("line {i}"),
-            });
-        }
-        assert_eq!(state.logs.len(), 300);
-        assert_eq!(
-            state.logs.front().map(|l| l.message.as_str()),
-            Some("line 100")
-        );
     }
 
     #[test]

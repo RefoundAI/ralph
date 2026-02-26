@@ -1,13 +1,5 @@
 //! Events emitted by core modules and consumed by the TUI runtime.
 
-/// Log severity for the event stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UiLevel {
-    Info,
-    Warn,
-    Error,
-}
-
 /// A structured tool activity entry for the TUI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolLine {
@@ -23,10 +15,6 @@ pub enum UiEvent {
     StatusLine(String),
     DagSummary(String),
     CurrentTask(String),
-    Log {
-        level: UiLevel,
-        message: String,
-    },
     AgentText(String),
     /// Thinking text from the agent, rendered indented in the agent stream.
     AgentThinking(String),

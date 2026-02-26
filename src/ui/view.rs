@@ -969,7 +969,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::event::{ToolLine, UiEvent, UiLevel};
+    use crate::ui::event::{ToolLine, UiEvent};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::Terminal;
@@ -991,10 +991,6 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = AppState::default();
         state.apply(UiEvent::StatusLine("Iteration 2".to_string()));
-        state.apply(UiEvent::Log {
-            level: UiLevel::Info,
-            message: "hello".to_string(),
-        });
         terminal
             .draw(|f| {
                 let mut areas = FrameAreas::default();

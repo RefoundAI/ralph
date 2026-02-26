@@ -15,8 +15,6 @@ use anyhow::{bail, Result};
 use ratatui::style::{Color, Modifier, Style};
 use serde::Deserialize;
 
-use crate::ui::event::UiLevel;
-
 /// All color tokens used by the TUI.
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -374,19 +372,6 @@ pub fn status() -> Style {
 pub fn subdued() -> Style {
     let t = active();
     Style::default().fg(t.subdued_fg).bg(t.background)
-}
-
-#[allow(dead_code)]
-pub fn level(level: UiLevel) -> Style {
-    let t = active();
-    match level {
-        UiLevel::Info => Style::default().fg(t.info_fg).bg(t.background),
-        UiLevel::Warn => Style::default().fg(t.warn_fg).bg(t.background),
-        UiLevel::Error => Style::default()
-            .fg(t.error_fg)
-            .bg(t.background)
-            .add_modifier(Modifier::BOLD),
-    }
 }
 
 /// Style for the dim overlay behind modals.
