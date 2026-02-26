@@ -264,6 +264,16 @@ pub fn print_task_incomplete(iteration: u32, task_id: &str) {
     }
 }
 
+/// Emit an iteration divider into the agent stream panel (TUI only).
+///
+/// In the TUI, this inserts a visual line separator between iterations.
+/// In plain mode, the existing print_separator handles this.
+pub fn emit_iteration_divider(iteration: u32) {
+    if ui::is_active() {
+        ui::emit(UiEvent::IterationDivider { iteration });
+    }
+}
+
 /// Print task working message.
 pub fn print_task_working(iteration: u32, task_id: &str, title: &str) {
     let line = format!("[iter {iteration}] Working on: {task_id} -- {title}");

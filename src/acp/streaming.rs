@@ -88,12 +88,8 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
                 ui::emit(UiEvent::AgentText(text.to_owned()));
             }
             SessionUpdateMsg::AgentThought(text) => {
-                let truncated = truncate_to_line(text, 100);
-                if !truncated.is_empty() {
-                    ui::emit(UiEvent::Log {
-                        level: UiLevel::Info,
-                        message: format!("thought: {truncated}"),
-                    });
+                if !text.is_empty() {
+                    ui::emit(UiEvent::AgentThinking(text.to_owned()));
                 }
             }
             SessionUpdateMsg::ToolCall {
@@ -127,9 +123,14 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
                 });
             }
             SessionUpdateMsg::ToolCallPreamble => {
-                // No separator in TUI mode — agent stream shows only agent text.
+                // Add a newline after the LLM response text before tool calls.
+                ui::emit(UiEvent::AgentText("\n".to_string()));
             }
-            SessionUpdateMsg::ToolCallProgress { .. } | SessionUpdateMsg::Finished => {}
+            SessionUpdateMsg::ToolCallProgress { .. } => {}
+            SessionUpdateMsg::Finished => {
+                // Add a trailing newline after the final LLM response.
+                ui::emit(UiEvent::AgentText("\n".to_string()));
+            }
         }
         return;
     }

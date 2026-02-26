@@ -167,6 +167,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 if crate::interrupt::should_continue()? {
                     formatter::print_separator();
                     config = config.next_iteration();
+                    formatter::emit_iteration_divider(config.iteration);
                     formatter::print_iteration_info(&config);
                     continue;
                 } else {
@@ -483,6 +484,7 @@ fn advance_iteration_with_model_selection(
 ) {
     formatter::print_separator();
     *config = config.next_iteration();
+    formatter::emit_iteration_divider(config.iteration);
 
     let selection = strategy::select_model_with_db(config, next_model_hint, Some(db));
     if selection.was_overridden {

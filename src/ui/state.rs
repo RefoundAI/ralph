@@ -144,23 +144,32 @@ impl AppState {
                 }
 
                 append_collapsed_text(&mut self.agent_text, &text);
-
-                if self.agent_text.len() > MAX_AGENT_CHARS {
-                    let mut split = self.agent_text.len() - MAX_AGENT_CHARS;
-                    while split < self.agent_text.len() && !self.agent_text.is_char_boundary(split)
-                    {
-                        split += 1;
-                    }
-                    if split < self.agent_text.len() {
-                        self.agent_text.drain(..split);
-                    }
+                self.cap_agent_text();
+            }
+            UiEvent::AgentThinking(text) => {
+                // Indent each line of thinking text by 2 spaces and append.
+                if text.is_empty() {
+                    return;
                 }
-                self.agent_line_count = if self.agent_text.is_empty() {
-                    0
-                } else {
-                    self.agent_text.lines().count()
-                };
-                self.agent_revision = self.agent_revision.wrapping_add(1);
+                // Ensure we start thinking on a new line.
+                if !self.agent_text.is_empty() && !self.agent_text.ends_with('\n') {
+                    self.agent_text.push('\n');
+                }
+                for line in text.lines() {
+                    self.agent_text.push_str("  ");
+                    self.agent_text.push_str(line);
+                    self.agent_text.push('\n');
+                }
+                self.cap_agent_text();
+            }
+            UiEvent::IterationDivider { iteration } => {
+                // Insert a visual divider line in the agent stream.
+                if !self.agent_text.is_empty() && !self.agent_text.ends_with('\n') {
+                    self.agent_text.push('\n');
+                }
+                self.agent_text
+                    .push_str(&format!("\n───── iteration {iteration} ─────\n\n"));
+                self.cap_agent_text();
             }
             UiEvent::ToolActivity(tool_line) => {
                 self.tools.push_back(tool_line);
@@ -179,6 +188,25 @@ impl AppState {
                 }
             }
         }
+    }
+
+    /// Cap `agent_text` to `MAX_AGENT_CHARS`, update line count and revision.
+    fn cap_agent_text(&mut self) {
+        if self.agent_text.len() > MAX_AGENT_CHARS {
+            let mut split = self.agent_text.len() - MAX_AGENT_CHARS;
+            while split < self.agent_text.len() && !self.agent_text.is_char_boundary(split) {
+                split += 1;
+            }
+            if split < self.agent_text.len() {
+                self.agent_text.drain(..split);
+            }
+        }
+        self.agent_line_count = if self.agent_text.is_empty() {
+            0
+        } else {
+            self.agent_text.lines().count()
+        };
+        self.agent_revision = self.agent_revision.wrapping_add(1);
     }
 
     pub fn show_explorer(&mut self, title: String, lines: Vec<String>) {

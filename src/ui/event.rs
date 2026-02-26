@@ -28,7 +28,13 @@ pub enum UiEvent {
         message: String,
     },
     AgentText(String),
+    /// Thinking text from the agent, rendered indented in the agent stream.
+    AgentThinking(String),
     ToolActivity(ToolLine),
     /// Detail line for the most recent tool call (indented under it).
     ToolDetail(String),
+    /// Visual divider between iterations in the agent stream.
+    IterationDivider {
+        iteration: u32,
+    },
 }

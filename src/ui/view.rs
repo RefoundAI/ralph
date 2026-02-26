@@ -258,9 +258,26 @@ const SIGIL_TAGS: &[&str] = &[
 fn render_agent_markdown(text: &str) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut in_code_block = false;
+    // Tracks which sigil tag we're inside for multi-line sigils.
+    let mut in_sigil: Option<&str> = None;
 
     for raw_line in text.split('\n') {
         let trimmed = raw_line.trim_start();
+
+        // Inside a multi-line sigil: check for closing tag.
+        if let Some(tag) = in_sigil {
+            let close_tag = format!("</{tag}>");
+            if trimmed.contains(&close_tag) {
+                // Closing tag line — colorize it.
+                let spans = parse_sigil_line(raw_line);
+                lines.push(Line::from(spans));
+                in_sigil = None;
+                continue;
+            }
+            // Content inside multi-line sigil — render dimmed.
+            lines.push(Line::styled(raw_line.to_string(), theme::sigil_body()));
+            continue;
+        }
 
         // Fenced code block delimiters.
         if trimmed.starts_with("```") {
@@ -272,6 +289,13 @@ fn render_agent_markdown(text: &str) -> Vec<Line<'static>> {
         // Inside code blocks: render as code_block style, no inline formatting.
         if in_code_block {
             lines.push(Line::styled(raw_line.to_string(), theme::code_block()));
+            continue;
+        }
+
+        // Iteration divider lines.
+        if trimmed.starts_with("───── iteration ") && trimmed.ends_with(" ─────")
+        {
+            lines.push(Line::styled(raw_line.to_string(), theme::hr()));
             continue;
         }
 
@@ -304,6 +328,11 @@ fn render_agent_markdown(text: &str) -> Vec<Line<'static>> {
 
         // Sigil lines: colorize XML-style tags in accent, body content dimmed.
         if line_contains_sigil(trimmed) {
+            // Check if this is an opening tag that starts a multi-line sigil.
+            // A multi-line sigil has an opening tag but no closing tag on the same line.
+            if let Some(tag) = detect_multiline_sigil_open(trimmed) {
+                in_sigil = Some(tag);
+            }
             let spans = parse_sigil_line(raw_line);
             lines.push(Line::from(spans));
             continue;
@@ -347,10 +376,29 @@ fn render_agent_markdown(text: &str) -> Vec<Line<'static>> {
     lines
 }
 
-/// Check whether a line contains any sigil opening tag.
+/// Detect if a line opens a multi-line sigil (has opening tag but no matching close on same line).
+///
+/// Returns the sigil tag name if a multi-line sigil begins.
+fn detect_multiline_sigil_open(line: &str) -> Option<&'static str> {
+    for tag in SIGIL_TAGS {
+        // Check for opening tag: <tag> or <tag ...>
+        let open_simple = format!("<{tag}>");
+        let open_attrs = format!("<{tag} ");
+        if line.contains(&open_simple) || line.contains(&open_attrs) {
+            // Only multi-line if no closing tag on same line.
+            let close = format!("</{tag}>");
+            if !line.contains(&close) {
+                return Some(tag);
+            }
+        }
+    }
+    None
+}
+
+/// Check whether a line contains any sigil opening or closing tag.
 fn line_contains_sigil(line: &str) -> bool {
     for tag in SIGIL_TAGS {
-        if line.contains(&format!("<{tag}")) {
+        if line.contains(&format!("<{tag}")) || line.contains(&format!("</{tag}>")) {
             return true;
         }
     }
