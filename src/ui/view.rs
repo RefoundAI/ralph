@@ -109,7 +109,11 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
         let cap = (right_column_height / 4).max(5);
         raw.min(cap)
     } else {
-        3 // choice mode: handled in Phase 4
+        // Active choice mode: num_choices + 4 (top border, hint line, bottom hint bar, bottom border)
+        let num_choices = state.input_choices.as_ref().map(|c| c.len()).unwrap_or(0) as u16;
+        let raw = num_choices + 4;
+        let cap = (right_column_height * 2 / 5).max(5);
+        raw.min(cap)
     };
     let right = Layout::default()
         .direction(Direction::Vertical)
@@ -242,8 +246,33 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             }
         }
     } else {
-        // Active choice mode: deferred to Phase 4.
-        let widget = Paragraph::new(state.input_hint.as_str())
+        // Active choice mode: numbered list with highlighted cursor.
+        let choices = state.input_choices.as_ref().unwrap();
+        let mut lines: Vec<Line<'_>> = Vec::new();
+
+        for (i, choice) in choices.iter().enumerate() {
+            let number = i + 1;
+            if i == state.input_choice_cursor {
+                lines.push(Line::styled(
+                    format!("> {number}. {choice}"),
+                    theme::title(),
+                ));
+            } else {
+                lines.push(Line::styled(
+                    format!("  {number}. {choice}"),
+                    theme::subdued(),
+                ));
+            }
+        }
+
+        // Bottom hint bar.
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "1-9 select · ↑/↓ navigate · Enter confirm · type for custom",
+            theme::subdued(),
+        ));
+
+        let widget = Paragraph::new(lines)
             .block(
                 Block::default()
                     .title(state.input_title.as_str())
@@ -252,6 +281,7 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             )
             .style(theme::subdued());
         frame.render_widget(widget, area);
+        // No cursor positioning in choice mode — selection is visual via highlight.
     }
 }
 
@@ -460,6 +490,71 @@ mod tests {
         assert!(
             text.contains("Interactive Prompt"),
             "Active input title should appear: {text}"
+        );
+    }
+
+    #[test]
+    fn dashboard_renders_input_pane_active_choices() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        state.input_active = true;
+        state.input_title = "Choose Option".to_string();
+        state.input_hint = "Pick one".to_string();
+        state.input_choices = Some(vec!["Option A".to_string(), "Option B".to_string()]);
+        state.input_choice_cursor = 1; // Option B is highlighted
+        terminal.draw(|f| render(f, &state)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+
+        // Both choices should appear with numbers.
+        assert!(
+            text.contains("1. Option A"),
+            "First choice should appear: {text}"
+        );
+        assert!(
+            text.contains("2. Option B"),
+            "Second choice should appear: {text}"
+        );
+
+        // Highlighted choice (Option B at cursor=1) should have '>' prefix.
+        assert!(
+            text.contains("> 2. Option B"),
+            "Highlighted choice should have '>' prefix: {text}"
+        );
+
+        // Non-highlighted choice (Option A) should have '  ' prefix (no '>').
+        assert!(
+            !text.contains("> 1. Option A"),
+            "Non-highlighted choice should NOT have '>' prefix: {text}"
+        );
+
+        // Border title should appear.
+        assert!(
+            text.contains("Choose Option"),
+            "Choice mode title should appear: {text}"
+        );
+
+        // Verify highlighted choice has distinct styling by checking the buffer cells.
+        let buf = terminal.backend().buffer();
+        let mut highlight_found = false;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width.saturating_sub(1) {
+                if buf[(x, y)].symbol() == ">" {
+                    // Check that cells in the highlighted row use cyan bold (theme::title()).
+                    let cell = &buf[(x, y)];
+                    if cell.fg == Color::Cyan {
+                        highlight_found = true;
+                    }
+                    break;
+                }
+            }
+            if highlight_found {
+                break;
+            }
+        }
+        assert!(
+            highlight_found,
+            "Highlighted choice should use cyan styling (theme::title())"
         );
     }
 
