@@ -511,8 +511,23 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 notes: sigils.journal_notes.clone(),
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
-            if let Err(e) = journal::insert_journal_entry(&db, &journal_entry) {
-                formatter::print_warning(&format!("Warning: failed to write journal entry: {}", e));
+            match journal::insert_journal_entry(&db, &journal_entry) {
+                Ok(_) => {
+                    formatter::emit_event_info(
+                        "journal",
+                        &format!(
+                            "entry written \u{2014} iteration {}, outcome={}",
+                            config.iteration, outcome
+                        ),
+                    );
+                }
+                Err(e) => {
+                    formatter::print_warning(&format!(
+                        "Warning: failed to write journal entry: {}",
+                        e
+                    ));
+                    formatter::emit_event("journal", &format!("write failed \u{2014} {}", e), true);
+                }
             }
 
             // Write knowledge entries emitted by the agent
@@ -527,12 +542,21 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                             "  Knowledge entry written: {}",
                             path.display()
                         ));
+                        formatter::emit_event_info(
+                            "knowledge",
+                            &format!("written: {}", path.display()),
+                        );
                     }
                     Err(e) => {
                         formatter::print_warning(&format!(
                             "  Warning: failed to write knowledge entry: {}",
                             e
                         ));
+                        formatter::emit_event(
+                            "knowledge",
+                            &format!("write failed \u{2014} {}", e),
+                            true,
+                        );
                     }
                 }
             }
