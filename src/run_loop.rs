@@ -139,6 +139,10 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
         let streaming_result = match run_result {
             RunResult::Interrupted => {
                 formatter::print_interrupted(config.iteration, &task_id, &task.title);
+                formatter::emit_event_info(
+                    "interrupt",
+                    &format!("interrupted \u{2014} {} \"{}\"", task.id, task.title),
+                );
 
                 // Release claim first so interrupt follow-up failures do not strand task state.
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
@@ -166,6 +170,10 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                         &task_id,
                         &format!("User feedback (iteration {}): {}", config.iteration, fb),
                     )?;
+                    formatter::emit_event_info(
+                        "interrupt",
+                        &format!("feedback appended to {}", task_id),
+                    );
                 }
 
                 // Journal entry for the interrupted iteration
@@ -190,12 +198,17 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
 
                 // Ask whether to continue
                 if crate::interrupt::should_continue()? {
+                    formatter::emit_event_info(
+                        "interrupt",
+                        "continuing \u{2014} user chose to proceed",
+                    );
                     formatter::print_separator();
                     config = config.next_iteration();
                     formatter::emit_iteration_divider(config.iteration);
                     formatter::print_iteration_info(&config);
                     continue;
                 } else {
+                    formatter::emit_event_info("interrupt", "stopping \u{2014} user chose to halt");
                     return Ok(Outcome::Interrupted);
                 }
             }
