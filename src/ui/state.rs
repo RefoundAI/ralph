@@ -272,6 +272,7 @@ impl AppState {
     }
 
     /// Reset Events panel to auto-scroll (follow the tail).
+    #[allow(dead_code)]
     pub fn events_scroll_to_bottom(&mut self) {
         self.events_scroll = None;
     }

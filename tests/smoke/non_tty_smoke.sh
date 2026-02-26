@@ -33,18 +33,32 @@ echo "[non-tty-smoke] workspace: $SMOKE_DIR"
   run_agent_cmd="env MOCK_RESPONSE='<task-done>${run_task_id}</task-done>' '$MOCK_AGENT_BIN'"
 
   "$RALPH_BIN" run "$run_task_id" --no-verify --agent "$run_agent_cmd" \
-    >"$ARTIFACT_DIR/non-tty-run.log" 2>&1
+    >"$ARTIFACT_DIR/non-tty-run-stdout.log" 2>"$ARTIFACT_DIR/non-tty-run-stderr.log"
 
   "$RALPH_BIN" --no-ui task list --all >"$ARTIFACT_DIR/non-tty-task-list.log" 2>&1
 )
 
-if LC_ALL=C grep -Fq $'\x1b[?1049h' "$ARTIFACT_DIR/non-tty-run.log"; then
-  echo "alternate-screen escape sequence found in non-tty output" >&2
+if LC_ALL=C grep -Fq $'\x1b[?1049h' "$ARTIFACT_DIR/non-tty-run-stdout.log"; then
+  echo "alternate-screen escape sequence found in non-tty stdout" >&2
   exit 1
 fi
 
-if ! grep -q "Tasks complete." "$ARTIFACT_DIR/non-tty-run.log"; then
-  echo "expected completion line missing from non-tty run output" >&2
+if ! grep -q "Tasks complete." "$ARTIFACT_DIR/non-tty-run-stdout.log"; then
+  echo "expected completion line missing from non-tty stdout" >&2
+  exit 1
+fi
+
+# Strip ANSI escape sequences for pattern matching
+sed 's/\x1b\[[0-9;]*m//g' "$ARTIFACT_DIR/non-tty-run-stderr.log" \
+  >"$ARTIFACT_DIR/non-tty-run-stderr-plain.log"
+
+if ! grep -q '\[task\]' "$ARTIFACT_DIR/non-tty-run-stderr-plain.log"; then
+  echo "expected [task] event missing from non-tty stderr" >&2
+  exit 1
+fi
+
+if ! grep -q '\[dag\]' "$ARTIFACT_DIR/non-tty-run-stderr-plain.log"; then
+  echo "expected [dag] event missing from non-tty stderr" >&2
   exit 1
 fi
 
