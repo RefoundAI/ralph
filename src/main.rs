@@ -256,7 +256,7 @@ mod tests {
             let task_prompt = build_task_new_system_prompt(test_context);
             assert!(task_prompt.contains(test_context));
             assert!(task_prompt.contains("## Guidelines"));
-            assert!(task_prompt.contains("## Output"));
+            assert!(task_prompt.contains("## Creating the Task"));
         }
     }
 }

@@ -269,19 +269,20 @@ Interview the user about what they want done, then create a standalone task in t
 
 {context}
 
-## Output
+## Creating the Task
 
-After gathering requirements, create the task by outputting:
+After gathering requirements, create the task by running the `ralph task add` command via the terminal.
 
-```json
-{{
-  "title": "Short imperative title",
-  "description": "Detailed description with acceptance criteria",
-  "priority": 0
-}}
+Usage: `ralph task add <TITLE> -d <DESCRIPTION> --priority <N>`
+
+Example:
+```
+ralph task add "Refactor auth module" -d "Extract token validation into a separate function. Acceptance criteria: all existing tests pass, new unit test for the extracted function." --priority 0
 ```
 
-The task will be created as a standalone task (not part of any feature)."#,
+The command prints the new task ID on success. Confirm the task was created by showing the ID to the user.
+
+IMPORTANT: You MUST use the terminal to run `ralph task add`. Do NOT just output JSON — it will not be processed."#,
         context = context,
     )
 }
