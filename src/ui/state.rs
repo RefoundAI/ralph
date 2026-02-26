@@ -18,12 +18,6 @@ pub struct LogLine {
 /// Optional modal rendered above the base screen.
 #[derive(Debug, Clone)]
 pub enum UiModal {
-    Multiline {
-        title: String,
-        hint: String,
-        lines: Vec<String>,
-        current_line: String,
-    },
     Confirm {
         title: String,
         prompt: String,
@@ -56,6 +50,20 @@ pub struct AppState {
     pub agent_scroll: Option<usize>,
     pub screen: UiScreen,
     pub modal: Option<UiModal>,
+    /// Whether the persistent Input pane is accepting keystrokes.
+    pub input_active: bool,
+    /// Title shown on the Input pane border.
+    pub input_title: String,
+    /// Hint text shown when inactive or as header when active.
+    pub input_hint: String,
+    /// Committed input lines (from Enter presses).
+    pub input_lines: Vec<String>,
+    /// Current line being typed.
+    pub input_current_line: String,
+    /// When `Some`, the Input pane renders as a choice selector.
+    pub input_choices: Option<Vec<String>>,
+    /// Which choice is highlighted in choice mode.
+    pub input_choice_cursor: usize,
 }
 
 impl Default for AppState {
@@ -70,6 +78,13 @@ impl Default for AppState {
             agent_scroll: None,
             screen: UiScreen::Dashboard,
             modal: None,
+            input_active: false,
+            input_title: "Input".to_string(),
+            input_hint: "Waiting for agent...".to_string(),
+            input_lines: Vec::new(),
+            input_current_line: String::new(),
+            input_choices: None,
+            input_choice_cursor: 0,
         }
     }
 }
@@ -156,6 +171,28 @@ impl AppState {
         self.agent_scroll = None;
     }
 
+    /// Activate the input pane for a new prompt.
+    pub fn activate_input(&mut self, title: String, hint: String, choices: Option<Vec<String>>) {
+        self.input_active = true;
+        self.input_title = title;
+        self.input_hint = hint;
+        self.input_lines.clear();
+        self.input_current_line.clear();
+        self.input_choices = choices;
+        self.input_choice_cursor = 0;
+    }
+
+    /// Deactivate the input pane (return to idle).
+    pub fn deactivate_input(&mut self) {
+        self.input_active = false;
+        self.input_title = "Input".to_string();
+        self.input_hint = "Waiting for agent...".to_string();
+        self.input_lines.clear();
+        self.input_current_line.clear();
+        self.input_choices = None;
+        self.input_choice_cursor = 0;
+    }
+
     pub fn explorer_scroll_up(&mut self) {
         if let UiScreen::Explorer { scroll, .. } = &mut self.screen {
             *scroll = scroll.saturating_sub(1);
@@ -204,6 +241,65 @@ mod tests {
         state.apply(UiEvent::AgentText("🎉".repeat(70_000)));
         assert!(state.agent_text.is_char_boundary(state.agent_text.len()));
         assert!(state.agent_text.len() <= 60_000 + 4);
+    }
+
+    #[test]
+    fn input_activation_and_deactivation() {
+        let mut state = AppState::default();
+
+        // Verify defaults.
+        assert!(!state.input_active);
+        assert_eq!(state.input_title, "Input");
+        assert_eq!(state.input_hint, "Waiting for agent...");
+        assert!(state.input_lines.is_empty());
+        assert!(state.input_current_line.is_empty());
+        assert!(state.input_choices.is_none());
+        assert_eq!(state.input_choice_cursor, 0);
+
+        // Activate with free-text mode.
+        state.activate_input(
+            "Interactive Prompt".to_string(),
+            "Type your response".to_string(),
+            None,
+        );
+        assert!(state.input_active);
+        assert_eq!(state.input_title, "Interactive Prompt");
+        assert_eq!(state.input_hint, "Type your response");
+        assert!(state.input_lines.is_empty());
+        assert!(state.input_current_line.is_empty());
+        assert!(state.input_choices.is_none());
+        assert_eq!(state.input_choice_cursor, 0);
+
+        // Simulate some typing.
+        state.input_current_line = "hello".to_string();
+        state.input_lines.push("first line".to_string());
+
+        // Deactivate resets everything.
+        state.deactivate_input();
+        assert!(!state.input_active);
+        assert_eq!(state.input_title, "Input");
+        assert_eq!(state.input_hint, "Waiting for agent...");
+        assert!(state.input_lines.is_empty());
+        assert!(state.input_current_line.is_empty());
+        assert!(state.input_choices.is_none());
+        assert_eq!(state.input_choice_cursor, 0);
+
+        // Activate with choice mode.
+        let choices = vec!["Option A".to_string(), "Option B".to_string()];
+        state.activate_input(
+            "Choose".to_string(),
+            "Pick one".to_string(),
+            Some(choices.clone()),
+        );
+        assert!(state.input_active);
+        assert_eq!(state.input_title, "Choose");
+        assert_eq!(state.input_hint, "Pick one");
+        assert_eq!(state.input_choices, Some(choices));
+        assert_eq!(state.input_choice_cursor, 0);
+
+        // Deactivate clears choices too.
+        state.deactivate_input();
+        assert!(state.input_choices.is_none());
     }
 
     #[test]

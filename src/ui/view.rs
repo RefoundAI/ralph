@@ -185,78 +185,6 @@ fn render_modal(frame: &mut Frame<'_>, modal: &UiModal) {
     frame.render_widget(Clear, area);
 
     match modal {
-        UiModal::Multiline {
-            title,
-            hint,
-            lines,
-            current_line,
-        } => {
-            // Build structured content with visual differentiation:
-            // 1. Hint text (subdued)
-            // 2. Separator
-            // 3. Input area with prompt markers
-            // 4. Hint bar at bottom
-            let mut content: Vec<Line<'_>> = Vec::new();
-
-            // Hint text in subdued style
-            for hint_line in hint.lines() {
-                content.push(Line::from(Span::styled(hint_line, theme::subdued())));
-            }
-            content.push(Line::from(""));
-            content.push(Line::from(Span::styled(
-                "─── Input ───────────────────────────────────────────",
-                Style::default().fg(Color::DarkGray),
-            )));
-
-            // Committed lines with prompt markers
-            for line in lines {
-                content.push(Line::from(vec![
-                    Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(line.as_str(), theme::modal_text()),
-                ]));
-            }
-
-            // Current line with cursor marker
-            content.push(Line::from(vec![
-                Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-                Span::styled(current_line.as_str(), theme::modal_text()),
-                Span::styled("█", Style::default().fg(Color::Cyan)),
-            ]));
-
-            content.push(Line::from(""));
-            content.push(Line::from(Span::styled(
-                "Enter=newline  Empty Enter=submit  Esc=exit  Ctrl+C=interrupt",
-                Style::default().fg(Color::DarkGray),
-            )));
-
-            let widget = Paragraph::new(content)
-                .block(
-                    Block::default()
-                        .title(title.as_str())
-                        .borders(Borders::ALL)
-                        .border_style(theme::modal_border()),
-                )
-                .wrap(Wrap { trim: false });
-            frame.render_widget(widget, area);
-
-            // Place the real terminal cursor at the typing position.
-            // inner area = area minus 1-cell border on each side.
-            let inner_x = area.x + 1;
-            let inner_y = area.y + 1;
-            // The cursor sits after "│ " (2 chars) + current_line length,
-            // offset by the number of content lines above the current line.
-            let lines_above = hint.lines().count() // hint lines
-                + 1  // blank line
-                + 1  // separator
-                + lines.len(); // committed input lines
-            let cursor_col = 2 + current_line.len() as u16;
-            let cursor_x = inner_x + cursor_col;
-            let cursor_y = inner_y + lines_above as u16;
-            // Only set cursor if it fits within the modal area
-            if cursor_x < area.x + area.width - 1 && cursor_y < area.y + area.height - 1 {
-                frame.set_cursor_position((cursor_x, cursor_y));
-            }
-        }
         UiModal::Confirm {
             title,
             prompt,
@@ -363,5 +291,13 @@ mod tests {
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Confirm"));
         assert!(text.contains("Delete?"));
+    }
+
+    #[test]
+    fn input_pane_does_not_panic_on_tiny_frame() {
+        let backend = TestBackend::new(1, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let state = AppState::default();
+        terminal.draw(|f| render(f, &state)).unwrap();
     }
 }
