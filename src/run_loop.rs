@@ -622,6 +622,42 @@ fn advance_iteration_with_model_selection(
         }
     }
 
+    // Capture old model before overwriting for escalation detection
+    let old_model = config.current_model.clone();
+
+    // Config event: model selected (always)
+    formatter::emit_event_info(
+        "config",
+        &format!(
+            "model={} (strategy={})",
+            selection.model, config.model_strategy
+        ),
+    );
+
+    // Config event: model override (hint overrode strategy)
+    if selection.was_overridden {
+        formatter::emit_event_info(
+            "config",
+            &format!(
+                "model overridden: {} \u{2192} {} (reason={})",
+                selection.strategy_choice,
+                selection.model,
+                selection.hint.as_deref().unwrap_or("agent hint")
+            ),
+        );
+    }
+
+    // Config event: model escalation (strategy changed model, not hint-driven)
+    if !selection.was_overridden && selection.model != old_model {
+        formatter::emit_event_info(
+            "config",
+            &format!(
+                "model escalated: {} \u{2192} {}",
+                old_model, selection.model
+            ),
+        );
+    }
+
     config.current_model = selection.model;
     formatter::print_iteration_info(config);
     formatter::emit_event_info(
