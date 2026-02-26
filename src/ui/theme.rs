@@ -56,6 +56,13 @@ pub fn modal_text() -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// Style for the inactive Input pane border and hint text.
+/// Currently identical to `border()` but is a separate token so the
+/// inactive input pane can be styled independently in the future.
+pub fn input_inactive() -> Style {
+    Style::default().fg(Color::DarkGray).bg(BG)
+}
+
 /// Style for modal borders.
 pub fn modal_border() -> Style {
     Style::default()
