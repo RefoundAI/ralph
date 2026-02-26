@@ -2,6 +2,7 @@
 
 use agent_client_protocol::StopReason;
 use anyhow::{Context, Result};
+use std::path::Path;
 
 use crate::acp;
 use crate::acp::types::{
@@ -220,18 +221,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 if config.limit_reached() {
                     return Ok(Outcome::LimitReached);
                 }
-                formatter::print_separator();
-                config = config.next_iteration();
-                let selection = strategy::select_model(&mut config, None);
-                if selection.was_overridden {
-                    strategy::log_model_override(
-                        progress_db.to_str().unwrap(),
-                        config.iteration,
-                        &selection,
-                    );
-                }
-                config.current_model = selection.model;
-                formatter::print_iteration_info(&config);
+                advance_iteration_with_model_selection(&mut config, &db, &progress_db, None);
                 continue;
             }
             StopReason::MaxTokens | StopReason::MaxTurnRequests => {
@@ -264,18 +254,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 if config.limit_reached() {
                     return Ok(Outcome::LimitReached);
                 }
-                formatter::print_separator();
-                config = config.next_iteration();
-                let selection = strategy::select_model(&mut config, None);
-                if selection.was_overridden {
-                    strategy::log_model_override(
-                        progress_db.to_str().unwrap(),
-                        config.iteration,
-                        &selection,
-                    );
-                }
-                config.current_model = selection.model;
-                formatter::print_iteration_info(&config);
+                advance_iteration_with_model_selection(&mut config, &db, &progress_db, None);
                 continue;
             }
             StopReason::Refusal => {
@@ -306,18 +285,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 if config.limit_reached() {
                     return Ok(Outcome::LimitReached);
                 }
-                formatter::print_separator();
-                config = config.next_iteration();
-                let selection = strategy::select_model(&mut config, None);
-                if selection.was_overridden {
-                    strategy::log_model_override(
-                        progress_db.to_str().unwrap(),
-                        config.iteration,
-                        &selection,
-                    );
-                }
-                config.current_model = selection.model;
-                formatter::print_iteration_info(&config);
+                advance_iteration_with_model_selection(&mut config, &db, &progress_db, None);
                 continue;
             }
             _ => {
@@ -351,18 +319,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 if config.limit_reached() {
                     return Ok(Outcome::LimitReached);
                 }
-                formatter::print_separator();
-                config = config.next_iteration();
-                let selection = strategy::select_model(&mut config, None);
-                if selection.was_overridden {
-                    strategy::log_model_override(
-                        progress_db.to_str().unwrap(),
-                        config.iteration,
-                        &selection,
-                    );
-                }
-                config.current_model = selection.model;
-                formatter::print_iteration_info(&config);
+                advance_iteration_with_model_selection(&mut config, &db, &progress_db, None);
                 continue;
             }
         };
@@ -501,25 +458,12 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
         }
 
         // Continue to next iteration
-        formatter::print_separator();
-        config = config.next_iteration();
-
-        // Select model for the next iteration based on strategy,
-        // passing the agent's hint (if any) from the previous result
-        let selection = strategy::select_model(&mut config, next_model_hint.as_deref());
-
-        // Log override events when hint disagrees with strategy
-        if selection.was_overridden {
-            strategy::log_model_override(
-                progress_db.to_str().unwrap(),
-                config.iteration,
-                &selection,
-            );
-        }
-
-        config.current_model = selection.model;
-
-        formatter::print_iteration_info(&config);
+        advance_iteration_with_model_selection(
+            &mut config,
+            &db,
+            &progress_db,
+            next_model_hint.as_deref(),
+        );
     }
 }
 
@@ -529,6 +473,32 @@ fn try_release_claim(db: &Db, task_id: &str, context: &str) {
             "Warning: failed to release task claim for {task_id} after {context}: {err}"
         ));
     }
+}
+
+fn advance_iteration_with_model_selection(
+    config: &mut Config,
+    db: &Db,
+    progress_db: &Path,
+    next_model_hint: Option<&str>,
+) {
+    formatter::print_separator();
+    *config = config.next_iteration();
+
+    let selection = strategy::select_model_with_db(config, next_model_hint, Some(db));
+    if selection.was_overridden {
+        let progress_db_path = progress_db.to_string_lossy();
+        if let Err(err) =
+            strategy::log_model_override(progress_db_path.as_ref(), config.iteration, &selection)
+        {
+            formatter::print_warning(&format!(
+                "Warning: failed to persist model override: {}",
+                err
+            ));
+        }
+    }
+
+    config.current_model = selection.model;
+    formatter::print_iteration_info(config);
 }
 
 /// Resolve feature context: returns (feature_id, spec_content, plan_content).
