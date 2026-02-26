@@ -22,4 +22,5 @@ pub mod project;
 pub mod review;
 pub mod run_loop;
 pub mod strategy;
+pub mod ui;
 pub mod verification;

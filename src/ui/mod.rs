@@ -144,24 +144,6 @@ pub fn prompt_multiline(title: &str, hint: &str) -> Option<UiPromptResult> {
     reply_rx.recv().ok()
 }
 
-/// Show a multiline input with predefined choices on the active UI.
-pub fn prompt_multiline_with_choices(
-    title: &str,
-    hint: &str,
-    choices: Vec<String>,
-) -> Option<UiPromptResult> {
-    let tx = sender()?;
-    let (reply_tx, reply_rx) = mpsc::channel();
-    tx.send(UiCommand::PromptMultiline {
-        title: title.to_string(),
-        hint: hint.to_string(),
-        choices: Some(choices),
-        reply: reply_tx,
-    })
-    .ok()?;
-    reply_rx.recv().ok()
-}
-
 /// Show a yes/no confirmation modal on the active UI.
 pub fn prompt_confirm(title: &str, prompt: &str, default_yes: bool) -> Option<bool> {
     let tx = sender()?;
