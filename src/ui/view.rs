@@ -61,6 +61,12 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(root[1]);
 
+    // Left column: Events (60%) over Tool Activity (40%).
+    let left = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(body[0]);
+
     let logs: Vec<ListItem<'_>> = state
         .logs
         .iter()
@@ -74,11 +80,28 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
             .borders(Borders::ALL)
             .border_style(theme::border()),
     );
-    frame.render_widget(logs_panel, body[0]);
+    frame.render_widget(logs_panel, left[0]);
 
+    let tool_items: Vec<ListItem<'_>> = state
+        .tools
+        .iter()
+        .rev()
+        .take(80)
+        .map(|line| ListItem::new(Line::styled(line.clone(), theme::subdued())))
+        .collect();
+    let tools = List::new(tool_items).block(
+        Block::default()
+            .title("Tool Activity")
+            .borders(Borders::ALL)
+            .border_style(theme::border()),
+    );
+    frame.render_widget(tools, left[1]);
+
+    // Right column: Agent Stream (fills remaining) over Input (fixed height).
+    let input_height: u16 = 3; // inactive: border + hint line + border
     let right = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(68), Constraint::Percentage(32)])
+        .constraints([Constraint::Min(0), Constraint::Length(input_height)])
         .split(body[1]);
 
     // Agent Stream: respect user scroll pin, or auto-scroll to bottom.
@@ -120,26 +143,41 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
         .style(theme::subdued());
     frame.render_widget(agent, right[0]);
 
-    let tool_items: Vec<ListItem<'_>> = state
-        .tools
-        .iter()
-        .rev()
-        .take(80)
-        .map(|line| ListItem::new(Line::styled(line.clone(), theme::subdued())))
-        .collect();
-    let tools = List::new(tool_items).block(
-        Block::default()
-            .title("Tool Activity")
-            .borders(Borders::ALL)
-            .border_style(theme::border()),
-    );
-    frame.render_widget(tools, right[1]);
+    render_input_pane(frame, right[1], state);
 
     let footer = Paragraph::new(
         "↑/↓ scroll agent stream · End resume auto-scroll · --no-ui for plain output",
     )
     .style(theme::subdued());
     frame.render_widget(footer, root[2]);
+}
+
+/// Render the persistent Input pane in the bottom-right of the dashboard.
+fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
+    if !state.input_active {
+        // Inactive: grayed-out hint text with subdued border.
+        let widget = Paragraph::new(state.input_hint.as_str())
+            .block(
+                Block::default()
+                    .title(state.input_title.as_str())
+                    .borders(Borders::ALL)
+                    .border_style(theme::input_inactive()),
+            )
+            .style(theme::input_inactive());
+        frame.render_widget(widget, area);
+    } else {
+        // Active rendering is deferred to Phase 3 (free-text) and Phase 4 (choices).
+        // For now, show the inactive view as a placeholder.
+        let widget = Paragraph::new(state.input_hint.as_str())
+            .block(
+                Block::default()
+                    .title(state.input_title.as_str())
+                    .borders(Borders::ALL)
+                    .border_style(theme::input_inactive()),
+            )
+            .style(theme::input_inactive());
+        frame.render_widget(widget, area);
+    }
 }
 
 fn render_explorer(frame: &mut Frame<'_>, title: &str, lines: &[String], scroll: usize) {
@@ -260,6 +298,8 @@ mod tests {
         assert!(text.contains("Run"));
         assert!(text.contains("Events"));
         assert!(text.contains("Agent Stream"));
+        assert!(text.contains("Tool Activity"));
+        assert!(text.contains("Input"));
     }
 
     #[test]
@@ -299,5 +339,56 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let state = AppState::default();
         terminal.draw(|f| render(f, &state)).unwrap();
+    }
+
+    #[test]
+    fn dashboard_renders_input_pane_inactive() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let state = AppState::default();
+        terminal.draw(|f| render(f, &state)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("Input"), "Input title should appear");
+        assert!(
+            text.contains("Waiting for agent..."),
+            "Inactive hint should appear"
+        );
+    }
+
+    #[test]
+    fn dashboard_renders_tool_activity_in_left_column() {
+        let width = 100u16;
+        let backend = TestBackend::new(width, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        state.apply(UiEvent::ToolActivity("tool_call: Read".to_string()));
+        terminal.draw(|f| render(f, &state)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        // Find the x-coordinate of "Tool Activity" title in the buffer.
+        let title = "Tool Activity";
+        let mut found_x = None;
+        'outer: for y in 0..buf.area.height {
+            for x in 0..buf.area.width.saturating_sub(title.len() as u16) {
+                let mut matched = true;
+                for (i, ch) in title.chars().enumerate() {
+                    if buf[(x + i as u16, y)].symbol().chars().next() != Some(ch) {
+                        matched = false;
+                        break;
+                    }
+                }
+                if matched {
+                    found_x = Some(x);
+                    break 'outer;
+                }
+            }
+        }
+        let x = found_x.expect("'Tool Activity' title should be present in the buffer");
+        // Left column is 42% of terminal width. The title should start within that region.
+        let left_column_max = (width as f64 * 0.42) as u16 + 1;
+        assert!(
+            x < left_column_max,
+            "Tool Activity title at x={x} should be within left 42% (max {left_column_max})"
+        );
     }
 }
