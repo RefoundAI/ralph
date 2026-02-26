@@ -33,15 +33,18 @@ Ralph's design decisions, pitfalls, and constraints are documented in `.ralph/kn
 | Features | `feature-lifecycle.md` | one-shot vs features, execution modes, verification |
 | Config | `configuration-layers.md` | run args contract, model strategy |
 | Prompts | `system-prompt-construction.md` | sigil parsing, journal, knowledge, roam linking |
+| UI / TUI | `ratatui-ui-runtime.md` | event routing, plain fallback, interactive modals, explorer views |
 | Testing | `mock-acp-agent-binary.md` | LocalSet patterns, integration test binary paths |
 
 ### Commonly needed knowledge
 
-- **Adding a config field**: Read `config-from-run-args.md` — has a 12-param contract you must update everywhere
+- **Adding a config field**: Read `config-from-run-args.md` — has an 8-param contract you must update everywhere
 - **Changing task schema**: Read `schema-migrations.md` + `task-columns-mapping.md`
 - **Modifying the run loop**: Read `run-loop-lifecycle.md` + `error-handling-resilience.md`
 - **ACP imports**: Read `acp-trait-imports.md` + `acp-schema-types-import-path.md`
 - **Linter reverting your edits**: Read `linter-hook-reverts-files-on-compile-error.md`
+- **Changing UI behavior**: Read `ratatui-ui-runtime.md` + `ui-event-routing-and-plain-fallback.md` + `ui-interactive-modals-and-explorer-views.md`
+- **Adding a destructive command**: Read `feature-delete-command.md` for the confirmation/`--yes` pattern
 
 ## Source Layout
 
@@ -62,6 +65,7 @@ src/
   acp/              ACP integration (connection, client, prompt, sigils, tools, streaming)
   dag/              Task DAG (schema, CRUD, transitions, dependencies, IDs)
   output/           Terminal formatting, logging
+  ui/               Ratatui TUI runtime (app, state, view, event, theme)
 ```
 
 ## Key Files
@@ -72,23 +76,29 @@ src/
 - `.ralph/features/<name>/plan.md` — Feature implementation plans
 - `.ralph/knowledge/<name>.md` — Knowledge entries (YAML frontmatter + `[[links]]`)
 - `.claude/skills/<name>/SKILL.md` — Reusable agent skills
+- `.github/workflows/ci-smoke.yml` — PR/push CI: unit tests + TTY/non-TTY smoke
+- `tests/smoke/` — Expect-based TTY smoke scripts and non-TTY fallback assertions
+- `docs/` — Release readiness report
 
 ## CLI
 
+Global flag: `--no-ui` disables TUI, forces plain output. Also `RALPH_UI=0`.
+
 ```
 ralph init                        # Initialize project
+ralph auth                        # Delegate to `claude auth login`
 ralph feature create <name>       # Interview -> spec -> plan -> task DAG
 ralph feature list                # List features and status
-ralph feature delete <name>      # Delete feature and all its tasks
+ralph feature delete <name> [-y]  # Delete feature and all its tasks (confirm in UI)
 ralph task add <TITLE> [flags]    # Non-interactive task creation
 ralph task create [--model M]     # Interactive task creation
 ralph task show <ID> [--json]     # Task details
 ralph task list [filters] [--json]
 ralph task update <ID> [flags]
-ralph task delete <ID>
-ralph task done <ID>              # Mark done (triggers auto-transitions)
-ralph task fail <ID> [-r reason]
-ralph task reset <ID>
+ralph task delete <ID> [-y]       # Confirm in UI; -y bypasses
+ralph task done <ID> [-y]         # Mark done (triggers auto-transitions)
+ralph task fail <ID> [-r reason] [-y]
+ralph task reset <ID> [-y]
 ralph task log <ID> [-m msg]
 ralph task deps add <A> <B>       # A must complete before B
 ralph task deps rm <A> <B>
@@ -99,7 +109,7 @@ ralph run <target>                # Run agent loop (feature name or task ID)
   --agent=CMD / --max-retries=N / --no-verify
 ```
 
-Env vars: `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RALPH_AGENT`.
+Env vars: `RALPH_LIMIT`, `RALPH_MODEL`, `RALPH_MODEL_STRATEGY`, `RALPH_AGENT`, `RALPH_UI`.
 
 ## Releases
 

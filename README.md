@@ -73,6 +73,19 @@ ralph task list                       # See what you have
 ralph run t-abc123                    # Run a specific task by ID
 ```
 
+## Terminal UI
+
+Ralph now uses a `ratatui` interface by default when running in a TTY.
+
+- `ralph run <target>` opens a live run cockpit (iteration/model/task state, tool activity, stream output)
+- Interactive authoring flows (`ralph feature create`, `ralph task create`) use in-app multiline modals
+- Non-JSON browse commands (`feature list`, `task list/show/tree`, `task deps list`) open explorer views
+- Destructive task actions (`task delete/done/fail/reset`) request confirmation in UI mode; pass `--yes` to bypass
+
+Use `--no-ui` to force plain text output, or set `RALPH_UI=0`.
+In non-interactive contexts (CI, pipes, redirected stdout/stderr), Ralph auto-falls back to plain output.
+`ralph auth` always delegates to `claude auth login` and runs in plain terminal mode.
+
 ## How It Works
 
 ```mermaid
@@ -259,15 +272,24 @@ and are optional.
 ## CLI Reference
 
 ```
-ralph init                        Initialize a new Ralph project
-ralph feature create <name>       Create feature: spec → plan → task DAG
-ralph feature list                List all features and their status
-ralph task add <TITLE>            Add a standalone task (scriptable)
-ralph task create                 Interactively create a task (Claude-assisted)
-ralph task list                   List tasks
-ralph run <target>                Run the agent loop on a feature or task
-ralph auth                        Authenticate with the agent
+ralph [--no-ui] init                        Initialize a new Ralph project
+ralph [--no-ui] feature create <name>       Create feature: spec → plan → task DAG
+ralph [--no-ui] feature list                List all features and their status
+ralph [--no-ui] feature delete <name> [-y]  Delete a feature (UI confirm unless -y)
+ralph [--no-ui] task add <TITLE>            Add a standalone task (scriptable)
+ralph [--no-ui] task create                 Interactively create a task (Claude-assisted)
+ralph [--no-ui] task list                   List tasks
+ralph [--no-ui] task delete <id> [-y]       Delete task (UI confirm unless -y)
+ralph [--no-ui] task done <id> [-y]         Mark task done (UI confirm unless -y)
+ralph [--no-ui] task fail <id> [-y]         Mark task failed (UI confirm unless -y)
+ralph [--no-ui] task reset <id> [-y]        Reset task to pending (UI confirm unless -y)
+ralph [--no-ui] run <target>                Run the agent loop on a feature or task
+ralph [--no-ui] auth                        Authenticate with the agent
 ```
+
+Global option:
+
+- `--no-ui` — disable `ratatui` and force plain terminal output
 
 ### `ralph run` Options
 
@@ -301,6 +323,7 @@ The `create` subcommand accepts `--model <MODEL>` and `--agent <CMD>` flags.
 | `RALPH_MODEL`          | Default model (opus/sonnet/haiku) |
 | `RALPH_MODEL_STRATEGY` | Default model strategy            |
 | `RALPH_AGENT`          | Agent command (default: claude)    |
+| `RALPH_UI`             | UI mode: `auto` (default), `1`/`on`, `0`/`off` |
 | `RALPH_ITERATION`      | Current iteration (for resume)    |
 | `RALPH_TOTAL`          | Total iterations (for display)    |
 
@@ -322,6 +345,24 @@ Requires Rust toolchain. With Nix:
 nix develop
 cargo build
 cargo test
+```
+
+### CI
+
+Pull requests and pushes to `main` run the `ci-smoke` workflow
+(`.github/workflows/ci-smoke.yml`), which:
+
+1. Builds mock agent binaries (`--features test-mock-agents --examples`)
+2. Runs `cargo test` (unit + integration)
+3. Runs TTY smoke tests via `expect` (`tests/smoke/tty_smoke.sh`)
+4. Runs non-TTY fallback assertions (`tests/smoke/non_tty_smoke.sh`)
+
+To run smoke tests locally (requires `expect`):
+
+```bash
+cargo build --features test-mock-agents --examples
+bash tests/smoke/tty_smoke.sh
+bash tests/smoke/non_tty_smoke.sh
 ```
 
 ### Releases
