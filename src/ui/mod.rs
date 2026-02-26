@@ -12,6 +12,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 
+pub use event::EventLine;
 pub use event::UiEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

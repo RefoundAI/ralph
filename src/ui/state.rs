@@ -167,6 +167,9 @@ impl AppState {
                     self.tools.pop_front();
                 }
             }
+            UiEvent::Event(_) => {
+                // TODO: Events panel state management (Phase 1 state task)
+            }
         }
     }
 
