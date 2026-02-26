@@ -186,7 +186,7 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAr
             if char_count == 0 {
                 1
             } else {
-                (char_count + inner_width - 1) / inner_width
+                char_count.div_ceil(inner_width)
             }
         })
         .sum::<usize>()
@@ -708,7 +708,7 @@ fn count_wrapped_lines(text: &str, width: usize) -> usize {
             if line.is_empty() {
                 1
             } else {
-                (line.len() + w - 1) / w
+                line.len().div_ceil(w)
             }
         })
         .sum()
@@ -865,12 +865,14 @@ mod tests {
     fn modal_renders_over_base_screen() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut state = AppState::default();
-        state.modal = Some(UiModal::Confirm {
-            title: "Confirm".to_string(),
-            prompt: "Delete?".to_string(),
-            default_yes: false,
-        });
+        let state = AppState {
+            modal: Some(UiModal::Confirm {
+                title: "Confirm".to_string(),
+                prompt: "Delete?".to_string(),
+                default_yes: false,
+            }),
+            ..Default::default()
+        };
         terminal
             .draw(|f| {
                 let mut areas = FrameAreas::default();
@@ -946,12 +948,14 @@ mod tests {
     fn dashboard_renders_input_pane_active_choices() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut state = AppState::default();
-        state.input_active = true;
-        state.input_title = "Choose Option".to_string();
-        state.input_hint = "Pick one".to_string();
-        state.input_choices = Some(vec!["Option A".to_string(), "Option B".to_string()]);
-        state.input_choice_cursor = 1; // Option B is highlighted
+        let state = AppState {
+            input_active: true,
+            input_title: "Choose Option".to_string(),
+            input_hint: "Pick one".to_string(),
+            input_choices: Some(vec!["Option A".to_string(), "Option B".to_string()]),
+            input_choice_cursor: 1, // Option B is highlighted
+            ..Default::default()
+        };
         terminal
             .draw(|f| {
                 let mut areas = FrameAreas::default();
@@ -1038,7 +1042,7 @@ mod tests {
             for x in 0..buf.area.width.saturating_sub(title.len() as u16) {
                 let mut matched = true;
                 for (i, ch) in title.chars().enumerate() {
-                    if buf[(x + i as u16, y)].symbol().chars().next() != Some(ch) {
+                    if !buf[(x + i as u16, y)].symbol().starts_with(ch) {
                         matched = false;
                         break;
                     }

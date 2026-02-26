@@ -55,6 +55,8 @@ pub struct AppState {
     pub logs: VecDeque<LogLine>,
     pub tools: VecDeque<ToolLine>,
     pub agent_text: String,
+    /// Cached line count for `agent_text` to avoid repeated scans in hot paths.
+    pub agent_line_count: usize,
     /// When `None`, Agent Stream auto-scrolls to the bottom.
     /// When `Some(offset)`, the user has pinned the scroll position.
     pub agent_scroll: Option<usize>,
@@ -91,6 +93,7 @@ impl Default for AppState {
             logs: VecDeque::new(),
             tools: VecDeque::new(),
             agent_text: String::new(),
+            agent_line_count: 0,
             agent_scroll: None,
             logs_scroll: 0,
             tools_scroll: 0,
@@ -137,11 +140,7 @@ impl AppState {
                     return;
                 }
 
-                self.agent_text.push_str(&text);
-
-                // Collapse consecutive blank lines: never more than one blank line in a row.
-                // We do a single pass after appending to keep it simple.
-                collapse_blank_lines(&mut self.agent_text);
+                append_collapsed_text(&mut self.agent_text, &text);
 
                 if self.agent_text.len() > MAX_AGENT_CHARS {
                     let mut split = self.agent_text.len() - MAX_AGENT_CHARS;
@@ -153,6 +152,11 @@ impl AppState {
                         self.agent_text.drain(..split);
                     }
                 }
+                self.agent_line_count = if self.agent_text.is_empty() {
+                    0
+                } else {
+                    self.agent_text.lines().count()
+                };
             }
             UiEvent::ToolActivity(tool_line) => {
                 self.tools.push_back(tool_line);
@@ -190,10 +194,8 @@ impl AppState {
     /// the approximate bottom so the first scroll-up moves up by `n` lines
     /// rather than jumping to the top.
     pub fn agent_scroll_up(&mut self, n: usize) {
-        let current = self.agent_scroll.unwrap_or_else(|| {
-            // Approximate current bottom offset from total line count.
-            self.agent_text.lines().count()
-        });
+        // Approximate current bottom offset from total line count.
+        let current = self.agent_scroll.unwrap_or(self.agent_line_count);
         self.agent_scroll = Some(current.saturating_sub(n));
     }
 
@@ -284,11 +286,20 @@ impl AppState {
     }
 }
 
-/// Collapse runs of 3+ consecutive newlines into exactly 2 (one blank line).
-fn collapse_blank_lines(s: &mut String) {
-    // Find and replace runs of 3+ newlines with exactly 2.
-    while s.contains("\n\n\n") {
-        *s = s.replace("\n\n\n", "\n\n");
+/// Append text while collapsing newline runs to at most two `\n` chars.
+fn append_collapsed_text(dst: &mut String, src: &str) {
+    let mut newline_run = dst.chars().rev().take_while(|ch| *ch == '\n').count();
+
+    for ch in src.chars() {
+        if ch == '\n' {
+            if newline_run < 2 {
+                dst.push('\n');
+            }
+            newline_run += 1;
+        } else {
+            dst.push(ch);
+            newline_run = 0;
+        }
     }
 }
 

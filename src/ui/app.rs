@@ -20,7 +20,7 @@ use crate::ui::state::{AppState, FrameAreas};
 use crate::ui::view;
 use crate::ui::{UiCommand, UiPromptResult};
 
-const DRAW_INTERVAL: Duration = Duration::from_millis(50);
+const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 enum Interaction {
     None,
@@ -50,13 +50,17 @@ pub(super) fn run(rx: Receiver<UiCommand>) -> io::Result<()> {
     let mut interaction = Interaction::None;
     let mut areas = FrameAreas::default();
     let mut should_exit = false;
+    let mut needs_draw = true;
+    let mut cursor_shown = false;
 
     while !should_exit {
-        match rx.recv_timeout(DRAW_INTERVAL) {
+        match rx.recv_timeout(EVENT_POLL_INTERVAL) {
             Ok(cmd) => {
                 should_exit = apply_command(&mut state, &mut interaction, cmd);
+                needs_draw = true;
                 while let Ok(next) = rx.try_recv() {
                     should_exit = should_exit || apply_command(&mut state, &mut interaction, next);
+                    needs_draw = true;
                     if should_exit {
                         break;
                     }
@@ -66,17 +70,26 @@ pub(super) fn run(rx: Receiver<UiCommand>) -> io::Result<()> {
             Err(RecvTimeoutError::Disconnected) => break,
         }
 
-        handle_terminal_events(&mut state, &mut interaction, &areas);
+        if handle_terminal_events(&mut state, &mut interaction, &areas) {
+            needs_draw = true;
+        }
 
         // Show terminal cursor when input pane is active in free-text mode,
         // hide it otherwise so it doesn't flicker over the dashboard.
-        if state.input_active && state.input_choices.is_none() {
-            let _ = execute!(terminal.backend_mut(), Show);
-        } else {
-            let _ = execute!(terminal.backend_mut(), Hide);
+        let should_show_cursor = state.input_active && state.input_choices.is_none();
+        if should_show_cursor != cursor_shown {
+            if should_show_cursor {
+                let _ = execute!(terminal.backend_mut(), Show);
+            } else {
+                let _ = execute!(terminal.backend_mut(), Hide);
+            }
+            cursor_shown = should_show_cursor;
         }
 
-        terminal.draw(|frame| view::render(frame, &state, &mut areas))?;
+        if needs_draw {
+            terminal.draw(|frame| view::render(frame, &state, &mut areas))?;
+            needs_draw = false;
+        }
     }
 
     let _ = terminal.show_cursor();
@@ -144,18 +157,24 @@ fn apply_command(state: &mut AppState, interaction: &mut Interaction, cmd: UiCom
     }
 }
 
-fn handle_terminal_events(state: &mut AppState, interaction: &mut Interaction, areas: &FrameAreas) {
+fn handle_terminal_events(
+    state: &mut AppState,
+    interaction: &mut Interaction,
+    areas: &FrameAreas,
+) -> bool {
+    let mut changed = false;
+
     // Drain ALL available events before returning, so paste, held-key
     // repeats, and scroll gestures are batched into a single redraw cycle.
     loop {
         let Ok(has_event) = event::poll(Duration::from_millis(0)) else {
-            return;
+            return changed;
         };
         if !has_event {
-            return;
+            return changed;
         }
         let Ok(ev) = event::read() else {
-            return;
+            return changed;
         };
         match ev {
             Event::Key(key) => {
@@ -163,9 +182,11 @@ fn handle_terminal_events(state: &mut AppState, interaction: &mut Interaction, a
                     continue;
                 }
                 process_key(state, interaction, key);
+                changed = true;
             }
             Event::Mouse(mouse) => {
                 process_mouse(state, interaction, mouse, areas);
+                changed = true;
             }
             _ => continue,
         }
@@ -234,8 +255,7 @@ fn process_key(
                     state.agent_scroll_up(20);
                 }
                 KeyCode::PageDown => {
-                    let line_count = state.agent_text.lines().count();
-                    state.agent_scroll_down(20, line_count);
+                    state.agent_scroll_down(20, state.agent_line_count);
                 }
                 KeyCode::End => {
                     state.agent_scroll_to_bottom();
@@ -358,8 +378,7 @@ fn process_key(
                 state.agent_scroll_up(20);
             }
             KeyCode::PageDown => {
-                let line_count = state.agent_text.lines().count();
-                state.agent_scroll_down(20, line_count);
+                state.agent_scroll_down(20, state.agent_line_count);
             }
             _ => {}
         },
@@ -417,15 +436,13 @@ fn process_key(
                 KeyCode::Down | KeyCode::Char('j') => {
                     // Use a large max so scroll_down clamps properly;
                     // exact max is computed at render time but we approximate here.
-                    let line_count = state.agent_text.lines().count();
-                    state.agent_scroll_down(1, line_count);
+                    state.agent_scroll_down(1, state.agent_line_count);
                 }
                 KeyCode::PageUp => {
                     state.agent_scroll_up(20);
                 }
                 KeyCode::PageDown => {
-                    let line_count = state.agent_text.lines().count();
-                    state.agent_scroll_down(20, line_count);
+                    state.agent_scroll_down(20, state.agent_line_count);
                 }
                 KeyCode::End => {
                     state.agent_scroll_to_bottom();
@@ -461,8 +478,7 @@ fn process_mouse(
             if scroll_lines < 0 {
                 state.agent_scroll_up((-scroll_lines) as usize);
             } else {
-                let line_count = state.agent_text.lines().count();
-                state.agent_scroll_down(scroll_lines as usize, line_count);
+                state.agent_scroll_down(scroll_lines as usize, state.agent_line_count);
             }
             return;
         }
