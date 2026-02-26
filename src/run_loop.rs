@@ -88,6 +88,10 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
 
         // Print iteration info with colors (task ID in cyan)
         formatter::print_task_working(config.iteration, &task_id, &task.title);
+        formatter::emit_event_info(
+            "task",
+            &format!("{} claimed \u{2014} \"{}\"", task_id, task.title),
+        );
 
         // Set up logging
         let log_file = logger::setup_log_file();
@@ -118,6 +122,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
 
                 // Release claim first so interrupt follow-up failures do not strand task state.
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
+                formatter::emit_event_info("task", &format!("{} claim released", task_id));
 
                 // Prompt for feedback
                 let feedback = crate::interrupt::prompt_for_feedback(task)?;
@@ -199,6 +204,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 );
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
+                formatter::emit_event_info("task", &format!("{} incomplete (no sigil)", task_id));
                 let journal_entry = journal::JournalEntry {
                     id: 0,
                     run_id: config.run_id.clone(),
@@ -232,6 +238,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 ));
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
+                formatter::emit_event_info("task", &format!("{} incomplete (no sigil)", task_id));
                 let journal_entry = journal::JournalEntry {
                     id: 0,
                     run_id: config.run_id.clone(),
@@ -263,6 +270,11 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 dag::fail_task(&db, &task_id, "Agent refused the request")
                     .context("Failed to fail task")?;
                 formatter::print_task_failed(config.iteration, &task_id);
+                formatter::emit_event(
+                    "task",
+                    &format!("{} failed \u{2014} Agent refused the request", task_id),
+                    true,
+                );
                 let journal_entry = journal::JournalEntry {
                     id: 0,
                     run_id: config.run_id.clone(),
@@ -297,6 +309,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 ));
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
+                formatter::emit_event_info("task", &format!("{} incomplete (no sigil)", task_id));
                 let journal_entry = journal::JournalEntry {
                     id: 0,
                     run_id: config.run_id.clone(),
@@ -360,6 +373,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 ));
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
+                formatter::emit_event_info("task", &format!("{} incomplete (no sigil)", task_id));
             }
         } else if let Some(ref failed_id) = sigils.task_failed {
             if failed_id == &task_id {
@@ -368,6 +382,11 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     return Err(err).context("Failed to fail task");
                 }
                 formatter::print_task_failed(config.iteration, &task_id);
+                formatter::emit_event(
+                    "task",
+                    &format!("{} failed \u{2014} Task marked failed by Claude", task_id),
+                    true,
+                );
             } else {
                 formatter::print_warning(&format!(
                     "Warning: task-failed sigil ID {} does not match assigned task {}",
@@ -375,11 +394,13 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 ));
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
+                formatter::emit_event_info("task", &format!("{} incomplete (no sigil)", task_id));
             }
         } else {
             // No sigil - release the claim and treat as incomplete
             dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
             formatter::print_task_incomplete(config.iteration, &task_id);
+            formatter::emit_event_info("task", &format!("{} incomplete (no sigil)", task_id));
         }
 
         // Post-iteration: write journal entry and knowledge files
@@ -766,6 +787,7 @@ async fn handle_task_done(
                 [task_id.as_str()],
             )?;
             formatter::print_verification_passed(config.iteration, task_id);
+            formatter::emit_event_info("task", &format!("{} done", task_id));
         } else {
             // Verification failed
             formatter::print_verification_failed(config.iteration, task_id, &v_result.reason);
@@ -787,24 +809,31 @@ async fn handle_task_done(
                     task.retry_count + 1,
                     max_retries,
                 );
+                formatter::emit_event_info(
+                    "task",
+                    &format!("{} retry {}/{}", task_id, task.retry_count + 1, max_retries),
+                );
             } else {
                 // Max retries exhausted — fail the task
-                dag::fail_task(
-                    db,
-                    task_id,
-                    &format!(
-                        "Verification failed after {} retries: {}",
-                        max_retries, v_result.reason
-                    ),
-                )
-                .context("Failed to fail task")?;
+                let fail_reason = format!(
+                    "Verification failed after {} retries: {}",
+                    max_retries, v_result.reason
+                );
+                dag::fail_task(db, task_id, &fail_reason).context("Failed to fail task")?;
                 formatter::print_max_retries_exhausted(config.iteration, task_id);
+                formatter::emit_event("task", &format!("{} max retries exhausted", task_id), true);
+                formatter::emit_event(
+                    "task",
+                    &format!("{} failed \u{2014} {}", task_id, fail_reason),
+                    true,
+                );
             }
         }
     } else {
         // No verification — complete immediately
         dag::complete_task(db, task_id).context("Failed to complete task")?;
         formatter::print_task_done(config.iteration, task_id);
+        formatter::emit_event_info("task", &format!("{} done", task_id));
     }
 
     Ok(())
