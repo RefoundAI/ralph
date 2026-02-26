@@ -9,6 +9,8 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
+use crate::ui::theme::ColorOverrides;
+
 /// Project configuration loaded from `.ralph.toml`.
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {
@@ -36,12 +38,16 @@ pub struct UiConfig {
     /// Theme name: "light" (default) or "dark".
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Per-token color overrides that layer on top of the base theme.
+    #[serde(default)]
+    pub colors: ColorOverrides,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             theme: default_theme(),
+            colors: ColorOverrides::default(),
         }
     }
 }
@@ -146,6 +152,8 @@ fn discover_from(start: &Path) -> Result<ProjectConfig> {
 fn load_config(path: &Path) -> Result<RalphConfig> {
     let content = fs::read_to_string(path)?;
     let config: RalphConfig = toml::from_str(&content)?;
+    // Validate color overrides at load time for clear error messages.
+    config.ui.colors.validate()?;
     Ok(config)
 }
 
@@ -499,5 +507,89 @@ max_retries = 3
 "#;
         let config: RalphConfig = toml::from_str(toml_content).unwrap();
         assert_eq!(config.ui.theme, "light");
+    }
+
+    #[test]
+    fn ui_colors_partial_overrides() {
+        let toml_content = r##"
+[ui]
+theme = "dark"
+
+[ui.colors]
+border = "#ff5500"
+title = "magenta"
+"##;
+        let config: RalphConfig = toml::from_str(toml_content).unwrap();
+        assert_eq!(config.ui.theme, "dark");
+        assert_eq!(config.ui.colors.border.as_deref(), Some("#ff5500"));
+        assert_eq!(config.ui.colors.title.as_deref(), Some("magenta"));
+        assert!(config.ui.colors.status.is_none());
+    }
+
+    #[test]
+    fn ui_colors_missing_uses_defaults() {
+        let toml_content = r#"
+[ui]
+theme = "light"
+"#;
+        let config: RalphConfig = toml::from_str(toml_content).unwrap();
+        assert!(config.ui.colors.border.is_none());
+        assert!(config.ui.colors.title.is_none());
+    }
+
+    #[test]
+    fn ui_colors_invalid_hex_rejected_at_load() {
+        let toml_content = r##"
+[ui.colors]
+border = "#xyz"
+"##;
+        let (_tmp, root) = temp_project(toml_content);
+        let result = discover_from(&root);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("ui.colors.border"),
+            "error should identify the field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn ui_colors_invalid_name_rejected_at_load() {
+        let toml_content = r#"
+[ui.colors]
+title = "neon-pink"
+"#;
+        let (_tmp, root) = temp_project(toml_content);
+        let result = discover_from(&root);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("ui.colors.title"),
+            "error should identify the field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn ui_colors_all_tokens_accepted() {
+        let toml_content = r##"
+[ui.colors]
+background = "reset"
+border = "#aaaaaa"
+title = "cyan"
+status = "green"
+subdued = "#808080"
+info = "white"
+warn = "yellow"
+error = "red"
+dim_overlay = "#cccccc"
+modal_text = "black"
+input_inactive = "#999999"
+modal_border = "blue"
+cursor_fg = "white"
+cursor_bg = "black"
+"##;
+        let (_tmp, root) = temp_project(toml_content);
+        let result = discover_from(&root);
+        assert!(result.is_ok(), "all valid tokens should be accepted");
     }
 }

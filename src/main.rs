@@ -284,7 +284,10 @@ async fn run() -> Result<ExitCode> {
             agent,
         }) => {
             let project = project::discover()?;
-            ui::theme::init(ui::theme::resolve_theme_name(&project.config.ui.theme));
+            ui::theme::init_with_overrides(
+                ui::theme::resolve_theme_name(&project.config.ui.theme),
+                Some(&project.config.ui.colors),
+            );
             let ui_guard = ui::start(ui_mode);
 
             // Resolve target: check feature names first, then task IDs
@@ -415,7 +418,10 @@ async fn handle_auth(_agent: Option<String>) -> Result<ExitCode> {
 /// Handle `ralph feature <action>` subcommands.
 async fn handle_feature(action: cli::FeatureAction, ui_mode: ui::UiMode) -> Result<ExitCode> {
     let project = project::discover()?;
-    ui::theme::init(ui::theme::resolve_theme_name(&project.config.ui.theme));
+    ui::theme::init_with_overrides(
+        ui::theme::resolve_theme_name(&project.config.ui.theme),
+        Some(&project.config.ui.colors),
+    );
     let db_path = project.root.join(".ralph/progress.db");
     let db = dag::open_db(db_path.to_str().unwrap())?;
 
@@ -777,7 +783,10 @@ async fn handle_feature(action: cli::FeatureAction, ui_mode: ui::UiMode) -> Resu
 /// Handle `ralph task <action>` subcommands.
 async fn handle_task(action: cli::TaskAction, ui_mode: ui::UiMode) -> Result<ExitCode> {
     let project = project::discover()?;
-    ui::theme::init(ui::theme::resolve_theme_name(&project.config.ui.theme));
+    ui::theme::init_with_overrides(
+        ui::theme::resolve_theme_name(&project.config.ui.theme),
+        Some(&project.config.ui.colors),
+    );
     let db_path = project.root.join(".ralph/progress.db");
     let db = dag::open_db(db_path.to_str().unwrap())?;
 
