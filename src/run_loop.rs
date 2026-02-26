@@ -330,8 +330,9 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     &format!("agent stopped: Refusal \u{2014} failing {}", task_id),
                     true,
                 );
-                dag::fail_task(&db, &task_id, "Agent refused the request")
+                let transitions = dag::fail_task(&db, &task_id, "Agent refused the request")
                     .context("Failed to fail task")?;
+                emit_auto_transitions(&transitions);
                 formatter::print_task_failed(config.iteration, &task_id);
                 formatter::emit_event(
                     "task",
@@ -461,9 +462,12 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
             }
         } else if let Some(ref failed_id) = sigils.task_failed {
             if failed_id == &task_id {
-                if let Err(err) = dag::fail_task(&db, &task_id, "Task marked failed by Claude") {
-                    try_release_claim(&db, &task_id, "task failure handling error");
-                    return Err(err).context("Failed to fail task");
+                match dag::fail_task(&db, &task_id, "Task marked failed by Claude") {
+                    Ok(transitions) => emit_auto_transitions(&transitions),
+                    Err(err) => {
+                        try_release_claim(&db, &task_id, "task failure handling error");
+                        return Err(err).context("Failed to fail task");
+                    }
                 }
                 formatter::print_task_failed(config.iteration, &task_id);
                 formatter::emit_event(
@@ -601,6 +605,42 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
             &progress_db,
             next_model_hint.as_deref(),
         );
+    }
+}
+
+fn emit_auto_transitions(transitions: &[dag::AutoTransition]) {
+    for t in transitions {
+        match t {
+            dag::AutoTransition::Unblocked {
+                blocked_id,
+                blocker_id,
+            } => formatter::emit_event_info(
+                "dag",
+                &format!("{blocked_id} unblocked (blocker {blocker_id} done)"),
+            ),
+            dag::AutoTransition::ParentCompleted { parent_id } => formatter::emit_event_info(
+                "dag",
+                &format!("{parent_id} auto-completed (all children done)"),
+            ),
+            dag::AutoTransition::ParentFailed {
+                parent_id,
+                child_id,
+            } => formatter::emit_event_info(
+                "dag",
+                &format!("{parent_id} auto-failed (child {child_id} failed)"),
+            ),
+            dag::AutoTransition::FeatureDone { feature_name } => formatter::emit_event_info(
+                "feature",
+                &format!("feature \"{feature_name}\" \u{2192} done (all tasks resolved)"),
+            ),
+            dag::AutoTransition::FeatureFailed { feature_name } => formatter::emit_event(
+                "feature",
+                &format!(
+                    "feature \"{feature_name}\" \u{2192} failed (tasks resolved with failures)"
+                ),
+                true,
+            ),
+        }
     }
 }
 
@@ -941,7 +981,8 @@ async fn handle_task_done(
 
         if v_result.passed {
             // Verification passed — complete the task
-            dag::complete_task(db, task_id).context("Failed to complete task")?;
+            let transitions = dag::complete_task(db, task_id).context("Failed to complete task")?;
+            emit_auto_transitions(&transitions);
             db.conn().execute(
                 "UPDATE tasks SET verification_status = 'passed' WHERE id = ?",
                 [task_id.as_str()],
@@ -968,7 +1009,8 @@ async fn handle_task_done(
             let max_retries = config.max_retries as i32;
             if task.retry_count < max_retries {
                 // Retry: transition failed → pending, increment retry_count
-                dag::retry_task(db, task_id).context("Failed to retry task")?;
+                let transitions = dag::retry_task(db, task_id).context("Failed to retry task")?;
+                emit_auto_transitions(&transitions);
                 formatter::print_retry(
                     config.iteration,
                     task_id,
@@ -985,7 +1027,9 @@ async fn handle_task_done(
                     "Verification failed after {} retries: {}",
                     max_retries, v_result.reason
                 );
-                dag::fail_task(db, task_id, &fail_reason).context("Failed to fail task")?;
+                let transitions =
+                    dag::fail_task(db, task_id, &fail_reason).context("Failed to fail task")?;
+                emit_auto_transitions(&transitions);
                 formatter::print_max_retries_exhausted(config.iteration, task_id);
                 formatter::emit_event("task", &format!("{} max retries exhausted", task_id), true);
                 formatter::emit_event(
@@ -997,7 +1041,8 @@ async fn handle_task_done(
         }
     } else {
         // No verification — complete immediately
-        dag::complete_task(db, task_id).context("Failed to complete task")?;
+        let transitions = dag::complete_task(db, task_id).context("Failed to complete task")?;
+        emit_auto_transitions(&transitions);
         formatter::print_task_done(config.iteration, task_id);
         formatter::emit_event_info("task", &format!("{} done", task_id));
     }

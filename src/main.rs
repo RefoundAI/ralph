@@ -1000,7 +1000,8 @@ async fn handle_task(action: cli::TaskAction, ui_mode: ui::UiMode) -> Result<Exi
                 output::formatter::print_info("Cancelled.");
                 return Ok(ExitCode::SUCCESS);
             }
-            dag::force_complete_task(db.conn(), &id)?;
+            let transitions = dag::force_complete_task(db.conn(), &id)?;
+            emit_auto_transitions_cli(&transitions);
             show_result_if_ui_active(
                 &ui_guard,
                 "Task Updated",
@@ -1021,7 +1022,8 @@ async fn handle_task(action: cli::TaskAction, ui_mode: ui::UiMode) -> Result<Exi
                 return Ok(ExitCode::SUCCESS);
             }
             let reason = reason.as_deref().unwrap_or("Manually marked as failed");
-            dag::force_fail_task(db.conn(), &id)?;
+            let transitions = dag::force_fail_task(db.conn(), &id)?;
+            emit_auto_transitions_cli(&transitions);
             dag::add_log(&db, &id, reason)?;
             show_result_if_ui_active(
                 &ui_guard,
@@ -1045,7 +1047,8 @@ async fn handle_task(action: cli::TaskAction, ui_mode: ui::UiMode) -> Result<Exi
                 output::formatter::print_info("Cancelled.");
                 return Ok(ExitCode::SUCCESS);
             }
-            dag::force_reset_task(db.conn(), &id)?;
+            let transitions = dag::force_reset_task(db.conn(), &id)?;
+            emit_auto_transitions_cli(&transitions);
             show_result_if_ui_active(
                 &ui_guard,
                 "Task Updated",
@@ -1172,6 +1175,46 @@ fn confirm_if_ui_active(
         return true;
     }
     ui::prompt_confirm(title, prompt, default_yes).unwrap_or(false)
+}
+
+fn emit_auto_transitions_cli(transitions: &[dag::AutoTransition]) {
+    for t in transitions {
+        match t {
+            dag::AutoTransition::Unblocked {
+                blocked_id,
+                blocker_id,
+            } => output::formatter::emit_event_info(
+                "dag",
+                &format!("{blocked_id} unblocked (blocker {blocker_id} done)"),
+            ),
+            dag::AutoTransition::ParentCompleted { parent_id } => {
+                output::formatter::emit_event_info(
+                    "dag",
+                    &format!("{parent_id} auto-completed (all children done)"),
+                )
+            }
+            dag::AutoTransition::ParentFailed {
+                parent_id,
+                child_id,
+            } => output::formatter::emit_event_info(
+                "dag",
+                &format!("{parent_id} auto-failed (child {child_id} failed)"),
+            ),
+            dag::AutoTransition::FeatureDone { feature_name } => {
+                output::formatter::emit_event_info(
+                    "feature",
+                    &format!("feature \"{feature_name}\" \u{2192} done (all tasks resolved)"),
+                )
+            }
+            dag::AutoTransition::FeatureFailed { feature_name } => output::formatter::emit_event(
+                "feature",
+                &format!(
+                    "feature \"{feature_name}\" \u{2192} failed (tasks resolved with failures)"
+                ),
+                true,
+            ),
+        }
+    }
 }
 
 fn show_result_if_ui_active(ui_guard: &ui::UiGuard, title: &str, lines: Vec<String>) {
