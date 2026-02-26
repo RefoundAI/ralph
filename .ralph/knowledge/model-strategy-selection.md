@@ -21,8 +21,12 @@ Model selection strategies in `src/strategy.rs` determine which Claude model run
 
 `Config.escalation_level` (0=haiku, 1=sonnet, 2=opus) persists across iterations within a run.
 
+## SQLite Override Tracking
+
+`select_model_with_db()` reads from and `log_model_override()` writes to the `model_overrides` table in `progress.db` (see [[Schema Migrations]] v5). This replaced earlier flat-file tracking. Each iteration's strategy choice and hint are recorded for analysis.
+
 ## CLI Resolution
 
 `--model` alone → Fixed. `--model-strategy=fixed` requires `--model`. Default: CostOptimized with sonnet. See [[Config From Run Args]].
 
-See also: [[Run Loop Lifecycle]], [[Sigil Parsing]], [[Config From Run Args]]
+See also: [[Run Loop Lifecycle]], [[Sigil Parsing]], [[Config From Run Args]], [[Schema Migrations]]

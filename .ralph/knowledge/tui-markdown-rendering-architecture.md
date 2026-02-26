@@ -13,6 +13,6 @@ Agent stream markdown rendering in the TUI uses ratatui native `Span`/`Line` sty
 
 Tool activity uses `ToolLine { name, summary }` struct. Detail lines have empty `name`. Rendered as: tool_name style + accent arrow + subdued summary.
 
-Theme tokens added in v0.8.1+: `heading_fg`, `code_span_fg`, `code_block_fg`, `link_fg`, `blockquote_fg`, `list_bullet_fg`, `hr_fg`, `accent_fg`, `tool_name_fg`. All support `[ui.colors]` overrides.
+Theme struct fields added in v0.8.1+: `heading_fg`, `code_span_fg`, `code_block_fg`, `link_fg`, `blockquote_fg`, `list_bullet_fg`, `hr_fg`, `accent_fg`, `tool_name_fg`. All support `[ui.colors]` overrides (TOML keys omit the `_fg` suffix, e.g. `heading`, `code_span` — see [[Custom Color Palettes in .ralph.toml]]).
 
 See also: [[Themeable TUI Colour Scheme]], [[Ratatui UI Runtime]], [[UI Event Routing and Plain Fallback]]

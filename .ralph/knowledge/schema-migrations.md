@@ -16,12 +16,13 @@ if from_version < N && to_version >= N {
 }
 ```
 
-## Current Schema (v4)
+## Current Schema (v5)
 
 - **v1**: `tasks`, `dependencies`, `task_logs` tables
 - **v2**: `features` table; extends `tasks` with `feature_id`, `task_type`, `retry_count`, `max_retries`, `verification_status` (see [[Task Columns Mapping]])
 - **v3**: `journal` table + FTS5 virtual table with auto-update triggers (see [[Journal System]])
 - **v4**: Performance indexes on `tasks` (status/priority/created, parent_id, feature+status+priority+created), `dependencies` (blocked_id), and `task_logs` (task_id+timestamp)
+- **v5**: `model_overrides` table (`iteration`, `strategy_choice`, `hint`, `created_at`) + index on `iteration`. Used by [[Model Strategy Selection]] to persist override history in SQLite instead of a flat file
 
 ## Gotchas
 
@@ -30,4 +31,4 @@ if from_version < N && to_version >= N {
 - Migrations use `execute_batch()` for atomicity within a version step.
 - WAL mode and foreign keys are set at connection time, not in schema.
 
-See also: [[Task Columns Mapping]], [[Journal System]], [[Knowledge System]]
+See also: [[Task Columns Mapping]], [[Journal System]], [[Knowledge System]], [[Model Strategy Selection]]

@@ -19,7 +19,7 @@ verify = true
 command = "claude-agent-acp"
 
 [ui]
-theme = "dark"    # "light" or "dark"
+theme = "light"    # "light" or "dark" (default: "light")
 
 [ui.colors]       # optional per-token overrides (hex or named)
 # title_fg = "#61afef"
@@ -51,6 +51,7 @@ Flags on `ralph run` override `.ralph.toml`:
 | `RALPH_MODEL_STRATEGY` | `--model-strategy` |
 | `RALPH_AGENT` | `--agent` |
 | `RALPH_UI` | UI mode (`auto`, `1/on/true`, `0/off/false`) |
+| `RALPH_THEME` | Theme override (`light`, `dark`) — see [[Themeable TUI Colour Scheme]] |
 | `RALPH_ITERATION` | (internal) Starting iteration number |
 | `RALPH_TOTAL` | (internal) Total planned iterations |
 

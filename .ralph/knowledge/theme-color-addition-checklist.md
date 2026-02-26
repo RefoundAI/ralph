@@ -17,4 +17,4 @@ When adding a new color to the TUI theme system, all these locations must be upd
 
 Use `Color::Reset` when you want the terminal's native fg/bg to show through — this is the safest default for text that must be readable on any terminal background.
 
-See also: [[Ratatui UI Runtime]], [[TUI Input Model (v0.8.1+)]]
+See also: [[Themeable TUI Colour Scheme]], [[Custom Color Palettes in .ralph.toml]], [[Ratatui UI Runtime]], [[TUI Input Model (v0.8.1+)]]

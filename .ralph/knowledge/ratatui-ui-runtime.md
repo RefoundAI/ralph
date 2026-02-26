@@ -34,4 +34,4 @@ Ralph now has a global TUI runtime in `src/ui/` powered by `ratatui` + `crosster
 - `ralph run` starts UI at command entry and tears down at outcome.
 - `feature create`, `task create`, and non-JSON browse flows (`feature list`, `task list/show/tree/deps list`) start UI where needed for modals/explorer.
 
-See also: [[Execution Modes]], [[Configuration Layers]], [[UI Event Routing and Plain Fallback]], [[UI Interactive Modals and Explorer Views]], [[TUI Input Model (v0.8.1+)]], [[Themeable TUI Colour Scheme]]
+See also: [[Execution Modes]], [[Configuration Layers]], [[UI Event Routing and Plain Fallback]], [[UI Interactive Modals and Explorer Views]], [[TUI Input Model (v0.8.1+)]], [[Themeable TUI Colour Scheme]], [[TUI Markdown Rendering Architecture]]
