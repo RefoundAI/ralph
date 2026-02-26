@@ -3,6 +3,29 @@
 use anyhow::{anyhow, Context, Result};
 use rusqlite::Connection;
 
+/// A structured record of an auto-transition that occurred as a side effect
+/// of a status change. Callers can use these to emit events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutoTransition {
+    Unblocked {
+        blocked_id: String,
+        blocker_id: String,
+    },
+    ParentCompleted {
+        parent_id: String,
+    },
+    ParentFailed {
+        parent_id: String,
+        child_id: String,
+    },
+    FeatureDone {
+        feature_name: String,
+    },
+    FeatureFailed {
+        feature_name: String,
+    },
+}
+
 /// Valid status transitions:
 /// - pending -> in_progress
 /// - pending -> blocked
@@ -30,7 +53,13 @@ fn is_valid_transition(from: &str, to: &str) -> bool {
 /// 1. Validates the transition is allowed
 /// 2. Updates the task status
 /// 3. Runs auto-transitions for dependent/parent tasks
-pub fn set_task_status(conn: &Connection, task_id: &str, new_status: &str) -> Result<()> {
+///
+/// Returns a list of auto-transitions that were triggered.
+pub fn set_task_status(
+    conn: &Connection,
+    task_id: &str,
+    new_status: &str,
+) -> Result<Vec<AutoTransition>> {
     // Get current status
     let current_status: String = conn
         .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
@@ -55,25 +84,28 @@ pub fn set_task_status(conn: &Connection, task_id: &str, new_status: &str) -> Re
     .context("Failed to update task status")?;
 
     // Run auto-transitions based on new status
+    let mut transitions = Vec::new();
     match new_status {
         "done" => {
-            auto_unblock_tasks(conn, task_id)?;
-            auto_complete_parent(conn, task_id)?;
-            auto_complete_feature(conn, task_id)?;
+            transitions.extend(auto_unblock_tasks(conn, task_id)?);
+            transitions.extend(auto_complete_parent(conn, task_id)?);
+            transitions.extend(auto_complete_feature(conn, task_id)?);
         }
         "failed" => {
-            auto_fail_parent(conn, task_id)?;
-            auto_update_feature_on_fail(conn, task_id)?;
+            transitions.extend(auto_fail_parent(conn, task_id)?);
+            transitions.extend(auto_update_feature_on_fail(conn, task_id)?);
         }
         _ => {}
     }
 
-    Ok(())
+    Ok(transitions)
 }
 
 /// Auto-transition: When a blocker is marked done, check if any blocked tasks
 /// should transition from 'blocked' to 'pending'.
-fn auto_unblock_tasks(conn: &Connection, blocker_id: &str) -> Result<()> {
+fn auto_unblock_tasks(conn: &Connection, blocker_id: &str) -> Result<Vec<AutoTransition>> {
+    let mut transitions = Vec::new();
+
     // Find all tasks blocked by this task
     let mut stmt = conn.prepare("SELECT blocked_id FROM dependencies WHERE blocker_id = ?")?;
 
@@ -112,15 +144,19 @@ fn auto_unblock_tasks(conn: &Connection, blocker_id: &str) -> Result<()> {
                 "UPDATE tasks SET status = 'pending', updated_at = datetime('now') WHERE id = ?",
                 [&blocked_id],
             )?;
+            transitions.push(AutoTransition::Unblocked {
+                blocked_id: blocked_id.clone(),
+                blocker_id: blocker_id.to_string(),
+            });
         }
     }
 
-    Ok(())
+    Ok(transitions)
 }
 
 /// Auto-transition: When a task is marked done, check if its parent should
 /// also be marked done (all siblings + self are done).
-fn auto_complete_parent(conn: &Connection, task_id: &str) -> Result<()> {
+fn auto_complete_parent(conn: &Connection, task_id: &str) -> Result<Vec<AutoTransition>> {
     // Get parent_id (nullable column)
     let parent_id: Option<String> = conn.query_row(
         "SELECT parent_id FROM tasks WHERE id = ?",
@@ -129,7 +165,7 @@ fn auto_complete_parent(conn: &Connection, task_id: &str) -> Result<()> {
     )?;
 
     let Some(parent_id) = parent_id else {
-        return Ok(()); // No parent
+        return Ok(Vec::new()); // No parent
     };
 
     // Check if all children of the parent are done
@@ -155,18 +191,24 @@ fn auto_complete_parent(conn: &Connection, task_id: &str) -> Result<()> {
                 [&parent_id],
             )?;
 
+            let mut transitions = vec![AutoTransition::ParentCompleted {
+                parent_id: parent_id.clone(),
+            }];
+
             // Recursively check grandparent
-            auto_complete_parent(conn, &parent_id)?;
+            transitions.extend(auto_complete_parent(conn, &parent_id)?);
             // Check if completing this parent resolves its feature
-            auto_complete_feature(conn, &parent_id)?;
+            transitions.extend(auto_complete_feature(conn, &parent_id)?);
+
+            return Ok(transitions);
         }
     }
 
-    Ok(())
+    Ok(Vec::new())
 }
 
 /// Auto-transition: When a task is marked failed, mark its parent as failed.
-fn auto_fail_parent(conn: &Connection, task_id: &str) -> Result<()> {
+fn auto_fail_parent(conn: &Connection, task_id: &str) -> Result<Vec<AutoTransition>> {
     // Get parent_id (nullable column)
     let parent_id: Option<String> = conn.query_row(
         "SELECT parent_id FROM tasks WHERE id = ?",
@@ -175,7 +217,7 @@ fn auto_fail_parent(conn: &Connection, task_id: &str) -> Result<()> {
     )?;
 
     let Some(parent_id) = parent_id else {
-        return Ok(()); // No parent
+        return Ok(Vec::new()); // No parent
     };
 
     // Get parent status
@@ -194,18 +236,25 @@ fn auto_fail_parent(conn: &Connection, task_id: &str) -> Result<()> {
             [&parent_id],
         )?;
 
+        let mut transitions = vec![AutoTransition::ParentFailed {
+            parent_id: parent_id.clone(),
+            child_id: task_id.to_string(),
+        }];
+
         // Recursively fail grandparent
-        auto_fail_parent(conn, &parent_id)?;
+        transitions.extend(auto_fail_parent(conn, &parent_id)?);
         // Check if failing this parent resolves its feature
-        auto_update_feature_on_fail(conn, &parent_id)?;
+        transitions.extend(auto_update_feature_on_fail(conn, &parent_id)?);
+
+        return Ok(transitions);
     }
 
-    Ok(())
+    Ok(Vec::new())
 }
 
 /// Auto-transition: When a feature task is marked done, check if all tasks
 /// for that feature are now done and update the feature status accordingly.
-fn auto_complete_feature(conn: &Connection, task_id: &str) -> Result<()> {
+fn auto_complete_feature(conn: &Connection, task_id: &str) -> Result<Vec<AutoTransition>> {
     let feature_id: Option<String> = conn.query_row(
         "SELECT feature_id FROM tasks WHERE id = ?",
         [task_id],
@@ -213,7 +262,7 @@ fn auto_complete_feature(conn: &Connection, task_id: &str) -> Result<()> {
     )?;
 
     let Some(feature_id) = feature_id else {
-        return Ok(()); // Not a feature task
+        return Ok(Vec::new()); // Not a feature task
     };
 
     // Check if all tasks for this feature are done
@@ -224,19 +273,27 @@ fn auto_complete_feature(conn: &Connection, task_id: &str) -> Result<()> {
     )?;
 
     if not_done_count == 0 {
-        conn.execute(
+        let rows_changed = conn.execute(
             "UPDATE features SET status = 'done', updated_at = datetime('now') WHERE id = ? AND status != 'done'",
             [&feature_id],
         )?;
+        if rows_changed > 0 {
+            let feature_name: String = conn.query_row(
+                "SELECT name FROM features WHERE id = ?",
+                [&feature_id],
+                |row| row.get(0),
+            )?;
+            return Ok(vec![AutoTransition::FeatureDone { feature_name }]);
+        }
     }
 
-    Ok(())
+    Ok(Vec::new())
 }
 
 /// Auto-transition: When a feature task fails, check if all tasks for that
 /// feature are resolved (done or failed). If so, mark the feature as failed
 /// (since at least one task failed).
-fn auto_update_feature_on_fail(conn: &Connection, task_id: &str) -> Result<()> {
+fn auto_update_feature_on_fail(conn: &Connection, task_id: &str) -> Result<Vec<AutoTransition>> {
     let feature_id: Option<String> = conn.query_row(
         "SELECT feature_id FROM tasks WHERE id = ?",
         [task_id],
@@ -244,7 +301,7 @@ fn auto_update_feature_on_fail(conn: &Connection, task_id: &str) -> Result<()> {
     )?;
 
     let Some(feature_id) = feature_id else {
-        return Ok(()); // Not a feature task
+        return Ok(Vec::new()); // Not a feature task
     };
 
     // Check if all tasks for this feature are resolved (done or failed)
@@ -255,20 +312,28 @@ fn auto_update_feature_on_fail(conn: &Connection, task_id: &str) -> Result<()> {
     )?;
 
     if unresolved_count == 0 {
-        conn.execute(
+        let rows_changed = conn.execute(
             "UPDATE features SET status = 'failed', updated_at = datetime('now') WHERE id = ? AND status NOT IN ('done', 'failed')",
             [&feature_id],
         )?;
+        if rows_changed > 0 {
+            let feature_name: String = conn.query_row(
+                "SELECT name FROM features WHERE id = ?",
+                [&feature_id],
+                |row| row.get(0),
+            )?;
+            return Ok(vec![AutoTransition::FeatureFailed { feature_name }]);
+        }
     }
 
-    Ok(())
+    Ok(Vec::new())
 }
 
 /// Force a task to "done" status, regardless of current state.
 ///
 /// Steps through the valid transitions: pending→in_progress→done.
 /// If already done, this is a no-op.
-pub fn force_complete_task(conn: &Connection, task_id: &str) -> Result<()> {
+pub fn force_complete_task(conn: &Connection, task_id: &str) -> Result<Vec<AutoTransition>> {
     let current_status: String = conn
         .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
             row.get(0)
@@ -276,23 +341,26 @@ pub fn force_complete_task(conn: &Connection, task_id: &str) -> Result<()> {
         .context(format!("Task '{}' not found", task_id))?;
 
     match current_status.as_str() {
-        "done" => Ok(()),
+        "done" => Ok(Vec::new()),
         "in_progress" => set_task_status(conn, task_id, "done"),
         "pending" => {
-            set_task_status(conn, task_id, "in_progress")?;
-            set_task_status(conn, task_id, "done")
+            let mut all = set_task_status(conn, task_id, "in_progress")?;
+            all.extend(set_task_status(conn, task_id, "done")?);
+            Ok(all)
         }
         "failed" => {
             // failed→pending→in_progress→done
-            set_task_status(conn, task_id, "pending")?;
-            set_task_status(conn, task_id, "in_progress")?;
-            set_task_status(conn, task_id, "done")
+            let mut all = set_task_status(conn, task_id, "pending")?;
+            all.extend(set_task_status(conn, task_id, "in_progress")?);
+            all.extend(set_task_status(conn, task_id, "done")?);
+            Ok(all)
         }
         "blocked" => {
             // blocked→pending→in_progress→done
-            set_task_status(conn, task_id, "pending")?;
-            set_task_status(conn, task_id, "in_progress")?;
-            set_task_status(conn, task_id, "done")
+            let mut all = set_task_status(conn, task_id, "pending")?;
+            all.extend(set_task_status(conn, task_id, "in_progress")?);
+            all.extend(set_task_status(conn, task_id, "done")?);
+            Ok(all)
         }
         _ => Err(anyhow!("Unknown status '{}'", current_status)),
     }
@@ -302,7 +370,7 @@ pub fn force_complete_task(conn: &Connection, task_id: &str) -> Result<()> {
 ///
 /// Steps through the valid transitions to reach failed.
 /// If already failed, this is a no-op.
-pub fn force_fail_task(conn: &Connection, task_id: &str) -> Result<()> {
+pub fn force_fail_task(conn: &Connection, task_id: &str) -> Result<Vec<AutoTransition>> {
     let current_status: String = conn
         .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
             row.get(0)
@@ -310,17 +378,19 @@ pub fn force_fail_task(conn: &Connection, task_id: &str) -> Result<()> {
         .context(format!("Task '{}' not found", task_id))?;
 
     match current_status.as_str() {
-        "failed" => Ok(()),
+        "failed" => Ok(Vec::new()),
         "in_progress" => set_task_status(conn, task_id, "failed"),
         "pending" => {
-            set_task_status(conn, task_id, "in_progress")?;
-            set_task_status(conn, task_id, "failed")
+            let mut all = set_task_status(conn, task_id, "in_progress")?;
+            all.extend(set_task_status(conn, task_id, "failed")?);
+            Ok(all)
         }
         "blocked" => {
             // blocked→pending→in_progress→failed
-            set_task_status(conn, task_id, "pending")?;
-            set_task_status(conn, task_id, "in_progress")?;
-            set_task_status(conn, task_id, "failed")
+            let mut all = set_task_status(conn, task_id, "pending")?;
+            all.extend(set_task_status(conn, task_id, "in_progress")?);
+            all.extend(set_task_status(conn, task_id, "failed")?);
+            Ok(all)
         }
         "done" => {
             // Can't transition from done to failed directly.
@@ -329,15 +399,17 @@ pub fn force_fail_task(conn: &Connection, task_id: &str) -> Result<()> {
                 "UPDATE tasks SET status = 'failed', updated_at = datetime('now') WHERE id = ?",
                 [task_id],
             )?;
-            auto_fail_parent(conn, task_id)?;
-            Ok(())
+            let mut transitions = auto_fail_parent(conn, task_id)?;
+            // Fix: also update feature status when going done→failed
+            transitions.extend(auto_update_feature_on_fail(conn, task_id)?);
+            Ok(transitions)
         }
         _ => Err(anyhow!("Unknown status '{}'", current_status)),
     }
 }
 
 /// Force a task back to "pending" status, regardless of current state.
-pub fn force_reset_task(conn: &Connection, task_id: &str) -> Result<()> {
+pub fn force_reset_task(conn: &Connection, task_id: &str) -> Result<Vec<AutoTransition>> {
     let current_status: String = conn
         .query_row("SELECT status FROM tasks WHERE id = ?", [task_id], |row| {
             row.get(0)
@@ -345,7 +417,7 @@ pub fn force_reset_task(conn: &Connection, task_id: &str) -> Result<()> {
         .context(format!("Task '{}' not found", task_id))?;
 
     match current_status.as_str() {
-        "pending" => Ok(()),
+        "pending" => Ok(Vec::new()),
         "in_progress" | "blocked" | "failed" => set_task_status(conn, task_id, "pending"),
         "done" => {
             // Direct update since done→pending isn't a valid transition
@@ -353,7 +425,7 @@ pub fn force_reset_task(conn: &Connection, task_id: &str) -> Result<()> {
                 "UPDATE tasks SET status = 'pending', updated_at = datetime('now') WHERE id = ?",
                 [task_id],
             )?;
-            Ok(())
+            Ok(Vec::new())
         }
         _ => Err(anyhow!("Unknown status '{}'", current_status)),
     }
@@ -779,6 +851,124 @@ mod tests {
 
         // Should not error even with no feature
         set_task_status(conn, "t-standalone", "done")?;
+
+        Ok(())
+    }
+
+    // AutoTransition return value tests
+
+    #[test]
+    fn test_set_task_status_returns_unblocked() -> Result<()> {
+        let temp_file = NamedTempFile::new()?;
+        let db = init_db(temp_file.path().to_str().unwrap())?;
+        let conn = db.conn();
+
+        create_task(conn, "t-blocker", "Blocker", None);
+        create_task(conn, "t-blocked", "Blocked", None);
+        add_dependency(&db, "t-blocker", "t-blocked")?;
+
+        // Set blocked task to blocked status
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked' WHERE id = 't-blocked'",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = 't-blocker'",
+            [],
+        )?;
+
+        // Complete the blocker — should return Unblocked transition
+        let transitions = set_task_status(conn, "t-blocker", "done")?;
+        assert!(transitions.contains(&AutoTransition::Unblocked {
+            blocked_id: "t-blocked".to_string(),
+            blocker_id: "t-blocker".to_string(),
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_task_status_returns_parent_completed() -> Result<()> {
+        let temp_file = NamedTempFile::new()?;
+        let db = init_db(temp_file.path().to_str().unwrap())?;
+        let conn = db.conn();
+
+        create_task(conn, "t-parent", "Parent", None);
+        create_task(conn, "t-child1", "Child 1", Some("t-parent"));
+        create_task(conn, "t-child2", "Child 2", Some("t-parent"));
+
+        conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id IN ('t-child1', 't-child2')",
+            [],
+        )?;
+
+        // Complete first child — no parent transition yet
+        let transitions = set_task_status(conn, "t-child1", "done")?;
+        assert!(
+            !transitions
+                .iter()
+                .any(|t| matches!(t, AutoTransition::ParentCompleted { .. })),
+            "Parent should not be completed when only one child is done"
+        );
+
+        // Complete second child — parent should auto-complete
+        let transitions = set_task_status(conn, "t-child2", "done")?;
+        assert!(transitions.contains(&AutoTransition::ParentCompleted {
+            parent_id: "t-parent".to_string(),
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_task_status_returns_parent_failed() -> Result<()> {
+        let temp_file = NamedTempFile::new()?;
+        let db = init_db(temp_file.path().to_str().unwrap())?;
+        let conn = db.conn();
+
+        create_task(conn, "t-parent", "Parent", None);
+        create_task(conn, "t-child", "Child", Some("t-parent"));
+
+        conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = 't-child'",
+            [],
+        )?;
+
+        // Fail the child — parent should auto-fail
+        let transitions = set_task_status(conn, "t-child", "failed")?;
+        assert!(transitions.contains(&AutoTransition::ParentFailed {
+            parent_id: "t-parent".to_string(),
+            child_id: "t-child".to_string(),
+        }));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_force_complete_task_returns_combined_transitions() -> Result<()> {
+        let temp_file = NamedTempFile::new()?;
+        let db = init_db(temp_file.path().to_str().unwrap())?;
+        let conn = db.conn();
+
+        create_task(conn, "t-parent", "Parent", None);
+        create_task(conn, "t-child1", "Child 1", Some("t-parent"));
+        create_task(conn, "t-child2", "Child 2", Some("t-parent"));
+
+        // Complete first child normally
+        conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = 't-child1'",
+            [],
+        )?;
+        set_task_status(conn, "t-child1", "done")?;
+
+        // Force-complete second child from pending — should trigger parent auto-complete
+        let transitions = force_complete_task(conn, "t-child2")?;
+        assert!(
+            transitions.contains(&AutoTransition::ParentCompleted {
+                parent_id: "t-parent".to_string(),
+            }),
+            "force_complete_task should return ParentCompleted from the final set_task_status(done) call"
+        );
 
         Ok(())
     }

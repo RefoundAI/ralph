@@ -29,7 +29,7 @@ pub use dependencies::{add_dependency, remove_dependency};
 pub use ids::{generate_and_insert_task_id, generate_feature_id, generate_task_id};
 #[allow(unused_imports)]
 pub use tasks::{compute_parent_status, get_task_status};
-pub use transitions::{force_complete_task, force_fail_task, force_reset_task};
+pub use transitions::{force_complete_task, force_fail_task, force_reset_task, AutoTransition};
 
 /// A task in the DAG.
 #[derive(Debug, Clone, Serialize)]
@@ -195,7 +195,8 @@ pub fn get_task_counts(db: &Db) -> Result<TaskCounts> {
 /// Claim a task for execution by an agent.
 pub fn claim_task(db: &Db, task_id: &str, agent_id: &str) -> Result<()> {
     // Transition to in_progress and set claimed_by atomically
-    transitions::set_task_status(db.conn(), task_id, "in_progress")?;
+    // pending→in_progress produces no auto-transitions, so discard the vec
+    let _transitions = transitions::set_task_status(db.conn(), task_id, "in_progress")?;
     db.conn().execute(
         "UPDATE tasks SET claimed_by = ? WHERE id = ?",
         rusqlite::params![agent_id, task_id],
@@ -204,19 +205,19 @@ pub fn claim_task(db: &Db, task_id: &str, agent_id: &str) -> Result<()> {
 }
 
 /// Mark a task as completed.
-pub fn complete_task(db: &Db, task_id: &str) -> Result<()> {
+pub fn complete_task(db: &Db, task_id: &str) -> Result<Vec<AutoTransition>> {
     // Transition to done (auto-transitions handled in set_task_status)
-    transitions::set_task_status(db.conn(), task_id, "done")?;
+    let transitions = transitions::set_task_status(db.conn(), task_id, "done")?;
     // Clear claimed_by
     db.conn()
         .execute("UPDATE tasks SET claimed_by = NULL WHERE id = ?", [task_id])?;
-    Ok(())
+    Ok(transitions)
 }
 
 /// Mark a task as failed.
-pub fn fail_task(db: &Db, task_id: &str, reason: &str) -> Result<()> {
+pub fn fail_task(db: &Db, task_id: &str, reason: &str) -> Result<Vec<AutoTransition>> {
     // Transition to failed (auto-transitions handled in set_task_status)
-    transitions::set_task_status(db.conn(), task_id, "failed")?;
+    let transitions = transitions::set_task_status(db.conn(), task_id, "failed")?;
     // Clear claimed_by
     db.conn()
         .execute("UPDATE tasks SET claimed_by = NULL WHERE id = ?", [task_id])?;
@@ -226,7 +227,7 @@ pub fn fail_task(db: &Db, task_id: &str, reason: &str) -> Result<()> {
         "INSERT INTO task_logs (task_id, message, timestamp) VALUES (?, ?, ?)",
         rusqlite::params![task_id, reason, timestamp],
     )?;
-    Ok(())
+    Ok(transitions)
 }
 
 /// Check if all DAG tasks are resolved (done or failed).
@@ -322,15 +323,15 @@ pub fn get_feature_task_counts(db: &Db, feature_id: &str) -> Result<TaskCounts> 
 }
 
 /// Retry a failed task: transition back to pending and increment retry_count.
-pub fn retry_task(db: &Db, task_id: &str) -> Result<()> {
-    // Transition failed -> pending
-    transitions::set_task_status(db.conn(), task_id, "pending")?;
+pub fn retry_task(db: &Db, task_id: &str) -> Result<Vec<AutoTransition>> {
+    // Transition failed -> pending (typically produces no auto-transitions)
+    let transitions = transitions::set_task_status(db.conn(), task_id, "pending")?;
     // Increment retry_count and set verification_status to failed
     db.conn().execute(
         "UPDATE tasks SET retry_count = retry_count + 1, verification_status = 'failed', claimed_by = NULL WHERE id = ?",
         [task_id],
     )?;
-    Ok(())
+    Ok(transitions)
 }
 
 /// Release the claim on a task (set to pending if in_progress).
@@ -343,7 +344,8 @@ pub fn release_claim(db: &Db, task_id: &str) -> Result<()> {
             })?;
 
     if status == "in_progress" {
-        transitions::set_task_status(db.conn(), task_id, "pending")?;
+        // in_progress→pending produces no auto-transitions, so discard the vec
+        let _transitions = transitions::set_task_status(db.conn(), task_id, "pending")?;
         db.conn()
             .execute("UPDATE tasks SET claimed_by = NULL WHERE id = ?", [task_id])?;
     }
