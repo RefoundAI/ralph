@@ -2,9 +2,10 @@
 
 use std::collections::VecDeque;
 
-use crate::ui::event::{ToolLine, UiEvent};
+use crate::ui::event::{EventLine, ToolLine, UiEvent};
 
 const MAX_TOOL_LINES: usize = 200;
+const MAX_EVENT_LINES: usize = 200;
 const MAX_AGENT_CHARS: usize = 60_000;
 
 /// Cached rectangle positions of dashboard frames from the last render pass.
@@ -14,6 +15,7 @@ pub struct FrameAreas {
     pub tools: Option<ratatui::layout::Rect>,
     pub agent: Option<ratatui::layout::Rect>,
     pub input: Option<ratatui::layout::Rect>,
+    pub events: Option<ratatui::layout::Rect>,
 }
 
 /// Optional modal rendered above the base screen.
@@ -72,6 +74,11 @@ pub struct AppState {
     pub input_choices: Option<Vec<String>>,
     /// Which choice is highlighted in choice mode.
     pub input_choice_cursor: usize,
+    /// Ring buffer of structured orchestration events for the Events panel.
+    pub events: VecDeque<EventLine>,
+    /// When `None`, Events panel auto-scrolls to the bottom.
+    /// When `Some(offset)`, the user has pinned the scroll position.
+    pub events_scroll: Option<usize>,
 }
 
 impl Default for AppState {
@@ -96,6 +103,8 @@ impl Default for AppState {
             input_cursor: 0,
             input_choices: None,
             input_choice_cursor: 0,
+            events: VecDeque::new(),
+            events_scroll: None,
         }
     }
 }
@@ -167,8 +176,18 @@ impl AppState {
                     self.tools.pop_front();
                 }
             }
-            UiEvent::Event(_) => {
-                // TODO: Events panel state management (Phase 1 state task)
+            UiEvent::Event(line) => {
+                self.events.push_back(line);
+                let mut dropped = 0usize;
+                while self.events.len() > MAX_EVENT_LINES {
+                    self.events.pop_front();
+                    dropped += 1;
+                }
+                if dropped > 0 {
+                    if let Some(offset) = self.events_scroll {
+                        self.events_scroll = Some(offset.saturating_sub(dropped));
+                    }
+                }
             }
         }
     }
@@ -230,6 +249,31 @@ impl AppState {
     /// Reset Agent Stream to auto-scroll (follow the tail).
     pub fn agent_scroll_to_bottom(&mut self) {
         self.agent_scroll = None;
+    }
+
+    /// Scroll the Events panel up by `n` lines. Activates pinned scroll mode.
+    pub fn events_scroll_up(&mut self, n: usize) {
+        let current = self.events_scroll.unwrap_or(self.events.len());
+        self.events_scroll = Some(current.saturating_sub(n));
+    }
+
+    /// Scroll the Events panel down by `n` lines, capped at the bottom.
+    /// Reaching the bottom resumes auto-scroll.
+    pub fn events_scroll_down(&mut self, n: usize, max_offset: usize) {
+        if let Some(offset) = self.events_scroll {
+            let new = (offset + n).min(max_offset);
+            if new >= max_offset {
+                self.events_scroll = None;
+            } else {
+                self.events_scroll = Some(new);
+            }
+        }
+        // If None (auto-scroll), down is a no-op — already at bottom.
+    }
+
+    /// Reset Events panel to auto-scroll (follow the tail).
+    pub fn events_scroll_to_bottom(&mut self) {
+        self.events_scroll = None;
     }
 
     /// Scroll the Tool Activity panel up by `n` lines.
@@ -384,6 +428,112 @@ mod tests {
         // Deactivate clears choices too.
         state.deactivate_input();
         assert!(state.input_choices.is_none());
+    }
+
+    fn make_event(category: &str, message: &str) -> EventLine {
+        EventLine {
+            category: category.to_string(),
+            message: message.to_string(),
+            timestamp: "12:00:00".to_string(),
+            is_error: false,
+        }
+    }
+
+    #[test]
+    fn apply_handles_ui_event_event() {
+        let mut state = AppState::default();
+        assert!(state.events.is_empty());
+
+        state.apply(UiEvent::Event(make_event("task", "t-abc12345 claimed")));
+        assert_eq!(state.events.len(), 1);
+        assert_eq!(state.events[0].category, "task");
+        assert_eq!(state.events[0].message, "t-abc12345 claimed");
+    }
+
+    #[test]
+    fn events_ring_buffer_caps_at_max() {
+        let mut state = AppState::default();
+        for i in 0..201 {
+            state.apply(UiEvent::Event(make_event("iter", &format!("event {i}"))));
+        }
+        assert_eq!(state.events.len(), 200);
+        // First event (index 0) should have been dropped; front is now event 1.
+        assert_eq!(state.events[0].message, "event 1");
+        assert_eq!(state.events[199].message, "event 200");
+    }
+
+    #[test]
+    fn events_ring_buffer_adjusts_scroll_offset() {
+        let mut state = AppState::default();
+        // Fill to capacity.
+        for i in 0..200 {
+            state.apply(UiEvent::Event(make_event("dag", &format!("event {i}"))));
+        }
+        // Pin scroll at offset 10.
+        state.events_scroll = Some(10);
+
+        // Push one more — drops one from front, offset should decrease by 1.
+        state.apply(UiEvent::Event(make_event("dag", "event 200")));
+        assert_eq!(state.events.len(), 200);
+        assert_eq!(state.events_scroll, Some(9));
+
+        // Pin scroll at 0, push another — offset stays at 0 (saturating_sub).
+        state.events_scroll = Some(0);
+        state.apply(UiEvent::Event(make_event("dag", "event 201")));
+        assert_eq!(state.events_scroll, Some(0));
+    }
+
+    #[test]
+    fn events_scroll_up_from_auto_scroll() {
+        let mut state = AppState::default();
+        for i in 0..50 {
+            state.apply(UiEvent::Event(make_event("task", &format!("event {i}"))));
+        }
+        assert_eq!(state.events_scroll, None); // auto-scroll
+
+        // Scroll up 5 from auto-scroll: should pin at len - 5 = 45.
+        state.events_scroll_up(5);
+        assert_eq!(state.events_scroll, Some(45));
+
+        // Scroll up 10 more: 45 - 10 = 35.
+        state.events_scroll_up(10);
+        assert_eq!(state.events_scroll, Some(35));
+
+        // Scroll up more than remaining: saturates to 0.
+        state.events_scroll_up(100);
+        assert_eq!(state.events_scroll, Some(0));
+    }
+
+    #[test]
+    fn events_scroll_down_resumes_auto_scroll() {
+        let mut state = AppState::default();
+        for i in 0..50 {
+            state.apply(UiEvent::Event(make_event("task", &format!("event {i}"))));
+        }
+        let max_offset = 40; // hypothetical panel height of 10
+
+        // Pin at offset 30.
+        state.events_scroll = Some(30);
+
+        // Scroll down 5: 30 + 5 = 35.
+        state.events_scroll_down(5, max_offset);
+        assert_eq!(state.events_scroll, Some(35));
+
+        // Scroll down 5 more: 35 + 5 = 40 >= max_offset, resume auto-scroll.
+        state.events_scroll_down(5, max_offset);
+        assert_eq!(state.events_scroll, None);
+
+        // When already auto-scrolling, down is a no-op.
+        state.events_scroll_down(10, max_offset);
+        assert_eq!(state.events_scroll, None);
+    }
+
+    #[test]
+    fn events_scroll_to_bottom() {
+        let mut state = AppState::default();
+        state.events_scroll = Some(15);
+        state.events_scroll_to_bottom();
+        assert_eq!(state.events_scroll, None);
     }
 
     #[test]
