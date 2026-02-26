@@ -37,4 +37,4 @@ This means a Claude session implementing a narrow task still has access to the f
 
 For one-off work: `ralph task add <title>` + `ralph run <task-id>` bypasses the feature lifecycle entirely. See [[One-Shot vs Feature Workflow]] for comparison and decision guide.
 
-See also: [[Run Loop Lifecycle]], [[System Prompt Construction]], [[Verification Agent]], [[Execution Modes]], [[One-Shot vs Feature Workflow]]
+See also: [[Run Loop Lifecycle]], [[System Prompt Construction]], [[Verification Agent]], [[Execution Modes]], [[One-Shot vs Feature Workflow]], [[Interactive Flow Sigils (phase-complete, tasks-created)]]

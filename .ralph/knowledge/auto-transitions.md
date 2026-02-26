@@ -29,6 +29,6 @@ Task status state machine with cascading auto-transitions in `src/dag/transition
 
 ## Ready Query
 
-A task is ready when: `pending`, leaf node (no children), parent not `failed`, all blockers `done`. Ordered by `priority` DESC then `created_at` ASC. See [[Run Loop Lifecycle]] for how ready tasks are claimed.
+A task is ready when: `pending`, leaf node (no children), parent not `failed`, all blockers `done`. Ordered by `priority ASC` then `created_at ASC`. See [[Run Loop Lifecycle]] for how ready tasks are claimed.
 
-See also: [[Task Columns Mapping]], [[Run Loop Lifecycle]], [[Dependency Cycle Detection]]
+See also: [[Task Columns Mapping]], [[Run Loop Lifecycle]], [[Dependency Cycle Detection]], [[Parent Status Derivation]]

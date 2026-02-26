@@ -19,6 +19,8 @@ Ralph communicates with agents via XML-like sigils in text output. Parsing in `s
 | `<verify-fail>reason</verify-fail>` | [[Verification Agent]]: failed |
 | `<journal>notes</journal>` | Write to [[Journal System]] |
 | `<knowledge tags="..." title="...">body</knowledge>` | Write to [[Knowledge System]] |
+| `<phase-complete>spec\|plan\|build</phase-complete>` | Auto-exit interactive session (see [[Interactive Flow Sigils (phase-complete, tasks-created)]]) |
+| `<tasks-created>` / `<tasks-created/>` | Signal DAG populated (see [[Interactive Flow Sigils (phase-complete, tasks-created)]]) |
 
 ## Implementation
 
@@ -28,4 +30,4 @@ String-based parsing (indexOf + substring), not XML. Whitespace trimmed inside t
 
 `<promise>FAILURE</promise>` exits *before* any DAG state update. No task is marked done or failed. See [[Run Loop Lifecycle]] step 9.
 
-See also: [[Run Loop Lifecycle]], [[Auto-Transitions]], [[Model Strategy Selection]], [[Verification Agent]], [[Journal System]], [[Knowledge System]]
+See also: [[Run Loop Lifecycle]], [[Auto-Transitions]], [[Model Strategy Selection]], [[Verification Agent]], [[Journal System]], [[Knowledge System]], [[Interactive Flow Sigils (phase-complete, tasks-created)]]

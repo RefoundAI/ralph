@@ -52,11 +52,13 @@ Both return full `Task` structs via JOIN on `dependencies` table.
 
 ## ID Generation
 
-SHA-256 of `(timestamp_nanos_le_bytes || atomic_counter_le_bytes)`, take first 3 bytes (6 hex chars), prepend prefix:
-- Tasks: `t-{6hex}` (e.g., `t-a3f1c9`)
-- Features: `f-{6hex}` (e.g., `f-b7e204`)
+SHA-256 of `(timestamp_nanos_le_bytes || atomic_counter_le_bytes)`, take first 4 bytes (8 hex chars), prepend prefix:
+- Tasks: `t-{8hex}` (e.g., `t-a3f1c924`)
+- Features: `f-{8hex}` (e.g., `f-b7e20491`)
 - Agent IDs use different mechanism: `DefaultHasher` over `(timestamp, PID)`, 8 hex chars
+
+Expanded from 6 to 8 hex chars for collision resistance — see [[Task/Feature ID Entropy Expansion]].
 
 **Collision handling:** `generate_and_insert_task_id()` wraps INSERT in retry loop (max 10). Atomic counter ensures successive calls in same nanosecond produce different hashes.
 
-See also: [[Task Columns Mapping]], [[Auto-Transitions]], [[Dependency Cycle Detection]], [[Schema Migrations]]
+See also: [[Task Columns Mapping]], [[Auto-Transitions]], [[Dependency Cycle Detection]], [[Schema Migrations]], [[Task/Feature ID Entropy Expansion]]

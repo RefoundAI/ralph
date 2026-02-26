@@ -24,10 +24,12 @@ ACP connection uses `tokio::select!` to race agent session against `poll_interru
 6. Clear interrupt flag
 7. Ask "Continue? [Y/n]" — Y continues, n returns `Outcome::Interrupted`
 
+When UI is active, steps 2 and 7 use TUI modals (multiline + confirm) instead of blocking stdin prompts.
+
 ## Subsystem Behavior
 
 - **[[Verification Agent]]**: Interrupt → `passed: false` (task retried)
 - **Review** (`src/review.rs`): Interrupt → `passed: true` (avoids infinite loops)
 - **Main exit**: `Outcome::Interrupted` prints message, exits with success code
 
-See also: [[Run Loop Lifecycle]], [[ACP Connection Lifecycle]], [[Verification Agent]]
+See also: [[Run Loop Lifecycle]], [[ACP Connection Lifecycle]], [[Verification Agent]], [[UI Interactive Modals and Explorer Views]]

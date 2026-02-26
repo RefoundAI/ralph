@@ -16,11 +16,12 @@ if from_version < N && to_version >= N {
 }
 ```
 
-## Current Schema (v3)
+## Current Schema (v4)
 
 - **v1**: `tasks`, `dependencies`, `task_logs` tables
 - **v2**: `features` table; extends `tasks` with `feature_id`, `task_type`, `retry_count`, `max_retries`, `verification_status` (see [[Task Columns Mapping]])
 - **v3**: `journal` table + FTS5 virtual table with auto-update triggers (see [[Journal System]])
+- **v4**: Performance indexes on `tasks` (status/priority/created, parent_id, feature+status+priority+created), `dependencies` (blocked_id), and `task_logs` (task_id+timestamp)
 
 ## Gotchas
 

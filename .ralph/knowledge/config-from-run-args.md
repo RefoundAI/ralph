@@ -23,7 +23,7 @@ pub fn from_run_args(
 
 ## Agent Resolution Chain
 
-`agent` param > `RALPH_AGENT` env var > `ralph_config.agent.command` > `"claude"`. Validated with `shlex::split()` — `None` means malformed input (unclosed quotes).
+`agent` param > `RALPH_AGENT` env var > `ralph_config.agent.command` > `"claude-agent-acp"`. Validated with `shlex::split()` — `None` means malformed input (unclosed quotes).
 
 ## Auto-Generated Fields
 

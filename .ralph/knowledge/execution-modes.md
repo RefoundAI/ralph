@@ -18,6 +18,8 @@ Ralph mediates between user (stdin) and ACP agent via a prompt/response cycle. U
 
 **Used by:** `feature create` (spec phase, plan phase), `task create`
 
+When TUI is active, user input comes from UI modals instead of raw stdin. Semantics are unchanged.
+
 **Resume support:** Both spec and plan phases detect existing output files. If `spec.md`/`plan.md` exists, content is loaded (truncated to 10K chars) and appended to context; initial message changes to "Resume the interview..."
 
 ## Streaming (`run_streaming`)
@@ -49,10 +51,10 @@ Also: `run_autonomous()` in the same file handles [[Verification Agent]] (read-o
 | Aspect | Interactive | Streaming | Loop Iteration |
 |---|---|---|---|
 | User input | Yes (stdin) | No | No |
-| Sigil parsing | No | No | Yes |
+| Sigil parsing | Auto-exit only ([[Interactive Flow Sigils (phase-complete, tasks-created)]]) | Auto-exit only | Yes (full) |
 | Log file | No | No | Yes (JSON-RPC tee) |
 | Read-only mode | No | No | Verification only |
-| Returns | `Result<()>` | `Result<()>` | `Result<RunResult>` |
+| Returns | `Result<String>` | `Result<String>` | `Result<RunResult>` |
 
 ## Context Assembly
 
@@ -60,4 +62,4 @@ Also: `run_autonomous()` in the same file handles [[Verification Agent]] (read-o
 
 **Loop iterations:** `build_iteration_context()` in `run_loop.rs` — task info, parent, blockers, spec/plan, retry, journal, knowledge. See [[System Prompt Construction]].
 
-See also: [[ACP Connection Lifecycle]], [[Feature Lifecycle]], [[Run Loop Lifecycle]]
+See also: [[ACP Connection Lifecycle]], [[Feature Lifecycle]], [[Run Loop Lifecycle]], [[UI Interactive Modals and Explorer Views]], [[Ratatui UI Runtime]]

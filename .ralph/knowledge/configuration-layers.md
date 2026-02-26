@@ -16,7 +16,13 @@ max_retries = 3
 verify = true
 
 [agent]
-command = "claude"
+command = "claude-agent-acp"
+
+[ui]
+theme = "dark"    # "light" or "dark"
+
+[ui.colors]       # optional per-token overrides (hex or named)
+# title_fg = "#61afef"
 ```
 
 All sections use `#[serde(default)]` — partial configs work. Unknown keys silently ignored for forward compatibility.
@@ -44,15 +50,20 @@ Flags on `ralph run` override `.ralph.toml`:
 | `RALPH_MODEL` | `--model` |
 | `RALPH_MODEL_STRATEGY` | `--model-strategy` |
 | `RALPH_AGENT` | `--agent` |
+| `RALPH_UI` | UI mode (`auto`, `1/on/true`, `0/off/false`) |
 | `RALPH_ITERATION` | (internal) Starting iteration number |
 | `RALPH_TOTAL` | (internal) Total planned iterations |
 
 `RALPH_MODEL`, `RALPH_ITERATION`, and `RALPH_TOTAL` are also **passed through** to the spawned agent subprocess as env vars.
 
+## UI Toggle
+
+Global CLI flag `--no-ui` forces plain output. Without it, UI mode follows `RALPH_UI` and TTY auto-detection (see [[Ratatui UI Runtime]]).
+
 ## Agent Command Resolution
 
 Specific chain in [[Config From Run Args]]:
-`--agent` flag > `RALPH_AGENT` env > `[agent].command` in `.ralph.toml` > `"claude"`
+`--agent` flag > `RALPH_AGENT` env > `[agent].command` in `.ralph.toml` > `"claude-agent-acp"`
 
 Validated with `shlex::split()` — `None` return means malformed input (e.g., unclosed quotes).
 
@@ -66,4 +77,4 @@ Validated with `shlex::split()` — `None` return means malformed input (e.g., u
 | 2 | Blocked | No ready tasks but incomplete remain |
 | 3 | NoPlan | DAG empty |
 
-See also: [[Config From Run Args]], [[Model Strategy Selection]], [[Run Loop Lifecycle]]
+See also: [[Config From Run Args]], [[Model Strategy Selection]], [[Run Loop Lifecycle]], [[Ratatui UI Runtime]], [[Custom Color Palettes in .ralph.toml]]
