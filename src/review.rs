@@ -44,9 +44,17 @@ pub async fn review_document(
     let label = kind.label();
 
     formatter::print_review_start(label, feature_name);
+    formatter::emit_event_info(
+        "review",
+        &format!("{} review for \"{}\"", label, feature_name),
+    );
 
     for round in 1..=MAX_REVIEW_ROUNDS {
         formatter::print_review_round(round, MAX_REVIEW_ROUNDS, label);
+        formatter::emit_event_info(
+            "review",
+            &format!("{} review round {}/{}", label, round, MAX_REVIEW_ROUNDS),
+        );
 
         let req = ReviewRoundRequest {
             document_path,
@@ -63,14 +71,36 @@ pub async fn review_document(
 
         if result.passed {
             formatter::print_review_result(round, true, "", label);
+            formatter::emit_event_info("review", &format!("{} review passed", label));
             formatter::print_review_complete(label, feature_name, round);
+            formatter::emit_event_info(
+                "review",
+                &format!(
+                    "\"{}\" {} finalized after {} rounds",
+                    feature_name, label, round
+                ),
+            );
             return Ok(round);
         }
 
         formatter::print_review_result(round, false, &result.changes_summary, label);
+        formatter::emit_event_info(
+            "review",
+            &format!(
+                "{} review: changes applied \u{2014} {}",
+                label, result.changes_summary
+            ),
+        );
     }
 
     formatter::print_review_max_rounds(label, feature_name, MAX_REVIEW_ROUNDS);
+    formatter::emit_event_info(
+        "review",
+        &format!(
+            "\"{}\" {} stabilized after {} rounds",
+            feature_name, label, MAX_REVIEW_ROUNDS
+        ),
+    );
     Ok(MAX_REVIEW_ROUNDS)
 }
 
