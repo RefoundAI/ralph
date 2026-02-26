@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use std::path::Path;
 
 /// Current schema version.
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 /// SQLite database wrapper.
 pub struct Db {
@@ -180,6 +180,24 @@ fn migrate(conn: &Connection, from_version: i32, to_version: i32) -> Result<()> 
         .context("Failed to create schema v4 indexes")?;
     }
 
+    if from_version < 5 && to_version >= 5 {
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS model_overrides (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                iteration INTEGER NOT NULL,
+                strategy_choice TEXT NOT NULL,
+                hint TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_model_overrides_iteration
+                ON model_overrides(iteration);
+            "#,
+        )
+        .context("Failed to create schema v5 model_overrides table")?;
+    }
+
     // Set schema version
     conn.pragma_update(None, "user_version", to_version)
         .context("Failed to update schema version")?;
@@ -208,6 +226,7 @@ mod tests {
         assert!(tables.contains(&"tasks".to_string()));
         assert!(tables.contains(&"dependencies".to_string()));
         assert!(tables.contains(&"task_logs".to_string()));
+        assert!(tables.contains(&"model_overrides".to_string()));
 
         Ok(())
     }

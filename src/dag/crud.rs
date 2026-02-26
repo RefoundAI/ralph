@@ -278,8 +278,8 @@ pub fn delete_tasks_for_feature(db: &Db, feature_id: &str) -> Result<usize> {
         .execute("DELETE FROM journal WHERE feature_id = ?", [feature_id])?;
 
     // Delete the tasks themselves
-    let sql = format!("DELETE FROM tasks WHERE feature_id = ?");
-    db.conn().execute(&sql, [feature_id])?;
+    db.conn()
+        .execute("DELETE FROM tasks WHERE feature_id = ?", [feature_id])?;
 
     Ok(count)
 }
