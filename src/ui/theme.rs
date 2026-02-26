@@ -51,6 +51,17 @@ pub struct Theme {
     pub tool_name_fg: Color,
     // Sigil rendering
     pub sigil_body_fg: Color,
+    // Event category tokens
+    pub event_task_fg: Color,
+    pub event_iter_fg: Color,
+    pub event_feature_fg: Color,
+    pub event_verify_fg: Color,
+    pub event_review_fg: Color,
+    pub event_journal_fg: Color,
+    pub event_knowledge_fg: Color,
+    pub event_interrupt_fg: Color,
+    pub event_dag_fg: Color,
+    pub event_config_fg: Color,
 }
 
 impl Theme {
@@ -85,6 +96,16 @@ impl Theme {
             accent_fg: Color::Yellow,
             tool_name_fg: Color::Cyan,
             sigil_body_fg: Color::Rgb(100, 100, 100),
+            event_task_fg: Color::Cyan,
+            event_iter_fg: Color::Yellow,
+            event_feature_fg: Color::Magenta,
+            event_verify_fg: Color::Green,
+            event_review_fg: Color::Green,
+            event_journal_fg: Color::Blue,
+            event_knowledge_fg: Color::Blue,
+            event_interrupt_fg: Color::Red,
+            event_dag_fg: Color::Rgb(180, 180, 180),
+            event_config_fg: Color::Rgb(180, 180, 180),
         }
     }
 
@@ -119,6 +140,16 @@ impl Theme {
             accent_fg: Color::Rgb(180, 130, 0),
             tool_name_fg: Color::Blue,
             sigil_body_fg: Color::Rgb(140, 140, 140),
+            event_task_fg: Color::Blue,
+            event_iter_fg: Color::Rgb(180, 130, 0),
+            event_feature_fg: Color::Magenta,
+            event_verify_fg: Color::Rgb(0, 140, 0),
+            event_review_fg: Color::Rgb(0, 140, 0),
+            event_journal_fg: Color::Rgb(30, 100, 200),
+            event_knowledge_fg: Color::Rgb(30, 100, 200),
+            event_interrupt_fg: Color::Red,
+            event_dag_fg: Color::Rgb(80, 80, 80),
+            event_config_fg: Color::Rgb(80, 80, 80),
         }
     }
 }
@@ -203,6 +234,16 @@ pub struct ColorOverrides {
     pub accent: Option<String>,
     pub tool_name: Option<String>,
     pub sigil_body: Option<String>,
+    pub event_task: Option<String>,
+    pub event_iter: Option<String>,
+    pub event_feature: Option<String>,
+    pub event_verify: Option<String>,
+    pub event_review: Option<String>,
+    pub event_journal: Option<String>,
+    pub event_knowledge: Option<String>,
+    pub event_interrupt: Option<String>,
+    pub event_dag: Option<String>,
+    pub event_config: Option<String>,
 }
 
 impl ColorOverrides {
@@ -234,6 +275,16 @@ impl ColorOverrides {
             ("accent", &self.accent),
             ("tool_name", &self.tool_name),
             ("sigil_body", &self.sigil_body),
+            ("event_task", &self.event_task),
+            ("event_iter", &self.event_iter),
+            ("event_feature", &self.event_feature),
+            ("event_verify", &self.event_verify),
+            ("event_review", &self.event_review),
+            ("event_journal", &self.event_journal),
+            ("event_knowledge", &self.event_knowledge),
+            ("event_interrupt", &self.event_interrupt),
+            ("event_dag", &self.event_dag),
+            ("event_config", &self.event_config),
         ];
         for (name, value) in fields {
             if let Some(v) = value {
@@ -279,6 +330,16 @@ impl ColorOverrides {
         set(&mut theme.accent_fg, &self.accent);
         set(&mut theme.tool_name_fg, &self.tool_name);
         set(&mut theme.sigil_body_fg, &self.sigil_body);
+        set(&mut theme.event_task_fg, &self.event_task);
+        set(&mut theme.event_iter_fg, &self.event_iter);
+        set(&mut theme.event_feature_fg, &self.event_feature);
+        set(&mut theme.event_verify_fg, &self.event_verify);
+        set(&mut theme.event_review_fg, &self.event_review);
+        set(&mut theme.event_journal_fg, &self.event_journal);
+        set(&mut theme.event_knowledge_fg, &self.event_knowledge);
+        set(&mut theme.event_interrupt_fg, &self.event_interrupt);
+        set(&mut theme.event_dag_fg, &self.event_dag);
+        set(&mut theme.event_config_fg, &self.event_config);
         theme
     }
 }
@@ -480,6 +541,113 @@ pub fn sigil_body() -> Style {
     Style::default().fg(t.sigil_body_fg).bg(t.background)
 }
 
+pub fn error() -> Style {
+    let t = active();
+    Style::default().fg(t.error_fg).bg(t.background)
+}
+
+pub fn info() -> Style {
+    let t = active();
+    Style::default().fg(t.info_fg).bg(t.background)
+}
+
+pub fn event_task() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.event_task_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn event_iter() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.event_iter_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn event_feature() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.event_feature_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn event_verify() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.event_verify_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn event_review() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.event_review_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn event_journal() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.event_journal_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn event_knowledge() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.event_knowledge_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn event_interrupt() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.event_interrupt_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn event_dag() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.event_dag_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn event_config() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.event_config_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Look up the event category style by name, with `subdued()` fallback.
+pub fn event_category_style(category: &str) -> Style {
+    match category {
+        "task" => event_task(),
+        "iter" => event_iter(),
+        "feature" => event_feature(),
+        "verify" => event_verify(),
+        "review" => event_review(),
+        "journal" => event_journal(),
+        "knowledge" => event_knowledge(),
+        "interrupt" => event_interrupt(),
+        "dag" => event_dag(),
+        "config" => event_config(),
+        _ => subdued(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,11 +830,62 @@ mod tests {
             accent: Some("#889900".to_string()),
             tool_name: Some("#990011".to_string()),
             sigil_body: Some("#aa1122".to_string()),
+            event_task: Some("#bb2233".to_string()),
+            event_iter: Some("#cc3344".to_string()),
+            event_feature: Some("#dd4455".to_string()),
+            event_verify: Some("#ee5566".to_string()),
+            event_review: Some("#ff6677".to_string()),
+            event_journal: Some("#007788".to_string()),
+            event_knowledge: Some("#118899".to_string()),
+            event_interrupt: Some("#2299aa".to_string()),
+            event_dag: Some("#33aabb".to_string()),
+            event_config: Some("#44bbcc".to_string()),
         };
         assert!(ov.validate().is_ok());
         let themed = ov.apply_to(Theme::dark());
         assert_eq!(themed.background, Color::Rgb(0x11, 0x11, 0x11));
         assert_eq!(themed.border_fg, Color::Rgb(0x22, 0x22, 0x22));
         assert_eq!(themed.cursor_bg, Color::Rgb(0xee, 0xee, 0xee));
+        assert_eq!(themed.event_task_fg, Color::Rgb(0xbb, 0x22, 0x33));
+        assert_eq!(themed.event_config_fg, Color::Rgb(0x44, 0xbb, 0xcc));
+    }
+
+    #[test]
+    fn event_category_style_returns_non_default_for_all_categories() {
+        // Ensure the OnceLock is initialized for this test.
+        let _ = ACTIVE_THEME.set(Theme::dark());
+
+        let default = Style::default();
+        let categories = [
+            "task",
+            "iter",
+            "feature",
+            "verify",
+            "review",
+            "journal",
+            "knowledge",
+            "interrupt",
+            "dag",
+            "config",
+        ];
+        for cat in categories {
+            let style = event_category_style(cat);
+            assert_ne!(
+                style, default,
+                "event_category_style(\"{cat}\") should not be Style::default()"
+            );
+        }
+    }
+
+    #[test]
+    fn event_task_color_override_applies() {
+        let ov = ColorOverrides {
+            event_task: Some("#ff0000".to_string()),
+            ..Default::default()
+        };
+        let base = Theme::dark();
+        assert_eq!(base.event_task_fg, Color::Cyan); // verify dark default
+        let themed = ov.apply_to(base);
+        assert_eq!(themed.event_task_fg, Color::Rgb(255, 0, 0));
     }
 }
