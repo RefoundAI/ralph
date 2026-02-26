@@ -4,7 +4,7 @@ use colored::Colorize;
 use std::process::Command;
 
 use crate::config::Config;
-use crate::ui::{self, UiEvent};
+use crate::ui::{self, EventLine, UiEvent};
 
 /// Print a plain info line.
 ///
@@ -303,6 +303,45 @@ pub fn print_interrupted(iteration: u32, task_id: &str, title: &str) {
             task_id.cyan(),
             title,
         );
+    }
+}
+
+/// Emit a structured event to the Events panel (TUI) or stderr (plain mode).
+pub fn emit_event(category: &str, message: &str, is_error: bool) {
+    let timestamp = chrono::Local::now().format("%H:%M:%S").to_string();
+    if ui::is_active() {
+        ui::emit(UiEvent::Event(EventLine {
+            category: category.to_string(),
+            message: message.to_string(),
+            timestamp,
+            is_error,
+        }));
+    } else {
+        let colored_category = color_category_plain(category);
+        if is_error {
+            eprintln!("{} [{}] {}", timestamp, colored_category, message.red());
+        } else {
+            eprintln!("{} [{}] {}", timestamp, colored_category, message);
+        }
+    }
+}
+
+/// Convenience wrapper for non-error events.
+pub fn emit_event_info(category: &str, message: &str) {
+    emit_event(category, message, false);
+}
+
+/// Map category names to `colored` crate colors for plain-mode stderr output.
+fn color_category_plain(category: &str) -> colored::ColoredString {
+    match category {
+        "task" => category.cyan(),
+        "iter" => category.yellow(),
+        "feature" => category.magenta(),
+        "verify" | "review" => category.green(),
+        "journal" | "knowledge" => category.blue(),
+        "interrupt" => category.red(),
+        "dag" | "config" => category.dimmed(),
+        _ => category.normal(),
     }
 }
 
