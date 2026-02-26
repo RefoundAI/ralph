@@ -68,6 +68,13 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
         // Print DAG summary at the start of each iteration
         if config.iteration == 1 {
             formatter::print_dag_summary(counts.total, counts.ready, counts.done, counts.blocked);
+            formatter::emit_event_info(
+                "dag",
+                &format!(
+                    "{} tasks, {} ready, {} done, {} blocked",
+                    counts.total, counts.ready, counts.done, counts.blocked
+                ),
+            );
         }
 
         // Check if DAG is empty
@@ -91,6 +98,10 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
         // Pick first ready task
         let task = &ready_tasks[0];
         let task_id = task.id.clone();
+        formatter::emit_event_info(
+            "dag",
+            &format!("next task: {} \u{2014} \"{}\"", task.id, task.title),
+        );
 
         // Claim the task
         dag::claim_task(&db, &task_id, &config.agent_id).context("Failed to claim task")?;
@@ -649,6 +660,7 @@ fn recover_stuck_target_claim(config: &Config, db: &Db) -> Result<bool> {
         "Recovering stale in-progress claim for {} from this run.",
         task_id
     ));
+    formatter::emit_event_info("dag", &format!("recovered stale claim on {}", task_id));
     dag::release_claim(db, task_id).context("Failed to release stale claim")?;
     Ok(true)
 }
