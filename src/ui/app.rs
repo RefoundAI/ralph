@@ -164,6 +164,79 @@ fn process_key(
     key: crossterm::event::KeyEvent,
 ) {
     match interaction {
+        Interaction::Multiline { .. } if state.input_choices.is_some() => {
+            // Choice mode key handling.
+            match key.code {
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let old = std::mem::replace(interaction, Interaction::None);
+                    if let Interaction::Multiline { reply } = old {
+                        let _ = reply.send(UiPromptResult::Interrupted);
+                    }
+                    state.deactivate_input();
+                }
+                KeyCode::Esc => {
+                    let old = std::mem::replace(interaction, Interaction::None);
+                    if let Interaction::Multiline { reply } = old {
+                        let _ = reply.send(UiPromptResult::Exit);
+                    }
+                    state.deactivate_input();
+                }
+                KeyCode::Up => {
+                    state.input_choice_cursor = state.input_choice_cursor.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    if let Some(choices) = &state.input_choices {
+                        let max = choices.len().saturating_sub(1);
+                        if state.input_choice_cursor < max {
+                            state.input_choice_cursor += 1;
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(choices) = &state.input_choices {
+                        let selected = choices[state.input_choice_cursor].clone();
+                        let old = std::mem::replace(interaction, Interaction::None);
+                        if let Interaction::Multiline { reply } = old {
+                            let _ = reply.send(UiPromptResult::Input(selected));
+                        }
+                        state.deactivate_input();
+                    }
+                }
+                KeyCode::Char(ch @ '1'..='9') => {
+                    let digit = (ch as usize) - ('0' as usize);
+                    if let Some(choices) = &state.input_choices {
+                        if digit <= choices.len() {
+                            let selected = choices[digit - 1].clone();
+                            let old = std::mem::replace(interaction, Interaction::None);
+                            if let Interaction::Multiline { reply } = old {
+                                let _ = reply.send(UiPromptResult::Input(selected));
+                            }
+                            state.deactivate_input();
+                        }
+                        // Out of range digit: ignore
+                    }
+                }
+                KeyCode::PageUp => {
+                    state.agent_scroll_up(20);
+                }
+                KeyCode::PageDown => {
+                    let line_count = state.agent_text.lines().count();
+                    state.agent_scroll_down(20, line_count);
+                }
+                KeyCode::End => {
+                    state.agent_scroll_to_bottom();
+                }
+                KeyCode::Backspace => {
+                    // No-op in choice mode
+                }
+                KeyCode::Char(ch) => {
+                    // Any other character switches to free-text mode
+                    state.input_choices = None;
+                    state.input_current_line.push(ch);
+                }
+                _ => {}
+            }
+        }
         Interaction::Multiline { .. } => match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 let old = std::mem::replace(interaction, Interaction::None);
@@ -423,5 +496,91 @@ mod tests {
 
         // Interaction should still be Multiline (scroll doesn't resolve it)
         assert!(matches!(interaction, Interaction::Multiline { .. }));
+    }
+
+    #[test]
+    fn choice_mode_cursor_navigation() {
+        let mut state = AppState::default();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        let choices = vec![
+            "Option A".to_string(),
+            "Option B".to_string(),
+            "Option C".to_string(),
+        ];
+        state.activate_input("Choose".to_string(), "Pick one".to_string(), Some(choices));
+        let mut interaction = Interaction::Multiline { reply: tx };
+
+        // Starts at 0
+        assert_eq!(state.input_choice_cursor, 0);
+
+        // Up at 0 clamps at 0
+        process_key(&mut state, &mut interaction, key(KeyCode::Up));
+        assert_eq!(state.input_choice_cursor, 0);
+
+        // Down moves to 1
+        process_key(&mut state, &mut interaction, key(KeyCode::Down));
+        assert_eq!(state.input_choice_cursor, 1);
+
+        // Down again moves to 2
+        process_key(&mut state, &mut interaction, key(KeyCode::Down));
+        assert_eq!(state.input_choice_cursor, 2);
+
+        // Down at max (len-1 = 2) clamps
+        process_key(&mut state, &mut interaction, key(KeyCode::Down));
+        assert_eq!(state.input_choice_cursor, 2);
+
+        // Up goes back to 1
+        process_key(&mut state, &mut interaction, key(KeyCode::Up));
+        assert_eq!(state.input_choice_cursor, 1);
+
+        // Interaction still active
+        assert!(matches!(interaction, Interaction::Multiline { .. }));
+    }
+
+    #[test]
+    fn choice_mode_number_key_selects() {
+        let mut state = AppState::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let choices = vec![
+            "Option A".to_string(),
+            "Option B".to_string(),
+            "Option C".to_string(),
+        ];
+        state.activate_input("Choose".to_string(), "Pick one".to_string(), Some(choices));
+        let mut interaction = Interaction::Multiline { reply: tx };
+
+        // Press '2' to select the second choice
+        process_key(&mut state, &mut interaction, key(KeyCode::Char('2')));
+
+        let result = rx.try_recv().unwrap();
+        assert!(matches!(result, UiPromptResult::Input(s) if s == "Option B"));
+        assert!(!state.input_active);
+        assert!(matches!(interaction, Interaction::None));
+    }
+
+    #[test]
+    fn choice_mode_typing_switches_to_freetext() {
+        let mut state = AppState::default();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        let choices = vec![
+            "Option A".to_string(),
+            "Option B".to_string(),
+            "Option C".to_string(),
+        ];
+        state.activate_input("Choose".to_string(), "Pick one".to_string(), Some(choices));
+        let mut interaction = Interaction::Multiline { reply: tx };
+
+        // Press 'a' — should switch to free-text mode
+        process_key(&mut state, &mut interaction, key(KeyCode::Char('a')));
+
+        assert!(state.input_choices.is_none());
+        assert_eq!(state.input_current_line, "a");
+        // Interaction should still be Multiline (not resolved)
+        assert!(matches!(interaction, Interaction::Multiline { .. }));
+        // Input should still be active
+        assert!(state.input_active);
     }
 }
