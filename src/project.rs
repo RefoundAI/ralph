@@ -9,6 +9,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::{env, fs};
 
+use crate::dag;
 use crate::ui::theme::ColorOverrides;
 
 /// Project configuration loaded from `.ralph.toml`.
@@ -162,7 +163,7 @@ fn load_config(path: &Path) -> Result<RalphConfig> {
 /// Creates:
 /// - `.ralph.toml` with commented defaults (if it doesn't exist)
 /// - `.ralph/` directory
-/// - `.ralph/progress.db` file (empty)
+/// - `.ralph/progress.db` SQLite database (initialized schema)
 /// - `.gitignore` entry for `.ralph/progress.db`
 ///
 /// This function is idempotent: running it multiple times won't overwrite
@@ -213,10 +214,15 @@ fn init_in_dir(cwd: &Path) -> Result<()> {
         }
     }
 
-    // 4. Create .ralph/progress.db (empty file)
+    // 4. Create .ralph/progress.db with initialized SQLite schema
     let progress_db = ralph_dir.join("progress.db");
     if !progress_db.exists() {
-        fs::write(&progress_db, "").context("Failed to create .ralph/progress.db")?;
+        dag::init_db(
+            progress_db
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid progress.db path"))?,
+        )
+        .context("Failed to initialize .ralph/progress.db")?;
         println!("Created .ralph/progress.db");
     }
 
