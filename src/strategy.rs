@@ -3,7 +3,7 @@
 //! Determines which Claude model to use for each iteration based on the
 //! configured strategy.
 
-use std::fs;
+use crate::dag::{self, Db};
 
 use crate::config::{Config, ModelStrategy};
 
@@ -20,20 +20,69 @@ pub struct ModelSelection {
     pub was_overridden: bool,
 }
 
-/// Select the model for the current iteration based on the active strategy.
-///
-/// Returns a `ModelSelection` containing the chosen model and override info.
-/// The `next_model_hint` parameter allows Claude to override the strategy's
-/// choice via the `<next-model>` sigil.
-///
-/// For the `Escalate` strategy, this mutates `config.escalation_level` to
-/// track upward movement through the model tiers.
-pub fn select_model(config: &mut Config, next_model_hint: Option<&str>) -> ModelSelection {
+/// Build lightweight progress text from recent journal rows for strategy
+/// heuristics.
+fn load_progress_text_from_db(db: &Db) -> String {
+    let mut stmt = match db.conn().prepare(
+        "SELECT outcome, notes
+         FROM journal
+         ORDER BY id DESC
+         LIMIT 200",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return String::new(),
+    };
+
+    let rows = match stmt.query_map([], |row| {
+        let outcome: String = row.get(0)?;
+        let notes: Option<String> = row.get(1)?;
+        Ok((outcome, notes.unwrap_or_default()))
+    }) {
+        Ok(rows) => rows,
+        Err(_) => return String::new(),
+    };
+
+    let mut content = String::new();
+    for (outcome, notes) in rows.flatten() {
+        if notes.is_empty() {
+            content.push_str(&outcome);
+            content.push('\n');
+        } else {
+            content.push_str(&outcome);
+            content.push_str(": ");
+            content.push_str(&notes);
+            content.push('\n');
+        }
+    }
+    content
+}
+
+fn load_progress_text(config: &Config, db: Option<&Db>) -> String {
+    if let Some(db) = db {
+        return load_progress_text_from_db(db);
+    }
+
+    let progress_db = config.project_root.join(".ralph/progress.db");
+    let Some(path) = progress_db.to_str() else {
+        return String::new();
+    };
+    match dag::open_db(path) {
+        Ok(db) => load_progress_text_from_db(&db),
+        Err(_) => String::new(),
+    }
+}
+
+/// Select model using an already-open DB connection when available.
+pub fn select_model_with_db(
+    config: &mut Config,
+    next_model_hint: Option<&str>,
+    db: Option<&Db>,
+) -> ModelSelection {
     // First, compute what the strategy would choose (without hint).
     let strategy_choice = match config.model_strategy {
         ModelStrategy::Fixed => select_fixed(config),
-        ModelStrategy::CostOptimized => select_cost_optimized(config),
-        ModelStrategy::Escalate => select_escalate(config),
+        ModelStrategy::CostOptimized => select_cost_optimized(config, db),
+        ModelStrategy::Escalate => select_escalate(config, db),
         ModelStrategy::PlanThenExecute => select_plan_then_execute(config),
     };
 
@@ -61,28 +110,28 @@ pub fn select_model(config: &mut Config, next_model_hint: Option<&str>) -> Model
     }
 }
 
-/// Log a model override event to the progress file.
+/// Log a model override event to SQLite.
 ///
 /// Called when Claude's hint disagrees with the strategy's choice.
-/// Appends a line to the progress file documenting the override.
-pub fn log_model_override(progress_file: &str, iteration: u32, selection: &ModelSelection) {
-    use std::fs::OpenOptions;
-    use std::io::Write;
-
-    let line = format!(
-        "[model-override] iteration={} strategy_choice={} hint={}\n",
-        iteration,
-        selection.strategy_choice,
-        selection.hint.as_deref().unwrap_or("none"),
-    );
-
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(progress_file)
-    {
-        let _ = file.write_all(line.as_bytes());
+pub fn log_model_override(
+    progress_db_path: &str,
+    iteration: u32,
+    selection: &ModelSelection,
+) -> anyhow::Result<()> {
+    if !selection.was_overridden {
+        return Ok(());
     }
+
+    let Some(hint) = selection.hint.as_deref() else {
+        return Ok(());
+    };
+
+    let db = dag::open_db(progress_db_path)?;
+    db.conn().execute(
+        "INSERT INTO model_overrides (iteration, strategy_choice, hint) VALUES (?1, ?2, ?3)",
+        rusqlite::params![iteration, selection.strategy_choice, hint],
+    )?;
+    Ok(())
 }
 
 /// Fixed strategy: always return the configured model, unconditionally.
@@ -93,15 +142,14 @@ fn select_fixed(config: &Config) -> String {
         .expect("fixed strategy requires model to be set")
 }
 
-/// Cost-optimized strategy: read the progress file and pick the cheapest
-/// model that can handle the current iteration.
-fn select_cost_optimized(config: &Config) -> String {
-    let progress_db = config.project_root.join(".ralph/progress.db");
-    let content = fs::read_to_string(progress_db).unwrap_or_default();
+/// Cost-optimized strategy: read recent journal-derived signals and pick the
+/// cheapest model that can handle the current iteration.
+fn select_cost_optimized(config: &Config, db: Option<&Db>) -> String {
+    let content = load_progress_text(config, db);
     analyze_progress(&content, config.iteration)
 }
 
-/// Pure heuristic that analyzes progress file content and iteration number
+/// Pure heuristic that analyzes recent progress text and iteration number
 /// to select the cheapest adequate model.
 ///
 /// Rules (in priority order):
@@ -171,13 +219,12 @@ fn level_to_model(level: u8) -> String {
 }
 
 /// Escalate strategy: start at haiku, escalate on failure signals, never
-/// auto-de-escalate. Reads the progress file to detect distress signals.
+/// auto-de-escalate. Reads recent journal-derived signals to detect distress.
 ///
 /// Escalation is monotonic upward (haiku → sonnet → opus) unless a Claude
 /// hint explicitly requests a lower model (handled in `select_model`).
-fn select_escalate(config: &mut Config) -> String {
-    let progress_db = config.project_root.join(".ralph/progress.db");
-    let content = fs::read_to_string(progress_db).unwrap_or_default();
+fn select_escalate(config: &mut Config, db: Option<&Db>) -> String {
+    let content = load_progress_text(config, db);
     let needed_level = assess_escalation_need(&content);
 
     // Only escalate: take the max of current level and assessed need
@@ -203,7 +250,7 @@ fn select_plan_then_execute(config: &Config) -> String {
     }
 }
 
-/// Assess what escalation level the progress file content warrants.
+/// Assess what escalation level the recent progress text warrants.
 ///
 /// Returns 0 (haiku) when everything looks fine, 1 (sonnet) for moderate
 /// complexity signals, 2 (opus) for clear failure/stuck signals.
@@ -244,8 +291,13 @@ fn assess_escalation_need(content: &str) -> u8 {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::dag;
     use crate::project::{ProjectConfig, RalphConfig};
     use std::path::PathBuf;
+
+    fn select_model(config: &mut Config, next_model_hint: Option<&str>) -> ModelSelection {
+        select_model_with_db(config, next_model_hint, None)
+    }
 
     /// Helper to build a Config with fixed strategy.
     fn fixed_config(model: &str) -> Config {
@@ -669,17 +721,18 @@ mod tests {
         assert_eq!(selection.model, "opus");
     }
 
-    /// Helper to create a unique temp file path for testing.
-    fn temp_progress_file(suffix: &str) -> String {
+    /// Helper to create a unique temp sqlite path for testing.
+    fn temp_progress_db(suffix: &str) -> String {
         let path = std::env::temp_dir().join(format!("ralph_test_override_{}", suffix));
         // Clean up any leftover from previous test runs
         let _ = std::fs::remove_file(&path);
+        dag::init_db(path.to_str().unwrap()).unwrap();
         path.to_string_lossy().to_string()
     }
 
     #[test]
-    fn override_logged_to_progress_file() {
-        let progress_str = temp_progress_file("log_basic");
+    fn override_logged_to_model_overrides_table() {
+        let progress_str = temp_progress_db("log_basic");
 
         let selection = ModelSelection {
             model: "opus".to_string(),
@@ -688,13 +741,22 @@ mod tests {
             was_overridden: true,
         };
 
-        log_model_override(&progress_str, 3, &selection);
-
-        let content = std::fs::read_to_string(&progress_str).unwrap();
-        assert!(content.contains("[model-override]"));
-        assert!(content.contains("iteration=3"));
-        assert!(content.contains("strategy_choice=sonnet"));
-        assert!(content.contains("hint=opus"));
+        log_model_override(&progress_str, 3, &selection).unwrap();
+        let db = dag::open_db(&progress_str).unwrap();
+        let (iteration, strategy_choice, hint): (u32, String, String) = db
+            .conn()
+            .query_row(
+                "SELECT iteration, strategy_choice, hint
+                 FROM model_overrides
+                 ORDER BY id DESC
+                 LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(iteration, 3);
+        assert_eq!(strategy_choice, "sonnet");
+        assert_eq!(hint, "opus");
 
         // Cleanup
         let _ = std::fs::remove_file(&progress_str);
@@ -702,24 +764,37 @@ mod tests {
 
     #[test]
     fn no_override_means_no_log_entry() {
-        let progress_str = temp_progress_file("no_log");
+        let progress_str = temp_progress_db("no_log");
 
         let mut config = fixed_config("opus");
         let selection = select_model(&mut config, None);
 
-        // Should not be overridden, so we don't log
+        // Should not be overridden.
         assert!(!selection.was_overridden);
-        // The caller (run_loop) only calls log_model_override when was_overridden is true
-        // Verify file doesn't exist (nothing was written)
-        assert!(!std::path::Path::new(&progress_str).exists());
+
+        // Even if called defensively, no row should be inserted.
+        log_model_override(&progress_str, 1, &selection).unwrap();
+        let db = dag::open_db(&progress_str).unwrap();
+        let count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM model_overrides", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+
+        let _ = std::fs::remove_file(&progress_str);
     }
 
     #[test]
-    fn override_appends_to_existing_progress_file() {
-        let progress_str = temp_progress_file("append");
-
-        // Write existing content
-        std::fs::write(&progress_str, "[R1] DONE — stuff\n").unwrap();
+    fn override_inserts_without_clobbering_existing_rows() {
+        let progress_str = temp_progress_db("append");
+        let db = dag::open_db(&progress_str).unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO model_overrides (iteration, strategy_choice, hint)
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![1u32, "sonnet", "haiku"],
+            )
+            .unwrap();
 
         let selection = ModelSelection {
             model: "haiku".to_string(),
@@ -728,13 +803,24 @@ mod tests {
             was_overridden: true,
         };
 
-        log_model_override(&progress_str, 5, &selection);
+        log_model_override(&progress_str, 5, &selection).unwrap();
 
-        let content = std::fs::read_to_string(&progress_str).unwrap();
-        assert!(content.starts_with("[R1] DONE"));
-        assert!(content.contains("[model-override]"));
-        assert!(content.contains("iteration=5"));
-        assert!(content.contains("hint=haiku"));
+        let db = dag::open_db(&progress_str).unwrap();
+        let count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM model_overrides", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+
+        let latest_iter: u32 = db
+            .conn()
+            .query_row(
+                "SELECT iteration FROM model_overrides ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(latest_iter, 5);
 
         // Cleanup
         let _ = std::fs::remove_file(&progress_str);
