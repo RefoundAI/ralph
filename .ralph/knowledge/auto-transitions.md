@@ -1,34 +1,16 @@
 ---
-title: Auto-Transitions
-tags: [dag, tasks, status, state-machine, transitions]
-created_at: "2026-02-18T00:00:00Z"
+title: "Feature Auto-Transitions"
+tags: [dag, tasks, status, state-machine, transitions, features, auto-transitions]
+created_at: "2026-02-26T08:01:51.902657+00:00"
 ---
 
-Task status state machine with cascading auto-transitions in `src/dag/transitions.rs`.
+When all tasks for a feature resolve, the feature status is automatically updated:
 
-## Valid Transitions
+- All tasks done → feature status = "done" (via `auto_complete_feature()`)
+- All tasks resolved but some failed → feature status = "failed" (via `auto_update_feature_on_fail()`)
 
-`pending` → `in_progress` → `done` | `failed`. Also: `in_progress` → `pending` (release claim), `failed` → `pending` (retry).
+These are called from both `set_task_status()` and the recursive `auto_complete_parent()`/`auto_fail_parent()` paths to handle cases where parent task completion bypasses `set_task_status()`.
 
-## Cascading Effects
+The `feature list` display also derives effective status from task counts as a fallback for stale DB data.
 
-**On task done:**
-- `auto_unblock_tasks()`: dependents whose blockers are all done become ready
-- `auto_complete_parent()`: if all children done, parent transitions to done (recursive up tree)
-
-**On task failed:**
-- `auto_fail_parent()`: immediately fails parent (recursive up tree). One failed child = failed parent.
-
-## Force Transitions
-
-`force_complete_task`, `force_fail_task` step through valid intermediate states (e.g., failed → pending → in_progress → done). `force_reset_task` uses direct SQL for done → pending.
-
-## Gotcha
-
-`auto_complete_parent` and `auto_fail_parent` use direct SQL (not `set_task_status`) to avoid infinite recursion while still cascading up the parent tree.
-
-## Ready Query
-
-A task is ready when: `pending`, leaf node (no children), parent not `failed`, all blockers `done`. Ordered by `priority ASC` then `created_at ASC`. See [[Run Loop Lifecycle]] for how ready tasks are claimed.
-
-See also: [[Task Columns Mapping]], [[Run Loop Lifecycle]], [[Dependency Cycle Detection]], [[Parent Status Derivation]]
+See [[Auto-Transitions]] for the task-level parent auto-transition pattern this builds on.
