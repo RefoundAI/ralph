@@ -40,6 +40,17 @@ pub struct Theme {
     pub cursor_fg: Color,
     /// Background for the cursor block.
     pub cursor_bg: Color,
+    // Markdown rendering tokens
+    pub heading_fg: Color,
+    pub code_span_fg: Color,
+    pub code_block_fg: Color,
+    pub link_fg: Color,
+    pub blockquote_fg: Color,
+    pub list_bullet_fg: Color,
+    pub hr_fg: Color,
+    // Tool activity tokens
+    pub accent_fg: Color,
+    pub tool_name_fg: Color,
 }
 
 impl Theme {
@@ -64,6 +75,15 @@ impl Theme {
             input_text_fg: Color::Reset,
             cursor_fg: Color::Black,
             cursor_bg: Color::White,
+            heading_fg: Color::Cyan,
+            code_span_fg: Color::Rgb(180, 210, 115),
+            code_block_fg: Color::Rgb(120, 120, 120),
+            link_fg: Color::Rgb(100, 160, 255),
+            blockquote_fg: Color::Rgb(150, 150, 170),
+            list_bullet_fg: Color::Yellow,
+            hr_fg: Color::Rgb(80, 80, 80),
+            accent_fg: Color::Yellow,
+            tool_name_fg: Color::Cyan,
         }
     }
 
@@ -88,6 +108,15 @@ impl Theme {
             input_text_fg: Color::Reset,
             cursor_fg: Color::White,
             cursor_bg: Color::Black,
+            heading_fg: Color::Blue,
+            code_span_fg: Color::Rgb(80, 140, 40),
+            code_block_fg: Color::Rgb(100, 100, 100),
+            link_fg: Color::Rgb(30, 100, 200),
+            blockquote_fg: Color::Rgb(100, 100, 120),
+            list_bullet_fg: Color::Rgb(180, 130, 0),
+            hr_fg: Color::Rgb(160, 160, 160),
+            accent_fg: Color::Rgb(180, 130, 0),
+            tool_name_fg: Color::Blue,
         }
     }
 }
@@ -162,6 +191,15 @@ pub struct ColorOverrides {
     pub modal_border: Option<String>,
     pub cursor_fg: Option<String>,
     pub cursor_bg: Option<String>,
+    pub heading: Option<String>,
+    pub code_span: Option<String>,
+    pub code_block: Option<String>,
+    pub link: Option<String>,
+    pub blockquote: Option<String>,
+    pub list_bullet: Option<String>,
+    pub hr: Option<String>,
+    pub accent: Option<String>,
+    pub tool_name: Option<String>,
 }
 
 impl ColorOverrides {
@@ -183,6 +221,15 @@ impl ColorOverrides {
             ("modal_border", &self.modal_border),
             ("cursor_fg", &self.cursor_fg),
             ("cursor_bg", &self.cursor_bg),
+            ("heading", &self.heading),
+            ("code_span", &self.code_span),
+            ("code_block", &self.code_block),
+            ("link", &self.link),
+            ("blockquote", &self.blockquote),
+            ("list_bullet", &self.list_bullet),
+            ("hr", &self.hr),
+            ("accent", &self.accent),
+            ("tool_name", &self.tool_name),
         ];
         for (name, value) in fields {
             if let Some(v) = value {
@@ -218,6 +265,15 @@ impl ColorOverrides {
         set(&mut theme.modal_border_fg, &self.modal_border);
         set(&mut theme.cursor_fg, &self.cursor_fg);
         set(&mut theme.cursor_bg, &self.cursor_bg);
+        set(&mut theme.heading_fg, &self.heading);
+        set(&mut theme.code_span_fg, &self.code_span);
+        set(&mut theme.code_block_fg, &self.code_block);
+        set(&mut theme.link_fg, &self.link);
+        set(&mut theme.blockquote_fg, &self.blockquote);
+        set(&mut theme.list_bullet_fg, &self.list_bullet);
+        set(&mut theme.hr_fg, &self.hr);
+        set(&mut theme.accent_fg, &self.accent);
+        set(&mut theme.tool_name_fg, &self.tool_name);
         theme
     }
 }
@@ -366,6 +422,63 @@ pub fn input_text() -> Style {
 pub fn cursor() -> Style {
     let t = active();
     Style::default().fg(t.cursor_fg).bg(t.cursor_bg)
+}
+
+pub fn heading() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.heading_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
+}
+
+pub fn code_span() -> Style {
+    let t = active();
+    Style::default().fg(t.code_span_fg).bg(t.background)
+}
+
+pub fn code_block() -> Style {
+    let t = active();
+    Style::default().fg(t.code_block_fg).bg(t.background)
+}
+
+pub fn link() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.link_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::UNDERLINED)
+}
+
+pub fn blockquote() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.blockquote_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::ITALIC)
+}
+
+pub fn list_bullet() -> Style {
+    let t = active();
+    Style::default().fg(t.list_bullet_fg).bg(t.background)
+}
+
+pub fn hr() -> Style {
+    let t = active();
+    Style::default().fg(t.hr_fg).bg(t.background)
+}
+
+pub fn accent() -> Style {
+    let t = active();
+    Style::default().fg(t.accent_fg).bg(t.background)
+}
+
+pub fn tool_name() -> Style {
+    let t = active();
+    Style::default()
+        .fg(t.tool_name_fg)
+        .bg(t.background)
+        .add_modifier(Modifier::BOLD)
 }
 
 #[cfg(test)]
@@ -540,6 +653,15 @@ mod tests {
             modal_border: Some("#cccccc".to_string()),
             cursor_fg: Some("#dddddd".to_string()),
             cursor_bg: Some("#eeeeee".to_string()),
+            heading: Some("#112233".to_string()),
+            code_span: Some("#223344".to_string()),
+            code_block: Some("#334455".to_string()),
+            link: Some("#445566".to_string()),
+            blockquote: Some("#556677".to_string()),
+            list_bullet: Some("#667788".to_string()),
+            hr: Some("#778899".to_string()),
+            accent: Some("#889900".to_string()),
+            tool_name: Some("#990011".to_string()),
         };
         assert!(ov.validate().is_ok());
         let themed = ov.apply_to(Theme::dark());

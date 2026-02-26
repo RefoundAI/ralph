@@ -8,13 +8,27 @@ pub enum UiLevel {
     Error,
 }
 
+/// A structured tool activity entry for the TUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolLine {
+    /// Tool name (e.g. "Read", "Bash", "Edit").
+    pub name: String,
+    /// Concise summary of what the tool is doing.
+    pub summary: String,
+}
+
 /// Event payload rendered by the TUI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
     StatusLine(String),
     DagSummary(String),
     CurrentTask(String),
-    Log { level: UiLevel, message: String },
+    Log {
+        level: UiLevel,
+        message: String,
+    },
     AgentText(String),
-    ToolActivity(String),
+    ToolActivity(ToolLine),
+    /// Detail line for the most recent tool call (indented under it).
+    ToolDetail(String),
 }

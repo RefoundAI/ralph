@@ -1,6 +1,7 @@
 //! Rendering functions for the ratatui dashboard.
 
 use ratatui::prelude::*;
+use ratatui::style::Modifier;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 
 use crate::ui::state::{AppState, UiModal, UiScreen};
@@ -87,7 +88,24 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
         .iter()
         .rev()
         .take(80)
-        .map(|line| ListItem::new(Line::styled(line.clone(), theme::subdued())))
+        .map(|tl| {
+            if tl.name.is_empty() {
+                // Detail line (indented, no tool name).
+                ListItem::new(Line::from(vec![
+                    Span::styled("  ", theme::subdued()),
+                    Span::styled(tl.summary.clone(), theme::subdued()),
+                ]))
+            } else {
+                let mut spans = vec![
+                    Span::styled(tl.name.clone(), theme::tool_name()),
+                    Span::styled(" -> ", theme::accent()),
+                ];
+                if !tl.summary.is_empty() {
+                    spans.push(Span::styled(tl.summary.clone(), theme::subdued()));
+                }
+                ListItem::new(Line::from(spans))
+            }
+        })
         .collect();
     let tools = List::new(tool_items).block(
         Block::default()
@@ -122,15 +140,16 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
         .constraints([Constraint::Min(0), Constraint::Length(input_height)])
         .split(body[1]);
 
-    // Agent Stream: respect user scroll pin, or auto-scroll to bottom.
-    // Count wrapped visual lines so auto-scroll reaches the actual bottom.
+    // Agent Stream: render markdown-styled lines with scroll support.
     let inner_height = right[0].height.saturating_sub(2) as usize; // subtract border
     let inner_width = right[0].width.saturating_sub(2).max(1) as usize; // subtract border
-    let total_lines: usize = state
-        .agent_text
-        .lines()
+
+    let styled_lines = render_agent_markdown(&state.agent_text);
+
+    let total_lines: usize = styled_lines
+        .iter()
         .map(|line| {
-            let char_count = line.len();
+            let char_count: usize = line.spans.iter().map(|s| s.content.len()).sum();
             if char_count == 0 {
                 1
             } else {
@@ -149,7 +168,7 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
     } else {
         "Agent Stream".to_string()
     };
-    let agent = Paragraph::new(state.agent_text.as_str())
+    let agent = Paragraph::new(styled_lines)
         .block(
             Block::default()
                 .title(scroll_indicator)
@@ -157,8 +176,7 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
                 .border_style(theme::border()),
         )
         .wrap(Wrap { trim: false })
-        .scroll((scroll_offset as u16, 0))
-        .style(theme::subdued());
+        .scroll((scroll_offset as u16, 0));
     frame.render_widget(agent, right[0]);
 
     render_input_pane(frame, right[1], state);
@@ -172,6 +190,225 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
     };
     let footer = Paragraph::new(footer_text).style(theme::subdued());
     frame.render_widget(footer, root[2]);
+}
+
+/// Parse agent text as markdown and return styled `Line` objects for ratatui rendering.
+fn render_agent_markdown(text: &str) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut in_code_block = false;
+
+    for raw_line in text.split('\n') {
+        let trimmed = raw_line.trim_start();
+
+        // Fenced code block delimiters.
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            lines.push(Line::styled(raw_line.to_string(), theme::code_block()));
+            continue;
+        }
+
+        // Inside code blocks: render as code_block style, no inline formatting.
+        if in_code_block {
+            lines.push(Line::styled(raw_line.to_string(), theme::code_block()));
+            continue;
+        }
+
+        // Horizontal rule: ---, ***, ___
+        let hr_trimmed = trimmed.trim();
+        if hr_trimmed.len() >= 3
+            && (hr_trimmed.chars().all(|c| c == '-')
+                || hr_trimmed.chars().all(|c| c == '*')
+                || hr_trimmed.chars().all(|c| c == '_'))
+        {
+            lines.push(Line::styled("─".repeat(40), theme::hr()));
+            continue;
+        }
+
+        // Headings: # / ## / ###
+        if trimmed.starts_with("### ") || trimmed.starts_with("## ") || trimmed.starts_with("# ") {
+            lines.push(Line::styled(raw_line.to_string(), theme::heading()));
+            continue;
+        }
+
+        // Blockquotes: > text
+        if trimmed.starts_with("> ") || trimmed == ">" {
+            let content = if trimmed.len() > 2 { &trimmed[2..] } else { "" };
+            lines.push(Line::from(vec![
+                Span::styled("│ ", theme::blockquote()),
+                Span::styled(content.to_string(), theme::blockquote()),
+            ]));
+            continue;
+        }
+
+        // List items: - item, * item, + item, or numbered 1. item
+        if trimmed.starts_with("- ")
+            || trimmed.starts_with("* ")
+            || trimmed.starts_with("+ ")
+            || (trimmed.len() > 2
+                && trimmed.as_bytes()[0].is_ascii_digit()
+                && trimmed.contains(". "))
+        {
+            // Find the bullet/number part.
+            let leading_ws = &raw_line[..raw_line.len() - trimmed.len()];
+            let (bullet, rest) = if trimmed.starts_with("- ")
+                || trimmed.starts_with("* ")
+                || trimmed.starts_with("+ ")
+            {
+                (&trimmed[..2], &trimmed[2..])
+            } else if let Some(dot_pos) = trimmed.find(". ") {
+                (&trimmed[..dot_pos + 2], &trimmed[dot_pos + 2..])
+            } else {
+                (trimmed, "")
+            };
+
+            let mut spans = vec![
+                Span::styled(leading_ws.to_string(), theme::subdued()),
+                Span::styled(bullet.to_string(), theme::list_bullet()),
+            ];
+            spans.extend(parse_inline_markdown(rest));
+            lines.push(Line::from(spans));
+            continue;
+        }
+
+        // Normal text: apply inline markdown formatting.
+        let spans = parse_inline_markdown(raw_line);
+        lines.push(Line::from(spans));
+    }
+
+    lines
+}
+
+/// Parse inline markdown within a single line, returning styled spans.
+///
+/// Recognizes: `code`, **bold**, *italic*, [links](url)
+fn parse_inline_markdown(line: &str) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let chars: Vec<char> = line.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut buf = String::new();
+
+    while i < len {
+        // Backtick: inline code.
+        if chars[i] == '`' {
+            if let Some(end) = find_closing(&chars, i + 1, '`') {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buf), theme::subdued()));
+                }
+                let code: String = chars[i..=end].iter().collect();
+                spans.push(Span::styled(code, theme::code_span()));
+                i = end + 1;
+                continue;
+            }
+        }
+
+        // Link: [text](url)
+        if chars[i] == '[' {
+            if let Some((text, url, end_idx)) = parse_markdown_link(&chars, i) {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buf), theme::subdued()));
+                }
+                spans.push(Span::styled(format!("[{text}]({url})"), theme::link()));
+                i = end_idx;
+                continue;
+            }
+        }
+
+        // Double asterisk: bold.
+        if chars[i] == '*' && i + 1 < len && chars[i + 1] == '*' {
+            if let Some(end) = find_closing_double(&chars, i + 2, '*', '*') {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buf), theme::subdued()));
+                }
+                let bold_text: String = chars[i..end + 2].iter().collect();
+                spans.push(Span::styled(
+                    bold_text,
+                    theme::subdued().add_modifier(Modifier::BOLD),
+                ));
+                i = end + 2;
+                continue;
+            }
+        }
+
+        // Single asterisk: italic (but not **).
+        if chars[i] == '*' && !(i + 1 < len && chars[i + 1] == '*') {
+            if let Some(end) = find_closing_single_star(&chars, i + 1) {
+                if !buf.is_empty() {
+                    spans.push(Span::styled(std::mem::take(&mut buf), theme::subdued()));
+                }
+                let italic_text: String = chars[i..=end].iter().collect();
+                spans.push(Span::styled(
+                    italic_text,
+                    theme::subdued().add_modifier(Modifier::ITALIC),
+                ));
+                i = end + 1;
+                continue;
+            }
+        }
+
+        buf.push(chars[i]);
+        i += 1;
+    }
+
+    if !buf.is_empty() {
+        spans.push(Span::styled(buf, theme::subdued()));
+    }
+
+    if spans.is_empty() {
+        spans.push(Span::styled(String::new(), theme::subdued()));
+    }
+
+    spans
+}
+
+/// Find closing char at position > start.
+fn find_closing(chars: &[char], start: usize, close: char) -> Option<usize> {
+    chars.iter().enumerate().skip(start).find_map(
+        |(j, ch)| {
+            if *ch == close {
+                Some(j)
+            } else {
+                None
+            }
+        },
+    )
+}
+
+/// Find closing double-char pair (e.g. **).
+fn find_closing_double(chars: &[char], start: usize, c1: char, c2: char) -> Option<usize> {
+    if chars.len() < 2 {
+        return None;
+    }
+    (start..chars.len() - 1).find(|&j| chars[j] == c1 && chars[j + 1] == c2)
+}
+
+/// Find a closing single `*` that is not part of `**`.
+fn find_closing_single_star(chars: &[char], start: usize) -> Option<usize> {
+    for j in start..chars.len() {
+        if chars[j] == '*' {
+            if j + 1 < chars.len() && chars[j + 1] == '*' {
+                continue;
+            }
+            return Some(j);
+        }
+    }
+    None
+}
+
+/// Parse a markdown link `[text](url)` starting at position `i`.
+/// Returns (text, url, end_index) where end_index is one past the closing `)`.
+fn parse_markdown_link(chars: &[char], i: usize) -> Option<(String, String, usize)> {
+    if chars[i] != '[' {
+        return None;
+    }
+    let close_bracket = find_closing(chars, i + 1, ']')?;
+    if close_bracket + 1 >= chars.len() || chars[close_bracket + 1] != '(' {
+        return None;
+    }
+    let close_paren = find_closing(chars, close_bracket + 2, ')')?;
+    let text: String = chars[i + 1..close_bracket].iter().collect();
+    let url: String = chars[close_bracket + 2..close_paren].iter().collect();
+    Some((text, url, close_paren + 1))
 }
 
 /// Render the persistent Input pane in the bottom-right of the dashboard.
@@ -499,7 +736,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::event::{UiEvent, UiLevel};
+    use crate::ui::event::{ToolLine, UiEvent, UiLevel};
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
     use ratatui::Terminal;
@@ -682,7 +919,10 @@ mod tests {
         let backend = TestBackend::new(width, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut state = AppState::default();
-        state.apply(UiEvent::ToolActivity("tool_call: Read".to_string()));
+        state.apply(UiEvent::ToolActivity(ToolLine {
+            name: "Read".to_string(),
+            summary: "tool_call: Read".to_string(),
+        }));
         terminal.draw(|f| render(f, &state)).unwrap();
         let buf = terminal.backend().buffer();
 

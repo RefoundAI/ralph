@@ -15,6 +15,7 @@ use std::rc::Rc;
 use colored::Colorize;
 
 use crate::acp::tools::SessionUpdateMsg;
+use crate::ui::event::ToolLine;
 use crate::ui::{self, UiEvent, UiLevel};
 
 /// State carried across render calls within a single session.
@@ -101,24 +102,22 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
                 locations,
             } => {
                 let summary = format_tool_summary(name, input, locations);
-                let line = if summary.is_empty() {
-                    format!("{name} ->")
-                } else {
-                    format!("{name} -> {summary}")
-                };
-                ui::emit(UiEvent::ToolActivity(line));
+                ui::emit(UiEvent::ToolActivity(ToolLine {
+                    name: name.to_string(),
+                    summary,
+                }));
 
                 if !input.is_empty() && input != "{}" && input != "null" {
                     if let Ok(obj) = serde_json::from_str::<serde_json::Value>(input) {
                         for detail in format_tool_detail_lines(name, &obj) {
-                            ui::emit(UiEvent::ToolActivity(format!("  {detail}")));
+                            ui::emit(UiEvent::ToolDetail(detail));
                         }
                     }
                 }
             }
             SessionUpdateMsg::ToolCallDetail { detail_lines, .. } => {
                 for detail in detail_lines {
-                    ui::emit(UiEvent::ToolActivity(format!("  {detail}")));
+                    ui::emit(UiEvent::ToolDetail(detail.to_string()));
                 }
             }
             SessionUpdateMsg::ToolCallError { name, error } => {
@@ -128,8 +127,7 @@ pub fn render_session_update(update: &SessionUpdateMsg, state: &RenderState) {
                 });
             }
             SessionUpdateMsg::ToolCallPreamble => {
-                // Visually separate successive agent responses in the Agent Stream.
-                ui::emit(UiEvent::AgentText("\n\n───\n\n".to_owned()));
+                // No separator in TUI mode — agent stream shows only agent text.
             }
             SessionUpdateMsg::ToolCallProgress { .. } | SessionUpdateMsg::Finished => {}
         }

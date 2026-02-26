@@ -2,7 +2,7 @@
 
 use std::collections::VecDeque;
 
-use crate::ui::event::{UiEvent, UiLevel};
+use crate::ui::event::{ToolLine, UiEvent, UiLevel};
 
 const MAX_LOG_LINES: usize = 300;
 const MAX_TOOL_LINES: usize = 200;
@@ -43,7 +43,7 @@ pub struct AppState {
     pub dag_summary: String,
     pub current_task: String,
     pub logs: VecDeque<LogLine>,
-    pub tools: VecDeque<String>,
+    pub tools: VecDeque<ToolLine>,
     pub agent_text: String,
     /// When `None`, Agent Stream auto-scrolls to the bottom.
     /// When `Some(offset)`, the user has pinned the scroll position.
@@ -108,7 +108,22 @@ impl AppState {
                 }
             }
             UiEvent::AgentText(text) => {
+                // Trim leading whitespace from the very first text chunk.
+                let text = if self.agent_text.is_empty() {
+                    text.trim_start().to_string()
+                } else {
+                    text
+                };
+                if text.is_empty() {
+                    return;
+                }
+
                 self.agent_text.push_str(&text);
+
+                // Collapse consecutive blank lines: never more than one blank line in a row.
+                // We do a single pass after appending to keep it simple.
+                collapse_blank_lines(&mut self.agent_text);
+
                 if self.agent_text.len() > MAX_AGENT_CHARS {
                     let mut split = self.agent_text.len() - MAX_AGENT_CHARS;
                     while split < self.agent_text.len() && !self.agent_text.is_char_boundary(split)
@@ -120,8 +135,18 @@ impl AppState {
                     }
                 }
             }
-            UiEvent::ToolActivity(line) => {
-                self.tools.push_back(line);
+            UiEvent::ToolActivity(tool_line) => {
+                self.tools.push_back(tool_line);
+                while self.tools.len() > MAX_TOOL_LINES {
+                    self.tools.pop_front();
+                }
+            }
+            UiEvent::ToolDetail(detail) => {
+                // Append as a detail line (no tool name, just indented text).
+                self.tools.push_back(ToolLine {
+                    name: String::new(),
+                    summary: detail,
+                });
                 while self.tools.len() > MAX_TOOL_LINES {
                     self.tools.pop_front();
                 }
@@ -205,6 +230,14 @@ impl AppState {
                 *scroll += 1;
             }
         }
+    }
+}
+
+/// Collapse runs of 3+ consecutive newlines into exactly 2 (one blank line).
+fn collapse_blank_lines(s: &mut String) {
+    // Find and replace runs of 3+ newlines with exactly 2.
+    while s.contains("\n\n\n") {
+        *s = s.replace("\n\n\n", "\n\n");
     }
 }
 
