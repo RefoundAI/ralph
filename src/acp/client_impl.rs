@@ -256,6 +256,14 @@ impl RalphClient {
         std::mem::take(&mut *acc)
     }
 
+    /// Read accumulated agent text without draining the accumulator.
+    ///
+    /// Used by interactive sessions to check for exit sigils after each
+    /// agent response without losing the accumulated text.
+    pub fn peek_accumulated_text(&self) -> String {
+        self.text_accumulator.borrow().clone()
+    }
+
     /// Take and return the list of files modified, leaving it empty.
     pub fn take_files_modified(&self) -> Vec<String> {
         let mut files = self.files_modified.borrow_mut();

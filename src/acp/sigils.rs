@@ -15,6 +15,9 @@ pub const FAILURE_SIGIL: &str = "<promise>FAILURE</promise>";
 /// Valid model names for the `<next-model>` sigil.
 const VALID_MODELS: &[&str] = &["opus", "sonnet", "haiku"];
 
+/// Valid phase names for the `<phase-complete>` sigil.
+const VALID_PHASES: &[&str] = &["spec", "plan", "build"];
+
 /// Parse the `<next-model>...</next-model>` sigil from result text.
 ///
 /// Returns `Some(model)` if a valid model name is found between the tags,
@@ -137,6 +140,55 @@ pub fn parse_knowledge_sigils(text: &str) -> Vec<KnowledgeSigil> {
         search_from = end_idx + end_tag.len();
     }
     entries
+}
+
+/// Parse the `<phase-complete>spec|plan|build</phase-complete>` sigil from result text.
+///
+/// Returns `Some(phase)` if a valid phase name is found between the tags,
+/// `None` if the sigil is absent or contains an invalid phase name.
+pub fn parse_phase_complete(text: &str) -> Option<String> {
+    let start_tag = "<phase-complete>";
+    let end_tag = "</phase-complete>";
+
+    let start_idx = text.find(start_tag)?;
+    let content_start = start_idx + start_tag.len();
+    let end_idx = text[content_start..].find(end_tag)?;
+    let phase = text[content_start..content_start + end_idx].trim();
+
+    if VALID_PHASES.contains(&phase) {
+        Some(phase.to_string())
+    } else {
+        None
+    }
+}
+
+/// Check for `<tasks-created>` sigil in result text.
+///
+/// Returns `true` if the sigil is present (self-closing or with empty content).
+pub fn parse_tasks_created(text: &str) -> bool {
+    text.contains("<tasks-created>")
+        || text.contains("<tasks-created/>")
+        || text.contains("<tasks-created />")
+}
+
+/// Sigils extracted from interactive/streaming session output.
+///
+/// A lighter-weight sigil result for interactive flows (feature create, task create)
+/// where only phase completion and task creation signals are relevant.
+#[derive(Debug, Default)]
+pub struct InteractiveSigils {
+    /// Phase name from `<phase-complete>spec|plan|build</phase-complete>`.
+    pub phase_complete: Option<String>,
+    /// True if `<tasks-created>` was found.
+    pub tasks_created: bool,
+}
+
+/// Extract interactive-flow sigils from accumulated agent output text.
+pub fn extract_interactive_sigils(text: &str) -> InteractiveSigils {
+    InteractiveSigils {
+        phase_complete: parse_phase_complete(text),
+        tasks_created: parse_tasks_created(text),
+    }
 }
 
 /// Extract an attribute value from a tag's attribute string.
@@ -545,5 +597,115 @@ mod tests {
         assert!(result.knowledge_entries.is_empty());
         assert!(!result.is_complete);
         assert!(!result.is_failure);
+    }
+
+    // --- parse_phase_complete tests ---
+
+    #[test]
+    fn parse_phase_complete_spec() {
+        let text = "I've written the spec.\n<phase-complete>spec</phase-complete>";
+        assert_eq!(parse_phase_complete(text), Some("spec".to_string()));
+    }
+
+    #[test]
+    fn parse_phase_complete_plan() {
+        let text = "<phase-complete>plan</phase-complete>";
+        assert_eq!(parse_phase_complete(text), Some("plan".to_string()));
+    }
+
+    #[test]
+    fn parse_phase_complete_build() {
+        let text = "Tasks created.\n<phase-complete>build</phase-complete>\nDone.";
+        assert_eq!(parse_phase_complete(text), Some("build".to_string()));
+    }
+
+    #[test]
+    fn parse_phase_complete_with_whitespace() {
+        let text = "<phase-complete> spec </phase-complete>";
+        assert_eq!(parse_phase_complete(text), Some("spec".to_string()));
+    }
+
+    #[test]
+    fn parse_phase_complete_invalid_phase() {
+        let text = "<phase-complete>review</phase-complete>";
+        assert_eq!(parse_phase_complete(text), None);
+    }
+
+    #[test]
+    fn parse_phase_complete_absent() {
+        let text = "No phase sigil here.";
+        assert_eq!(parse_phase_complete(text), None);
+    }
+
+    #[test]
+    fn parse_phase_complete_empty() {
+        let text = "<phase-complete></phase-complete>";
+        assert_eq!(parse_phase_complete(text), None);
+    }
+
+    #[test]
+    fn parse_phase_complete_malformed_no_closing() {
+        let text = "<phase-complete>spec";
+        assert_eq!(parse_phase_complete(text), None);
+    }
+
+    // --- parse_tasks_created tests ---
+
+    #[test]
+    fn parse_tasks_created_with_closing_tag() {
+        let text = "Done.\n<tasks-created></tasks-created>";
+        assert!(parse_tasks_created(text));
+    }
+
+    #[test]
+    fn parse_tasks_created_self_closing() {
+        let text = "Task created: t-abc123\n<tasks-created/>";
+        assert!(parse_tasks_created(text));
+    }
+
+    #[test]
+    fn parse_tasks_created_self_closing_with_space() {
+        let text = "<tasks-created />";
+        assert!(parse_tasks_created(text));
+    }
+
+    #[test]
+    fn parse_tasks_created_absent() {
+        let text = "No sigils here.";
+        assert!(!parse_tasks_created(text));
+    }
+
+    // --- extract_interactive_sigils tests ---
+
+    #[test]
+    fn test_extract_interactive_sigils_phase_complete() {
+        let text = "Spec written.\n<phase-complete>spec</phase-complete>";
+        let result = extract_interactive_sigils(text);
+        assert_eq!(result.phase_complete, Some("spec".to_string()));
+        assert!(!result.tasks_created);
+    }
+
+    #[test]
+    fn test_extract_interactive_sigils_tasks_created() {
+        let text = "Created task t-abc123.\n<tasks-created></tasks-created>";
+        let result = extract_interactive_sigils(text);
+        assert!(result.tasks_created);
+        assert_eq!(result.phase_complete, None);
+    }
+
+    #[test]
+    fn test_extract_interactive_sigils_both() {
+        let text = "<phase-complete>build</phase-complete>\n<tasks-created/>";
+        let result = extract_interactive_sigils(text);
+        assert_eq!(result.phase_complete, Some("build".to_string()));
+        assert!(result.tasks_created);
+    }
+
+    #[test]
+    fn test_extract_interactive_sigils_none() {
+        let text = "Just regular output.";
+        let result = extract_interactive_sigils(text);
+        assert_eq!(result.phase_complete, None);
+        assert!(!result.tasks_created);
     }
 }

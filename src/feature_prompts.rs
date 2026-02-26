@@ -24,13 +24,13 @@ Your ONLY deliverable is the spec document at `{spec_path}`. You must NOT:
 
 IMPORTANT: Once you have written the spec document to `{spec_path}`, your work is DONE.
 Do NOT proceed to implement anything. Do NOT try to create tasks. Do NOT run any commands.
-Tell the user the spec is written and wait for their feedback. The user exits by pressing Enter twice on blank lines.
+Tell the user the spec is written and emit the completion sigil: `<phase-complete>spec</phase-complete>`
 
 ## Workflow
 
 1. **Interview** — Ask the user about requirements, constraints, edge cases, and acceptance criteria.
 2. **Write** — Once you have enough information, write the spec to `{spec_path}`.
-3. **Stop** — After writing the spec file, tell the user it's done. Do NOT continue working.
+3. **Signal completion** — After writing the spec file, tell the user it's done and emit `<phase-complete>spec</phase-complete>`. Do NOT continue working.
 
 ## Interview Style
 
@@ -106,7 +106,7 @@ Your ONLY deliverable is the plan document at `{plan_path}`. You must NOT:
 
 IMPORTANT: Once you have written the plan document to `{plan_path}`, your work is DONE.
 Do NOT proceed to implement anything. Do NOT try to create tasks. Do NOT run any commands.
-Tell the user the plan is written and wait for their feedback. The user exits by pressing Enter twice on blank lines.
+Tell the user the plan is written and emit the completion sigil: `<phase-complete>plan</phase-complete>`
 
 ## Workflow
 
@@ -114,7 +114,7 @@ Tell the user the plan is written and wait for their feedback. The user exits by
    architectural choices, ordering, and any ambiguities. You may read the codebase to
    understand existing patterns relevant to planning.
 2. **Write** — Once the user agrees on the approach, write the plan to `{plan_path}`.
-3. **Stop** — After writing the plan file, tell the user it's done. Do NOT continue working.
+3. **Signal completion** — After writing the plan file, tell the user it's done and emit `<phase-complete>plan</phase-complete>`. Do NOT continue working.
 
 ## Interview Style
 
@@ -229,13 +229,20 @@ ralph task deps add $BLOCKER_ID $BLOCKED_ID
 5. **Dependencies for ordering**: Only when task B needs artifacts from task A
 6. **Foundation first**: Schemas and types before the code that uses them
 
+## Completion Signal
+
+When you are done creating all tasks and dependencies, emit the completion sigil:
+`<phase-complete>build</phase-complete>`
+
+This tells Ralph the task DAG is complete and it can print a summary.
+
 ## Instructions
 
 1. Read the spec and plan carefully
 2. Create parent tasks for logical groupings (as children of `{root_id}`)
 3. Create leaf tasks under each parent
 4. Add dependencies between tasks where order matters
-5. When done, simply stop — Ralph will read the DB and print a summary"#,
+5. Emit `<phase-complete>build</phase-complete>` when done"#,
         spec_content = spec_content,
         plan_content = plan_content,
         root_id = root_id,
@@ -281,6 +288,9 @@ ralph task add "Refactor auth module" -d "Extract token validation into a separa
 ```
 
 The command prints the new task ID on success. Confirm the task was created by showing the ID to the user.
+
+After creating the task, emit the completion sigil: `<tasks-created></tasks-created>`
+This tells Ralph the task has been created and the session can end.
 
 IMPORTANT: You MUST use the terminal to run `ralph task add`. Do NOT just output JSON — it will not be processed."#,
         context = context,

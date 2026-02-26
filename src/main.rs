@@ -480,7 +480,7 @@ async fn handle_feature(action: cli::FeatureAction, ui_mode: ui::UiMode) -> Resu
                 let initial_message = build_initial_message_spec(&name, false);
 
                 // Launch interactive session via ACP (no terminal — spec authoring only)
-                acp::interactive::run_interactive(
+                let _agent_text = acp::interactive::run_interactive(
                     &agent_command,
                     &system_prompt,
                     &initial_message,
@@ -545,7 +545,7 @@ async fn handle_feature(action: cli::FeatureAction, ui_mode: ui::UiMode) -> Resu
                 let initial_message = build_initial_message_plan(&name, false);
 
                 // Launch interactive session via ACP (no terminal — plan authoring only)
-                acp::interactive::run_interactive(
+                let _agent_text = acp::interactive::run_interactive(
                     &agent_command,
                     &system_prompt,
                     &initial_message,
@@ -625,10 +625,10 @@ async fn handle_feature(action: cli::FeatureAction, ui_mode: ui::UiMode) -> Resu
                 build_feature_build_system_prompt(&spec_content, &plan_content, &root.id, &feat.id);
 
             // Launch ACP streaming session — agent autonomously creates the task DAG
-            acp::interactive::run_streaming(
+            let _agent_text = acp::interactive::run_streaming(
                 &agent_command,
                 &system_prompt,
-                "Read the spec and plan, then create the task DAG. When done, stop.",
+                "Read the spec and plan, then create the task DAG. When done, emit <phase-complete>build</phase-complete> and stop.",
                 &project.root,
                 Some(model_name),
             )
@@ -835,7 +835,7 @@ async fn handle_task(action: cli::TaskAction, ui_mode: ui::UiMode) -> Result<Exi
             let initial_message = build_initial_message_task_new();
 
             // Launch interactive session via ACP
-            acp::interactive::run_interactive(
+            let _agent_text = acp::interactive::run_interactive(
                 &agent_command,
                 &system_prompt,
                 &initial_message,

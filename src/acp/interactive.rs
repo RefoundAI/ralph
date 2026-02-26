@@ -1,11 +1,7 @@
 //! Interactive and streaming ACP sessions.
 //!
 //! - [`run_interactive`]: ACP-mediated interactive session (user ↔ agent loop).
-//! - [`run_streaming`]: Single autonomous prompt, stream output. Used by `feature create` (build phase).
-//!
-//! Both functions create a fresh [`tokio::task::LocalSet`] for the ACP connection
-//! lifecycle (ACP futures are `!Send`). The shared connection setup is factored into
-//! [`run_interactive_inner`], which mirrors [`super::connection::run_acp_session`].
+//! - [`run_streaming`]: Single autonomous prompt, stream output.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -26,26 +22,14 @@ use crate::acp::client_impl::RalphClient;
 use crate::acp::connection;
 use crate::acp::connection::auth_hint;
 use crate::interrupt;
-
-// ============================================================================
-// Public API
-// ============================================================================
+use crate::output::formatter;
+use crate::ui;
 
 /// Run an interactive ACP session (user types, agent responds, repeat).
 ///
-/// The `instructions` are prepended to `initial_message` in the first prompt.
-/// Subsequent user inputs are sent as standalone prompts.
-///
-/// Input supports multi-line: type lines, then press Enter on a blank line to send.
-/// The session ends when the user presses Enter on a blank line with no accumulated
-/// input (i.e. two consecutive blank lines), or EOF (Ctrl+D) with empty buffer.
-///
-/// If `model` is provided, sets `RALPH_MODEL` env var on the spawned agent process.
-/// If `allow_terminal` is false, terminal (bash) capability is disabled — use this
-/// for document-authoring sessions (spec, plan) where the agent should only read/write files.
-/// If `allowed_write_paths` is set, file writes are restricted to those paths only.
-/// ACP has no equivalent to `plan_mode` from the old Claude CLI integration — permission
-/// management is now handled by Ralph's tool provider (auto-approve in normal mode).
+/// Returns the accumulated agent text output for sigil extraction by the caller.
+/// When the agent emits a `<phase-complete>` or `<tasks-created>` sigil, the
+/// session auto-exits without waiting for further user input.
 pub async fn run_interactive(
     agent_command: &str,
     instructions: &str,
@@ -54,8 +38,7 @@ pub async fn run_interactive(
     model: Option<&str>,
     allow_terminal: bool,
     allowed_write_paths: Option<Vec<PathBuf>>,
-) -> Result<()> {
-    // Extract owned values before entering the LocalSet to avoid lifetime issues.
+) -> Result<String> {
     let agent_command = agent_command.to_owned();
     let project_root = project_root.to_path_buf();
     let instructions = instructions.to_owned();
@@ -78,21 +61,15 @@ pub async fn run_interactive(
 
 /// Run a non-interactive streaming session (single prompt, agent runs autonomously).
 ///
-/// Concatenates `instructions` and `message` into a single prompt.
-/// Used by `feature create` (build phase) to let the agent autonomously create a task DAG via
-/// `ralph task add` and `ralph task deps add` CLI commands.
-///
-/// If `model` is provided, sets `RALPH_MODEL` env var on the spawned agent process.
+/// Returns the accumulated agent text output for sigil extraction by the caller.
 pub async fn run_streaming(
     agent_command: &str,
     instructions: &str,
     message: &str,
     project_root: &Path,
     model: Option<&str>,
-) -> Result<()> {
-    // Delegate to run_autonomous — same lifecycle, different return type.
-    // Feature build needs terminal access for `ralph task add` commands.
-    connection::run_autonomous(
+) -> Result<String> {
+    let result = connection::run_autonomous(
         agent_command,
         project_root,
         instructions,
@@ -104,35 +81,29 @@ pub async fn run_streaming(
             ..Default::default()
         },
     )
-    .await
-    .map(|_| ())
+    .await?;
+    Ok(result.full_text)
 }
 
-// ============================================================================
-// Internal helpers
-// ============================================================================
-
-/// Result of reading multi-line user input.
 enum MultilineResult {
-    /// User submitted non-empty input (blank line terminates).
     Input(String),
-    /// User exited the session (two consecutive blank lines, or EOF on empty buffer).
     Exit,
-    /// Ctrl+C was pressed during input.
     Interrupted,
 }
 
-/// Read multi-line input from the user.
-///
-/// Prompts with `> ` on the first line and `| ` on continuation lines.
-/// A blank line submits the accumulated buffer. If the buffer is empty when
-/// a blank line is entered, that means the user wants to exit the session.
-/// EOF (Ctrl+D) submits whatever is in the buffer, or exits if empty.
 async fn read_multiline_input(stdin: &mut BufReader<tokio::io::Stdin>) -> MultilineResult {
-    let mut lines: Vec<String> = Vec::new();
+    if ui::is_active() {
+        let hint = "Type your message. Empty line submits. Empty buffer exits. Ctrl+C interrupts.";
+        return match ui::prompt_multiline("Interactive Prompt", hint) {
+            Some(ui::UiPromptResult::Input(text)) => MultilineResult::Input(text),
+            Some(ui::UiPromptResult::Exit) => MultilineResult::Exit,
+            Some(ui::UiPromptResult::Interrupted) => MultilineResult::Interrupted,
+            None => MultilineResult::Exit,
+        };
+    }
 
+    let mut lines: Vec<String> = Vec::new();
     loop {
-        // Show appropriate prompt: `> ` for first line, `| ` for continuations.
         if lines.is_empty() {
             print!("\n{} ", ">".bright_cyan());
         } else {
@@ -140,7 +111,6 @@ async fn read_multiline_input(stdin: &mut BufReader<tokio::io::Stdin>) -> Multil
         }
         let _ = std::io::stdout().flush();
 
-        // Check interrupt before blocking on stdin.
         if interrupt::is_interrupted() {
             return MultilineResult::Interrupted;
         }
@@ -148,37 +118,30 @@ async fn read_multiline_input(stdin: &mut BufReader<tokio::io::Stdin>) -> Multil
         let mut line_buf = String::new();
         let n = stdin.read_line(&mut line_buf).await.unwrap_or(0);
         if n == 0 {
-            // EOF (Ctrl+D).
-            if lines.is_empty() {
-                return MultilineResult::Exit;
-            }
-            // Submit what we have.
-            return MultilineResult::Input(lines.join("\n"));
+            return if lines.is_empty() {
+                MultilineResult::Exit
+            } else {
+                MultilineResult::Input(lines.join("\n"))
+            };
         }
 
-        // Trim trailing newline/CR.
         let line = line_buf
             .trim_end_matches('\n')
             .trim_end_matches('\r')
             .to_owned();
 
         if line.is_empty() {
-            // Blank line: submit or exit.
-            if lines.is_empty() {
-                // No content accumulated — user wants to exit.
-                return MultilineResult::Exit;
-            }
-            // Submit the accumulated input.
-            return MultilineResult::Input(lines.join("\n"));
+            return if lines.is_empty() {
+                MultilineResult::Exit
+            } else {
+                MultilineResult::Input(lines.join("\n"))
+            };
         }
 
         lines.push(line);
     }
 }
 
-/// Poll the interrupt flag every 100 ms.
-///
-/// Returns as soon as `interrupt::is_interrupted()` becomes true.
 async fn poll_interrupt() {
     loop {
         if interrupt::is_interrupted() {
@@ -188,10 +151,6 @@ async fn poll_interrupt() {
     }
 }
 
-/// Kill all resources for an interactive session.
-///
-/// Kills terminal subprocesses, aborts background I/O tasks, and kills the
-/// agent process. Mirrors the `cleanup()` helper in `connection.rs`.
 async fn interactive_cleanup(
     _conn: ClientSideConnection,
     io_handle: tokio::task::JoinHandle<()>,
@@ -199,24 +158,13 @@ async fn interactive_cleanup(
     client: &Rc<RalphClient>,
     mut child: tokio::process::Child,
 ) {
-    // Kill all terminal subprocesses tracked by the client.
     client.cleanup_all_terminals().await;
-
-    // Abort the JSON-RPC transport task.
     io_handle.abort();
-    // Abort the stderr reader task.
     stderr_handle.abort();
-
-    // Kill the agent process. Ignore errors (process may have already exited).
     let _ = child.kill().await;
-    // Wait briefly to avoid zombie processes.
     let _ = child.wait().await;
 }
 
-/// Inner async function that runs the full interactive ACP session inside a LocalSet.
-///
-/// This follows the same connection lifecycle as `run_acp_session` in `connection.rs`:
-/// spawn → initialize → new_session → (prompt → user_input)* → cleanup.
 async fn run_interactive_inner(
     agent_command: String,
     project_root: PathBuf,
@@ -225,8 +173,7 @@ async fn run_interactive_inner(
     model: Option<String>,
     allow_terminal: bool,
     allowed_write_paths: Option<Vec<PathBuf>>,
-) -> Result<()> {
-    // ── 1. Parse + spawn agent process ────────────────────────────────────
+) -> Result<String> {
     let parts = shlex::split(&agent_command).ok_or_else(|| {
         anyhow!(
             "invalid agent command: failed to parse \"{}\"",
@@ -237,10 +184,9 @@ async fn run_interactive_inner(
         return Err(anyhow!("agent command is empty"));
     }
     let mut parts_iter = parts.into_iter();
-    let program = parts_iter.next().unwrap();
+    let program = parts_iter.next().unwrap_or_default();
     let args: Vec<String> = parts_iter.collect();
 
-    // RALPH_MODEL: use explicit override if provided, otherwise default to "claude".
     let ralph_model = model.as_deref().unwrap_or("claude");
 
     let mut child = tokio::process::Command::new(&program)
@@ -259,20 +205,17 @@ async fn run_interactive_inner(
     let agent_stdout = child.stdout.take().expect("stdout piped");
     let agent_stderr = child.stderr.take().expect("stderr piped");
 
-    // ── 2. Spawn background stderr reader (discard — interactive sessions
-    //       don't log to a file) ───────────────────────────────────────────
     let stderr_handle = tokio::task::spawn_local(async move {
         let mut stderr = agent_stderr;
         let mut buf = [0u8; 4096];
         loop {
             match stderr.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
-                Ok(_) => {} // discard
+                Ok(_) => {}
             }
         }
     });
 
-    // ── 3. Create RalphClient and wire up the ACP connection ──────────────
     let mut ralph_client = RalphClient::new(project_root.clone(), false, ralph_model.to_string());
     if let Some(paths) = allowed_write_paths {
         ralph_client = ralph_client.with_allowed_write_paths(paths);
@@ -280,24 +223,18 @@ async fn run_interactive_inner(
     let client = Rc::new(ralph_client);
     let client_ref = Rc::clone(&client);
 
-    // Convert tokio IO handles → futures-compatible IO (required by the ACP crate).
-    let outgoing = agent_stdin.compat_write(); // Ralph → agent stdin
-    let incoming = agent_stdout.compat(); // agent stdout → Ralph
-
+    let outgoing = agent_stdin.compat_write();
+    let incoming = agent_stdout.compat();
     let (conn, io_future) = ClientSideConnection::new(client_ref, outgoing, incoming, |fut| {
         tokio::task::spawn_local(fut);
     });
-
-    // Drive the JSON-RPC transport in the background.
     let io_handle = tokio::task::spawn_local(async move {
         let _ = io_future.await;
     });
 
-    // ── 4. ACP handshake ──────────────────────────────────────────────────
     let fs_caps = FileSystemCapability::new()
         .read_text_file(true)
-        .write_text_file(true); // interactive sessions allow writes
-
+        .write_text_file(true);
     let caps = ClientCapabilities::new()
         .fs(fs_caps)
         .terminal(allow_terminal);
@@ -306,7 +243,6 @@ async fn run_interactive_inner(
     let init_req = InitializeRequest::new(ProtocolVersion::LATEST)
         .client_capabilities(caps)
         .client_info(client_info);
-
     let init_resp = conn
         .initialize(init_req)
         .await
@@ -315,16 +251,12 @@ async fn run_interactive_inner(
             None => anyhow!("ACP initialize failed: {e}"),
         })?;
 
-    // Attempt authentication if the agent advertises auth methods.
-    // Failures are non-fatal: some agents (e.g. claude-agent-acp) advertise methods
-    // but don't implement the authenticate RPC, expecting out-of-band auth instead.
     for method in &init_resp.auth_methods {
         let _ = conn
             .authenticate(AuthenticateRequest::new(method.id.clone()))
             .await;
     }
 
-    // ── 5. Create session ─────────────────────────────────────────────────
     let session_resp = conn
         .new_session(NewSessionRequest::new(project_root.clone()))
         .await
@@ -332,12 +264,8 @@ async fn run_interactive_inner(
             Some(hint) => anyhow!("{hint}"),
             None => anyhow!("ACP new_session failed: {e}"),
         })?;
-
     let session_id = session_resp.session_id;
 
-    // ── 6. First prompt: instructions + initial_message concatenated ───────
-    // ACP has no separate system-prompt channel, so instructions and the
-    // initial message are joined into one TextContent block.
     let first_prompt_text = format!("{instructions}\n\n---\n\n{initial_message}");
     let first_req = PromptRequest::new(
         session_id.clone(),
@@ -350,49 +278,49 @@ async fn run_interactive_inner(
                 Ok(_) => false,
                 Err(e) => {
                     match auth_hint(&e) {
-                        Some(hint) => eprintln!("ralph: {hint}"),
-                        None => eprintln!("ralph: ACP prompt failed: {e}"),
+                        Some(hint) => formatter::print_warning(&format!("ralph: {hint}")),
+                        None => formatter::print_warning(&format!("ralph: ACP prompt failed: {e}")),
                     }
                     true
                 }
             }
         }
         _ = poll_interrupt() => {
-            // User pressed Ctrl+C during the initial response.
             let _ = conn.cancel(CancelNotification::new(session_id.clone())).await;
             true
         }
     };
 
     if interrupted {
+        let text = client.take_accumulated_text();
         interactive_cleanup(conn, io_handle, stderr_handle, &client, child).await;
-        return Ok(());
+        return Ok(text);
+    }
+    if !ui::is_active() {
+        println!();
     }
 
-    // Ensure cursor is on a fresh line after the agent's streamed response.
-    println!();
+    // Check for sigils after the first agent response
+    {
+        let sigils =
+            crate::acp::sigils::extract_interactive_sigils(&client.peek_accumulated_text());
+        if sigils.phase_complete.is_some() || sigils.tasks_created {
+            let text = client.take_accumulated_text();
+            interactive_cleanup(conn, io_handle, stderr_handle, &client, child).await;
+            return Ok(text);
+        }
+    }
 
-    // ── 7. Interactive loop: read user input → send prompt → render ────────
-    //
-    // Multi-line input:
-    //   - User types lines; a blank line SENDS the accumulated input.
-    //   - A second consecutive blank line (i.e. blank input) EXITS the session.
-    //   - EOF (Ctrl+D) on a non-empty buffer sends it; on empty buffer exits.
-    //   - Continuation lines are prompted with `| ` instead of `> `.
     let mut user_stdin = BufReader::new(tokio::io::stdin());
     let mut first_prompt = true;
     loop {
-        // Show input help on first prompt only.
         if first_prompt {
-            eprintln!(
-                "{}",
-                "  (multi-line: blank line sends, two blank lines exits, Ctrl+D sends/exits)"
-                    .dimmed()
+            formatter::print_info(
+                "  (multi-line: blank line sends, two blank lines exits, Ctrl+D sends/exits)",
             );
             first_prompt = false;
         }
 
-        // Collect multi-line input.
         let user_input = match read_multiline_input(&mut user_stdin).await {
             MultilineResult::Input(text) => text,
             MultilineResult::Exit => break,
@@ -404,8 +332,6 @@ async fn run_interactive_inner(
             }
         };
 
-        // Check the interrupt flag before sending the next prompt.
-        // (Handles Ctrl+C pressed while the blocking stdin read was completing.)
         if interrupt::is_interrupted() {
             let _ = conn
                 .cancel(CancelNotification::new(session_id.clone()))
@@ -413,7 +339,6 @@ async fn run_interactive_inner(
             break;
         }
 
-        // Send the user's input as the next prompt in the same session.
         let prompt_req = PromptRequest::new(
             session_id.clone(),
             vec![ContentBlock::Text(TextContent::new(user_input))],
@@ -425,36 +350,39 @@ async fn run_interactive_inner(
                     Ok(_) => false,
                     Err(e) => {
                         match auth_hint(&e) {
-                            Some(hint) => eprintln!("ralph: {hint}"),
-                            None => eprintln!("ralph: ACP prompt failed: {e}"),
+                            Some(hint) => formatter::print_warning(&format!("ralph: {hint}")),
+                            None => formatter::print_warning(&format!("ralph: ACP prompt failed: {e}")),
                         }
                         true
                     }
                 }
             }
             _ = poll_interrupt() => {
-                // User pressed Ctrl+C during the agent's response.
                 let _ = conn.cancel(CancelNotification::new(session_id.clone())).await;
                 true
             }
         };
-
         if should_exit {
             break;
         }
+        if !ui::is_active() {
+            println!();
+        }
 
-        // Ensure cursor is on a fresh line after the streamed response.
-        println!();
+        // Check for sigils after each agent response
+        {
+            let sigils =
+                crate::acp::sigils::extract_interactive_sigils(&client.peek_accumulated_text());
+            if sigils.phase_complete.is_some() || sigils.tasks_created {
+                break;
+            }
+        }
     }
 
-    // ── 8. Cleanup ─────────────────────────────────────────────────────────
+    let text = client.take_accumulated_text();
     interactive_cleanup(conn, io_handle, stderr_handle, &client, child).await;
-    Ok(())
+    Ok(text)
 }
-
-// ============================================================================
-// Unit tests
-// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -462,22 +390,17 @@ mod tests {
 
     #[test]
     fn test_poll_interrupt_is_async() {
-        // Just verify the function exists and has the right signature.
-        // We don't actually run it (would block forever without an interrupt).
         let _: fn() -> _ = poll_interrupt;
     }
 
     #[test]
     fn test_first_prompt_concatenation() {
-        // Verify the format of the concatenated first prompt.
         let instructions = "You are a feature planner.";
         let initial_message = "Please help me plan this feature.";
         let prompt_text = format!("{instructions}\n\n---\n\n{initial_message}");
-
         assert!(prompt_text.contains("You are a feature planner."));
         assert!(prompt_text.contains("---"));
         assert!(prompt_text.contains("Please help me plan this feature."));
-        // Instructions come before the separator.
         let sep_pos = prompt_text.find("---").unwrap();
         let instr_pos = prompt_text.find("You are a feature planner.").unwrap();
         assert!(instr_pos < sep_pos, "instructions should precede separator");
@@ -485,9 +408,7 @@ mod tests {
 
     #[test]
     fn test_run_streaming_is_async() {
-        // Verify run_streaming can be called with the right argument types by
-        // creating the future (not awaiting it — we have no runtime here).
-        fn assert_is_future<F: std::future::Future<Output = Result<()>>>(_f: F) {}
+        fn assert_is_future<F: std::future::Future<Output = Result<String>>>(_f: F) {}
         let root = std::path::Path::new("/tmp");
         assert_is_future(run_streaming(
             "claude",
@@ -500,8 +421,7 @@ mod tests {
 
     #[test]
     fn test_run_interactive_is_async() {
-        // Verify run_interactive can be called with the right argument types.
-        fn assert_is_future<F: std::future::Future<Output = Result<()>>>(_f: F) {}
+        fn assert_is_future<F: std::future::Future<Output = Result<String>>>(_f: F) {}
         let root = std::path::Path::new("/tmp");
         assert_is_future(run_interactive(
             "claude",
@@ -516,7 +436,6 @@ mod tests {
 
     #[test]
     fn test_multiline_result_variants_exist() {
-        // Verify all variants of MultilineResult can be constructed.
         let _input = MultilineResult::Input("hello\nworld".to_string());
         let _exit = MultilineResult::Exit;
         let _interrupted = MultilineResult::Interrupted;
