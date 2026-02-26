@@ -49,6 +49,7 @@ pub(super) fn run(rx: Receiver<UiCommand>) -> io::Result<()> {
     let mut state = AppState::default();
     let mut interaction = Interaction::None;
     let mut areas = FrameAreas::default();
+    let mut render_cache = view::AgentRenderCache::default();
     let mut should_exit = false;
     let mut needs_draw = true;
     let mut cursor_shown = false;
@@ -87,7 +88,9 @@ pub(super) fn run(rx: Receiver<UiCommand>) -> io::Result<()> {
         }
 
         if needs_draw {
-            terminal.draw(|frame| view::render(frame, &state, &mut areas))?;
+            terminal.draw(|frame| {
+                view::render_with_cache(frame, &state, &mut areas, &mut render_cache)
+            })?;
             needs_draw = false;
         }
     }
@@ -479,20 +482,6 @@ fn process_mouse(
                 state.agent_scroll_up((-scroll_lines) as usize);
             } else {
                 state.agent_scroll_down(scroll_lines as usize, state.agent_line_count);
-            }
-            return;
-        }
-    }
-
-    if let Some(ref r) = areas.logs {
-        if in_rect(r) {
-            let inner_h = r.height.saturating_sub(2) as usize;
-            let total = state.logs.len().min(120);
-            let max_offset = total.saturating_sub(inner_h);
-            if scroll_lines < 0 {
-                state.logs_scroll_up((-scroll_lines) as usize);
-            } else {
-                state.logs_scroll_down(scroll_lines as usize, max_offset);
             }
             return;
         }

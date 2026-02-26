@@ -51,6 +51,8 @@ pub struct Theme {
     // Tool activity tokens
     pub accent_fg: Color,
     pub tool_name_fg: Color,
+    // Sigil rendering
+    pub sigil_body_fg: Color,
 }
 
 impl Theme {
@@ -84,6 +86,7 @@ impl Theme {
             hr_fg: Color::Rgb(80, 80, 80),
             accent_fg: Color::Yellow,
             tool_name_fg: Color::Cyan,
+            sigil_body_fg: Color::Rgb(100, 100, 100),
         }
     }
 
@@ -117,6 +120,7 @@ impl Theme {
             hr_fg: Color::Rgb(160, 160, 160),
             accent_fg: Color::Rgb(180, 130, 0),
             tool_name_fg: Color::Blue,
+            sigil_body_fg: Color::Rgb(140, 140, 140),
         }
     }
 }
@@ -200,6 +204,7 @@ pub struct ColorOverrides {
     pub hr: Option<String>,
     pub accent: Option<String>,
     pub tool_name: Option<String>,
+    pub sigil_body: Option<String>,
 }
 
 impl ColorOverrides {
@@ -230,6 +235,7 @@ impl ColorOverrides {
             ("hr", &self.hr),
             ("accent", &self.accent),
             ("tool_name", &self.tool_name),
+            ("sigil_body", &self.sigil_body),
         ];
         for (name, value) in fields {
             if let Some(v) = value {
@@ -274,6 +280,7 @@ impl ColorOverrides {
         set(&mut theme.hr_fg, &self.hr);
         set(&mut theme.accent_fg, &self.accent);
         set(&mut theme.tool_name_fg, &self.tool_name);
+        set(&mut theme.sigil_body_fg, &self.sigil_body);
         theme
     }
 }
@@ -369,6 +376,7 @@ pub fn subdued() -> Style {
     Style::default().fg(t.subdued_fg).bg(t.background)
 }
 
+#[allow(dead_code)]
 pub fn level(level: UiLevel) -> Style {
     let t = active();
     match level {
@@ -479,6 +487,12 @@ pub fn tool_name() -> Style {
         .fg(t.tool_name_fg)
         .bg(t.background)
         .add_modifier(Modifier::BOLD)
+}
+
+/// Style for sigil body content (dimmed).
+pub fn sigil_body() -> Style {
+    let t = active();
+    Style::default().fg(t.sigil_body_fg).bg(t.background)
 }
 
 #[cfg(test)]
@@ -662,6 +676,7 @@ mod tests {
             hr: Some("#778899".to_string()),
             accent: Some("#889900".to_string()),
             tool_name: Some("#990011".to_string()),
+            sigil_body: Some("#aa1122".to_string()),
         };
         assert!(ov.validate().is_ok());
         let themed = ov.apply_to(Theme::dark());

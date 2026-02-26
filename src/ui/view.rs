@@ -7,14 +7,59 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use crate::ui::state::{AppState, FrameAreas, UiModal, UiScreen};
 use crate::ui::theme;
 
+/// Persistent cache for expensive Agent Stream rendering work.
+#[derive(Default)]
+pub struct AgentRenderCache {
+    revision: u64,
+    styled_lines: Vec<Line<'static>>,
+    wrapped_width: usize,
+    total_lines_for_width: usize,
+}
+
+impl AgentRenderCache {
+    /// Return cached markdown-rendered lines and wrapped line count.
+    fn resolve<'a>(
+        &'a mut self,
+        text: &str,
+        revision: u64,
+        inner_width: usize,
+    ) -> (&'a [Line<'static>], usize) {
+        if self.revision != revision {
+            self.styled_lines = render_agent_markdown(text);
+            self.revision = revision;
+            self.wrapped_width = 0;
+            self.total_lines_for_width = 0;
+        }
+
+        if self.wrapped_width != inner_width {
+            self.total_lines_for_width = compute_total_lines(&self.styled_lines, inner_width, text);
+            self.wrapped_width = inner_width;
+        }
+
+        (&self.styled_lines, self.total_lines_for_width)
+    }
+}
+
 /// Draw one frame of the UI.
+#[cfg(test)]
 pub fn render(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAreas) {
+    let mut cache = AgentRenderCache::default();
+    render_with_cache(frame, state, areas, &mut cache);
+}
+
+/// Draw one frame of the UI with persistent rendering cache.
+pub fn render_with_cache(
+    frame: &mut Frame<'_>,
+    state: &AppState,
+    areas: &mut FrameAreas,
+    agent_cache: &mut AgentRenderCache,
+) {
     // Paint the entire frame with the theme background so no terminal background bleeds through.
     let bg = Block::default().style(Style::default().bg(theme::background()));
     frame.render_widget(bg, frame.area());
 
     match &state.screen {
-        UiScreen::Dashboard => render_dashboard(frame, state, areas),
+        UiScreen::Dashboard => render_dashboard(frame, state, areas, agent_cache),
         UiScreen::Explorer {
             title,
             lines,
@@ -30,7 +75,12 @@ pub fn render(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAreas) {
     }
 }
 
-fn render_dashboard(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAreas) {
+fn render_dashboard(
+    frame: &mut Frame<'_>,
+    state: &AppState,
+    areas: &mut FrameAreas,
+    agent_cache: &mut AgentRenderCache,
+) {
     let root = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -65,43 +115,7 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAr
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(root[1]);
 
-    // Left column: Events (60%) over Tool Activity (40%).
-    let left = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(body[0]);
-
-    // Events panel with scroll support.
-    let log_lines: Vec<Line<'_>> = state
-        .logs
-        .iter()
-        .rev()
-        .take(120)
-        .map(|line| Line::styled(line.message.clone(), theme::level(line.level)))
-        .collect();
-    let logs_inner_h = left[0].height.saturating_sub(2) as usize;
-    let logs_max_offset = log_lines.len().saturating_sub(logs_inner_h);
-    let logs_scroll_clamped = state.logs_scroll.min(logs_max_offset);
-    let logs_title = if logs_scroll_clamped > 0 {
-        format!(
-            "Events [scroll {}/{}]",
-            logs_scroll_clamped, logs_max_offset
-        )
-    } else {
-        "Events".to_string()
-    };
-    let logs_panel = Paragraph::new(log_lines)
-        .block(
-            Block::default()
-                .title(logs_title)
-                .borders(Borders::ALL)
-                .border_style(theme::border()),
-        )
-        .scroll((logs_scroll_clamped as u16, 0));
-    frame.render_widget(logs_panel, left[0]);
-    areas.logs = Some(left[0]);
-
-    // Tool Activity panel with scroll support.
+    // Left column: Tool Activity (full height).
     let tool_lines: Vec<Line<'_>> = state
         .tools
         .iter()
@@ -126,7 +140,7 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAr
             }
         })
         .collect();
-    let tools_inner_h = left[1].height.saturating_sub(2) as usize;
+    let tools_inner_h = body[0].height.saturating_sub(2) as usize;
     let tools_max_offset = tool_lines.len().saturating_sub(tools_inner_h);
     let tools_scroll_clamped = state.tools_scroll.min(tools_max_offset);
     let tools_title = if tools_scroll_clamped > 0 {
@@ -145,8 +159,8 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAr
                 .border_style(theme::border()),
         )
         .scroll((tools_scroll_clamped as u16, 0));
-    frame.render_widget(tools_panel, left[1]);
-    areas.tools = Some(left[1]);
+    frame.render_widget(tools_panel, body[0]);
+    areas.tools = Some(body[0]);
 
     // Right column: Agent Stream (fills remaining) over Input (dynamic height).
     let right_column_height = body[1].height;
@@ -177,20 +191,8 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAr
     let inner_height = right[0].height.saturating_sub(2) as usize; // subtract border
     let inner_width = right[0].width.saturating_sub(2).max(1) as usize; // subtract border
 
-    let styled_lines = render_agent_markdown(&state.agent_text);
-
-    let total_lines: usize = styled_lines
-        .iter()
-        .map(|line| {
-            let char_count: usize = line.spans.iter().map(|s| s.content.len()).sum();
-            if char_count == 0 {
-                1
-            } else {
-                char_count.div_ceil(inner_width)
-            }
-        })
-        .sum::<usize>()
-        .max(if state.agent_text.is_empty() { 0 } else { 1 });
+    let (styled_lines, total_lines) =
+        agent_cache.resolve(&state.agent_text, state.agent_revision, inner_width);
     let max_offset = total_lines.saturating_sub(inner_height);
     let scroll_offset = match state.agent_scroll {
         Some(pinned) => pinned.min(max_offset),
@@ -201,7 +203,7 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAr
     } else {
         "Agent Stream".to_string()
     };
-    let agent = Paragraph::new(styled_lines)
+    let agent = Paragraph::new(styled_lines.to_vec())
         .block(
             Block::default()
                 .title(scroll_indicator)
@@ -226,6 +228,31 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState, areas: &mut FrameAr
     let footer = Paragraph::new(footer_text).style(theme::subdued());
     frame.render_widget(footer, root[2]);
 }
+
+fn compute_total_lines(styled_lines: &[Line<'_>], inner_width: usize, text: &str) -> usize {
+    styled_lines
+        .iter()
+        .map(|line| {
+            let char_count: usize = line.spans.iter().map(|s| s.content.len()).sum();
+            if char_count == 0 {
+                1
+            } else {
+                char_count.div_ceil(inner_width)
+            }
+        })
+        .sum::<usize>()
+        .max(if text.is_empty() { 0 } else { 1 })
+}
+
+/// Sigil tag names recognized for colorized rendering in the agent stream.
+const SIGIL_TAGS: &[&str] = &[
+    "journal",
+    "knowledge",
+    "task-done",
+    "task-failed",
+    "promise",
+    "next-model",
+];
 
 /// Parse agent text as markdown and return styled `Line` objects for ratatui rendering.
 fn render_agent_markdown(text: &str) -> Vec<Line<'static>> {
@@ -275,6 +302,13 @@ fn render_agent_markdown(text: &str) -> Vec<Line<'static>> {
             continue;
         }
 
+        // Sigil lines: colorize XML-style tags in accent, body content dimmed.
+        if line_contains_sigil(trimmed) {
+            let spans = parse_sigil_line(raw_line);
+            lines.push(Line::from(spans));
+            continue;
+        }
+
         // List items: - item, * item, + item, or numbered 1. item
         if trimmed.starts_with("- ")
             || trimmed.starts_with("* ")
@@ -311,6 +345,92 @@ fn render_agent_markdown(text: &str) -> Vec<Line<'static>> {
     }
 
     lines
+}
+
+/// Check whether a line contains any sigil opening tag.
+fn line_contains_sigil(line: &str) -> bool {
+    for tag in SIGIL_TAGS {
+        if line.contains(&format!("<{tag}")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Parse a line containing sigils, colorizing XML tags in accent and body content dimmed.
+fn parse_sigil_line(line: &str) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut remaining = line;
+
+    while !remaining.is_empty() {
+        // Find the next '<' that starts a sigil tag.
+        let next_tag = remaining
+            .char_indices()
+            .find(|(i, ch)| {
+                if *ch != '<' {
+                    return false;
+                }
+                let after = &remaining[*i..];
+                SIGIL_TAGS.iter().any(|tag| {
+                    after.starts_with(&format!("<{tag}")) || after.starts_with(&format!("</{tag}>"))
+                })
+            })
+            .map(|(i, _)| i);
+
+        let Some(tag_start) = next_tag else {
+            // No more sigil tags — rest is plain text.
+            spans.push(Span::styled(remaining.to_string(), theme::subdued()));
+            break;
+        };
+
+        // Emit any text before the tag.
+        if tag_start > 0 {
+            spans.push(Span::styled(
+                remaining[..tag_start].to_string(),
+                theme::subdued(),
+            ));
+        }
+        remaining = &remaining[tag_start..];
+
+        // Find the closing '>' of this tag element.
+        if let Some(tag_end) = remaining.find('>') {
+            let tag_text = &remaining[..=tag_end];
+            spans.push(Span::styled(tag_text.to_string(), theme::accent()));
+            remaining = &remaining[tag_end + 1..];
+
+            // If this was an opening tag (not a closing tag), find the matching
+            // closing tag and render the body content as dimmed.
+            if !tag_text.starts_with("</") {
+                // Extract the tag name for finding the closing tag.
+                let tag_name = SIGIL_TAGS
+                    .iter()
+                    .find(|t| tag_text.starts_with(&format!("<{t}")))
+                    .copied();
+                if let Some(name) = tag_name {
+                    let close = format!("</{name}>");
+                    if let Some(close_pos) = remaining.find(&close) {
+                        // Body content between opening and closing tags.
+                        let body = &remaining[..close_pos];
+                        if !body.is_empty() {
+                            spans.push(Span::styled(body.to_string(), theme::sigil_body()));
+                        }
+                        remaining = &remaining[close_pos..];
+                        // The closing tag will be picked up in the next iteration.
+                    }
+                }
+            }
+        } else {
+            // Malformed tag — no closing '>'. Emit rest as-is.
+            spans.push(Span::styled(remaining.to_string(), theme::accent()));
+            break;
+        }
+    }
+
+    if spans.is_empty() {
+        spans.push(Span::styled(String::new(), theme::subdued()));
+    }
+
+    spans
 }
 
 /// Parse inline markdown within a single line, returning styled spans.
@@ -835,7 +955,6 @@ mod tests {
             .unwrap();
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Run"));
-        assert!(text.contains("Events"));
         assert!(text.contains("Agent Stream"));
         assert!(text.contains("Tool Activity"));
         assert!(text.contains("Input"));

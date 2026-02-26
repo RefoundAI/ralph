@@ -9,7 +9,11 @@ const MAX_TOOL_LINES: usize = 200;
 const MAX_AGENT_CHARS: usize = 60_000;
 
 /// One line in the operator event log.
+///
+/// Events are collected even though the Events panel was removed from the
+/// dashboard; they remain available for future use (e.g. explorer views).
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct LogLine {
     pub level: UiLevel,
     pub message: String,
@@ -19,7 +23,6 @@ pub struct LogLine {
 /// Used by the event loop to route mouse scroll events to the correct panel.
 #[derive(Debug, Clone, Default)]
 pub struct FrameAreas {
-    pub logs: Option<ratatui::layout::Rect>,
     pub tools: Option<ratatui::layout::Rect>,
     pub agent: Option<ratatui::layout::Rect>,
     pub input: Option<ratatui::layout::Rect>,
@@ -57,11 +60,11 @@ pub struct AppState {
     pub agent_text: String,
     /// Cached line count for `agent_text` to avoid repeated scans in hot paths.
     pub agent_line_count: usize,
+    /// Monotonic revision for agent text updates; used by renderer caches.
+    pub agent_revision: u64,
     /// When `None`, Agent Stream auto-scrolls to the bottom.
     /// When `Some(offset)`, the user has pinned the scroll position.
     pub agent_scroll: Option<usize>,
-    /// Scroll offset for the Events (logs) panel.
-    pub logs_scroll: usize,
     /// Scroll offset for the Tool Activity panel.
     pub tools_scroll: usize,
     /// Scroll offset for the Input pane content (when it overflows).
@@ -94,8 +97,8 @@ impl Default for AppState {
             tools: VecDeque::new(),
             agent_text: String::new(),
             agent_line_count: 0,
+            agent_revision: 0,
             agent_scroll: None,
-            logs_scroll: 0,
             tools_scroll: 0,
             input_scroll: 0,
             screen: UiScreen::Dashboard,
@@ -157,6 +160,7 @@ impl AppState {
                 } else {
                     self.agent_text.lines().count()
                 };
+                self.agent_revision = self.agent_revision.wrapping_add(1);
             }
             UiEvent::ToolActivity(tool_line) => {
                 self.tools.push_back(tool_line);
@@ -215,16 +219,6 @@ impl AppState {
     /// Reset Agent Stream to auto-scroll (follow the tail).
     pub fn agent_scroll_to_bottom(&mut self) {
         self.agent_scroll = None;
-    }
-
-    /// Scroll the Events (logs) panel up by `n` lines.
-    pub fn logs_scroll_up(&mut self, n: usize) {
-        self.logs_scroll = self.logs_scroll.saturating_sub(n);
-    }
-
-    /// Scroll the Events (logs) panel down by `n` lines.
-    pub fn logs_scroll_down(&mut self, n: usize, max_offset: usize) {
-        self.logs_scroll = (self.logs_scroll + n).min(max_offset);
     }
 
     /// Scroll the Tool Activity panel up by `n` lines.
