@@ -115,7 +115,62 @@ fn render_dashboard(
         .constraints([Constraint::Percentage(42), Constraint::Percentage(58)])
         .split(root[1]);
 
-    // Left column: Tool Activity (full height).
+    // Split left column into Events (top) and Tool Activity (bottom).
+    let left_panels = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(body[0]);
+
+    // Top-left: Events panel.
+    let event_lines: Vec<Line<'_>> = state
+        .events
+        .iter()
+        .map(|el| {
+            Line::from(vec![
+                Span::styled(el.timestamp.clone(), theme::subdued()),
+                Span::raw(" "),
+                Span::styled(
+                    format!("[{}]", &el.category),
+                    theme::event_category_style(&el.category),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    el.message.clone(),
+                    if el.is_error {
+                        theme::error()
+                    } else {
+                        theme::info()
+                    },
+                ),
+            ])
+        })
+        .collect();
+    let events_inner_h = left_panels[0].height.saturating_sub(2) as usize;
+    let events_max_offset = event_lines.len().saturating_sub(events_inner_h);
+    let events_scroll_offset = match state.events_scroll {
+        Some(pinned) => pinned.min(events_max_offset),
+        None => events_max_offset, // auto-scroll to bottom
+    };
+    let events_title = if state.events_scroll.is_some() {
+        format!(
+            "Events [scroll {}/{}]",
+            events_scroll_offset, events_max_offset
+        )
+    } else {
+        "Events".to_string()
+    };
+    let events_panel = Paragraph::new(event_lines)
+        .block(
+            Block::default()
+                .title(events_title)
+                .borders(Borders::ALL)
+                .border_style(theme::border()),
+        )
+        .scroll((events_scroll_offset as u16, 0));
+    frame.render_widget(events_panel, left_panels[0]);
+    areas.events = Some(left_panels[0]);
+
+    // Bottom-left: Tool Activity.
     let tool_lines: Vec<Line<'_>> = state
         .tools
         .iter()
@@ -140,7 +195,7 @@ fn render_dashboard(
             }
         })
         .collect();
-    let tools_inner_h = body[0].height.saturating_sub(2) as usize;
+    let tools_inner_h = left_panels[1].height.saturating_sub(2) as usize;
     let tools_max_offset = tool_lines.len().saturating_sub(tools_inner_h);
     let tools_scroll_clamped = state.tools_scroll.min(tools_max_offset);
     let tools_title = if tools_scroll_clamped > 0 {
@@ -159,8 +214,8 @@ fn render_dashboard(
                 .border_style(theme::border()),
         )
         .scroll((tools_scroll_clamped as u16, 0));
-    frame.render_widget(tools_panel, body[0]);
-    areas.tools = Some(body[0]);
+    frame.render_widget(tools_panel, left_panels[1]);
+    areas.tools = Some(left_panels[1]);
 
     // Right column: Agent Stream (fills remaining) over Input (dynamic height).
     let right_column_height = body[1].height;
@@ -999,6 +1054,7 @@ mod tests {
             .unwrap();
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("Run"));
+        assert!(text.contains("Events"));
         assert!(text.contains("Agent Stream"));
         assert!(text.contains("Tool Activity"));
         assert!(text.contains("Input"));

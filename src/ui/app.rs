@@ -487,6 +487,20 @@ fn process_mouse(
         }
     }
 
+    if let Some(ref r) = areas.events {
+        if in_rect(r) {
+            let inner_h = r.height.saturating_sub(2) as usize;
+            let total = state.events.len();
+            let max_offset = total.saturating_sub(inner_h);
+            if scroll_lines < 0 {
+                state.events_scroll_up((-scroll_lines) as usize);
+            } else {
+                state.events_scroll_down(scroll_lines as usize, max_offset);
+            }
+            return;
+        }
+    }
+
     if let Some(ref r) = areas.tools {
         if in_rect(r) {
             let inner_h = r.height.saturating_sub(2) as usize;
