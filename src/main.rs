@@ -747,7 +747,14 @@ async fn handle_feature(action: cli::FeatureAction, ui_mode: ui::UiMode) -> Resu
             let mut lines: Vec<String> = Vec::new();
             for feat in &features {
                 let counts = dag::get_feature_task_counts(&db, &feat.id)?;
-                let status_display = feat.status.clone();
+
+                // Derive effective status from task counts when tasks exist,
+                // since the stored status may be stale for older features.
+                let status_display = if counts.total > 0 && counts.done == counts.total {
+                    "done".to_string()
+                } else {
+                    feat.status.clone()
+                };
 
                 if counts.total > 0 {
                     lines.push(format!(

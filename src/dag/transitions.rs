@@ -59,9 +59,11 @@ pub fn set_task_status(conn: &Connection, task_id: &str, new_status: &str) -> Re
         "done" => {
             auto_unblock_tasks(conn, task_id)?;
             auto_complete_parent(conn, task_id)?;
+            auto_complete_feature(conn, task_id)?;
         }
         "failed" => {
             auto_fail_parent(conn, task_id)?;
+            auto_update_feature_on_fail(conn, task_id)?;
         }
         _ => {}
     }
@@ -155,6 +157,8 @@ fn auto_complete_parent(conn: &Connection, task_id: &str) -> Result<()> {
 
             // Recursively check grandparent
             auto_complete_parent(conn, &parent_id)?;
+            // Check if completing this parent resolves its feature
+            auto_complete_feature(conn, &parent_id)?;
         }
     }
 
@@ -192,6 +196,69 @@ fn auto_fail_parent(conn: &Connection, task_id: &str) -> Result<()> {
 
         // Recursively fail grandparent
         auto_fail_parent(conn, &parent_id)?;
+        // Check if failing this parent resolves its feature
+        auto_update_feature_on_fail(conn, &parent_id)?;
+    }
+
+    Ok(())
+}
+
+/// Auto-transition: When a feature task is marked done, check if all tasks
+/// for that feature are now done and update the feature status accordingly.
+fn auto_complete_feature(conn: &Connection, task_id: &str) -> Result<()> {
+    let feature_id: Option<String> = conn.query_row(
+        "SELECT feature_id FROM tasks WHERE id = ?",
+        [task_id],
+        |row| row.get(0),
+    )?;
+
+    let Some(feature_id) = feature_id else {
+        return Ok(()); // Not a feature task
+    };
+
+    // Check if all tasks for this feature are done
+    let not_done_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE feature_id = ? AND status != 'done'",
+        [&feature_id],
+        |row| row.get(0),
+    )?;
+
+    if not_done_count == 0 {
+        conn.execute(
+            "UPDATE features SET status = 'done', updated_at = datetime('now') WHERE id = ? AND status != 'done'",
+            [&feature_id],
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Auto-transition: When a feature task fails, check if all tasks for that
+/// feature are resolved (done or failed). If so, mark the feature as failed
+/// (since at least one task failed).
+fn auto_update_feature_on_fail(conn: &Connection, task_id: &str) -> Result<()> {
+    let feature_id: Option<String> = conn.query_row(
+        "SELECT feature_id FROM tasks WHERE id = ?",
+        [task_id],
+        |row| row.get(0),
+    )?;
+
+    let Some(feature_id) = feature_id else {
+        return Ok(()); // Not a feature task
+    };
+
+    // Check if all tasks for this feature are resolved (done or failed)
+    let unresolved_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tasks WHERE feature_id = ? AND status NOT IN ('done', 'failed')",
+        [&feature_id],
+        |row| row.get(0),
+    )?;
+
+    if unresolved_count == 0 {
+        conn.execute(
+            "UPDATE features SET status = 'failed', updated_at = datetime('now') WHERE id = ? AND status NOT IN ('done', 'failed')",
+            [&feature_id],
+        )?;
     }
 
     Ok(())
@@ -303,6 +370,34 @@ mod tests {
             "INSERT INTO tasks (id, title, parent_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
             rusqlite::params![id, title, parent_id, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
         ).unwrap();
+    }
+
+    fn create_feature_task(
+        conn: &Connection,
+        id: &str,
+        title: &str,
+        feature_id: &str,
+        parent_id: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO tasks (id, title, feature_id, task_type, parent_id, created_at, updated_at) VALUES (?, ?, ?, 'feature', ?, ?, ?)",
+            rusqlite::params![id, title, feature_id, parent_id, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+        ).unwrap();
+    }
+
+    fn create_feature(conn: &Connection, id: &str, name: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO features (id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![id, name, status, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z"],
+        )
+        .unwrap();
+    }
+
+    fn get_feature_status(conn: &Connection, id: &str) -> String {
+        conn.query_row("SELECT status FROM features WHERE id = ?", [id], |row| {
+            row.get(0)
+        })
+        .unwrap()
     }
 
     // Valid transitions
@@ -584,6 +679,106 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(parent_status, "failed");
+
+        Ok(())
+    }
+
+    // Feature auto-transitions
+
+    #[test]
+    fn test_auto_complete_feature_when_all_tasks_done() -> Result<()> {
+        let temp_file = NamedTempFile::new()?;
+        let db = init_db(temp_file.path().to_str().unwrap())?;
+        let conn = db.conn();
+
+        create_feature(conn, "f-test", "test-feature", "ready");
+        create_feature_task(conn, "t-1", "Task 1", "f-test", None);
+        create_feature_task(conn, "t-2", "Task 2", "f-test", None);
+
+        // Complete first task — feature should still be ready
+        conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = 't-1'",
+            [],
+        )?;
+        set_task_status(conn, "t-1", "done")?;
+        assert_eq!(get_feature_status(conn, "f-test"), "ready");
+
+        // Complete second task — feature should now be done
+        conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = 't-2'",
+            [],
+        )?;
+        set_task_status(conn, "t-2", "done")?;
+        assert_eq!(get_feature_status(conn, "f-test"), "done");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_auto_fail_feature_when_task_fails_and_all_resolved() -> Result<()> {
+        let temp_file = NamedTempFile::new()?;
+        let db = init_db(temp_file.path().to_str().unwrap())?;
+        let conn = db.conn();
+
+        create_feature(conn, "f-test", "test-feature", "ready");
+        create_feature_task(conn, "t-1", "Task 1", "f-test", None);
+        create_feature_task(conn, "t-2", "Task 2", "f-test", None);
+
+        // Complete first task
+        conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = 't-1'",
+            [],
+        )?;
+        set_task_status(conn, "t-1", "done")?;
+        assert_eq!(get_feature_status(conn, "f-test"), "ready");
+
+        // Fail second task — all resolved, feature should be failed
+        conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = 't-2'",
+            [],
+        )?;
+        set_task_status(conn, "t-2", "failed")?;
+        assert_eq!(get_feature_status(conn, "f-test"), "failed");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_feature_not_updated_when_tasks_still_pending() -> Result<()> {
+        let temp_file = NamedTempFile::new()?;
+        let db = init_db(temp_file.path().to_str().unwrap())?;
+        let conn = db.conn();
+
+        create_feature(conn, "f-test", "test-feature", "ready");
+        create_feature_task(conn, "t-1", "Task 1", "f-test", None);
+        create_feature_task(conn, "t-2", "Task 2", "f-test", None);
+
+        // Fail first task — second still pending, feature stays ready
+        conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = 't-1'",
+            [],
+        )?;
+        set_task_status(conn, "t-1", "failed")?;
+        assert_eq!(get_feature_status(conn, "f-test"), "ready");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_standalone_task_does_not_affect_features() -> Result<()> {
+        let temp_file = NamedTempFile::new()?;
+        let db = init_db(temp_file.path().to_str().unwrap())?;
+        let conn = db.conn();
+
+        // Standalone task (no feature_id)
+        create_task(conn, "t-standalone", "Standalone", None);
+        conn.execute(
+            "UPDATE tasks SET status = 'in_progress' WHERE id = 't-standalone'",
+            [],
+        )?;
+
+        // Should not error even with no feature
+        set_task_status(conn, "t-standalone", "done")?;
 
         Ok(())
     }
