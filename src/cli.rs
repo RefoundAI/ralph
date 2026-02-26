@@ -12,6 +12,10 @@ use clap::{Parser, Subcommand};
 #[derive(Parser, Debug)]
 #[command(name = "ralph", version, about, long_about = None)]
 pub struct Args {
+    /// Disable ratatui UI and force plain terminal output
+    #[arg(long, global = true)]
+    pub no_ui: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -194,12 +198,20 @@ pub enum TaskAction {
         /// Task ID
         #[arg(value_name = "ID")]
         id: String,
+
+        /// Skip confirmation prompt in UI mode
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Mark a task as done
     Done {
         /// Task ID
         #[arg(value_name = "ID")]
         id: String,
+
+        /// Skip confirmation prompt in UI mode
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Mark a task as failed
     Fail {
@@ -210,12 +222,20 @@ pub enum TaskAction {
         /// Failure reason
         #[arg(short = 'r', long, value_name = "REASON")]
         reason: Option<String>,
+
+        /// Skip confirmation prompt in UI mode
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Reset a task to pending
     Reset {
         /// Task ID
         #[arg(value_name = "ID")]
         id: String,
+
+        /// Skip confirmation prompt in UI mode
+        #[arg(long, short)]
+        yes: bool,
     },
     /// Add or view task log entries
     Log {
@@ -347,6 +367,12 @@ mod tests {
     }
 
     #[test]
+    fn test_global_no_ui_flag() {
+        let args = Args::try_parse_from(["ralph", "--no-ui", "run", "feat"]).unwrap();
+        assert!(args.no_ui);
+    }
+
+    #[test]
     fn test_agent_flag_parsed_on_feature_create() {
         let args = Args::try_parse_from([
             "ralph",
@@ -365,6 +391,65 @@ mod tests {
                 assert_eq!(name, "name");
             }
             _ => panic!("expected feature create command"),
+        }
+    }
+
+    #[test]
+    fn task_delete_yes_flag_parsed() {
+        let args = Args::try_parse_from(["ralph", "task", "delete", "t-123", "--yes"]).unwrap();
+        match args.command {
+            Some(Command::Task {
+                action: TaskAction::Delete { id, yes },
+            }) => {
+                assert_eq!(id, "t-123");
+                assert!(yes);
+            }
+            _ => panic!("expected task delete command"),
+        }
+    }
+
+    #[test]
+    fn task_done_yes_flag_parsed() {
+        let args = Args::try_parse_from(["ralph", "task", "done", "t-123", "--yes"]).unwrap();
+        match args.command {
+            Some(Command::Task {
+                action: TaskAction::Done { id, yes },
+            }) => {
+                assert_eq!(id, "t-123");
+                assert!(yes);
+            }
+            _ => panic!("expected task done command"),
+        }
+    }
+
+    #[test]
+    fn task_fail_yes_flag_parsed() {
+        let args =
+            Args::try_parse_from(["ralph", "task", "fail", "t-123", "--reason", "why", "--yes"])
+                .unwrap();
+        match args.command {
+            Some(Command::Task {
+                action: TaskAction::Fail { id, reason, yes },
+            }) => {
+                assert_eq!(id, "t-123");
+                assert_eq!(reason, Some("why".to_string()));
+                assert!(yes);
+            }
+            _ => panic!("expected task fail command"),
+        }
+    }
+
+    #[test]
+    fn task_reset_yes_flag_parsed() {
+        let args = Args::try_parse_from(["ralph", "task", "reset", "t-123", "--yes"]).unwrap();
+        match args.command {
+            Some(Command::Task {
+                action: TaskAction::Reset { id, yes },
+            }) => {
+                assert_eq!(id, "t-123");
+                assert!(yes);
+            }
+            _ => panic!("expected task reset command"),
         }
     }
 
