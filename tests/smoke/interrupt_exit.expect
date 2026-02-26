@@ -1,0 +1,44 @@
+#!/usr/bin/env expect -f
+set timeout 90
+
+set ralph [lindex $argv 0]
+set mock [lindex $argv 1]
+set workdir [lindex $argv 2]
+set task_id [lindex $argv 3]
+
+if {$ralph eq "" || $mock eq "" || $workdir eq "" || $task_id eq ""} {
+  puts stderr "usage: interrupt_exit.expect <ralph_bin> <mock_agent_bin> <workdir> <task_id>"
+  exit 2
+}
+
+cd $workdir
+set agent_cmd "env MOCK_DELAY_MS=6000 MOCK_RESPONSE='<task-done>${task_id}</task-done>' $mock"
+spawn -noecho $ralph run $task_id --no-verify --agent $agent_cmd
+
+# Send SIGINT directly to the running Ralph process.
+after 2500
+if {[catch {exec kill -INT [exp_pid]}]} {
+  # Fallback for PTY environments where direct signal injection is restricted.
+  send -- "\003"
+}
+
+# Skip feedback modal (empty submit), then decline continue.
+after 600
+send -- "\r"
+after 600
+send -- "n"
+
+expect {
+  eof {}
+  timeout {
+    puts stderr "timed out waiting for interrupt-exit run to exit"
+    exit 1
+  }
+}
+
+set status [lindex [wait] 3]
+if {$status != 0} {
+  puts stderr "expected zero exit status, got $status"
+  exit 1
+}
+exit 0

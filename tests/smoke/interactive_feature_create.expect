@@ -1,0 +1,34 @@
+#!/usr/bin/env expect -f
+set timeout 75
+
+set ralph [lindex $argv 0]
+set mock [lindex $argv 1]
+set workdir [lindex $argv 2]
+
+if {$ralph eq "" || $mock eq "" || $workdir eq ""} {
+  puts stderr "usage: interactive_feature_create.expect <ralph_bin> <mock_agent_bin> <workdir>"
+  exit 2
+}
+
+set cmd "cd \"$workdir\" && \"$ralph\" feature create tty-smoke-feature --agent \"env MOCK_RESPONSE='feature create smoke response' '$mock'\""
+spawn -noecho /usr/bin/env bash -lc $cmd
+
+# Exit the spec interview immediately; this should be a controlled error path.
+after 1500
+send -- "\r"
+
+expect {
+  -re "Spec file was not created" {}
+  timeout {
+    puts stderr "expected controlled early-exit error from feature create"
+    exit 1
+  }
+}
+
+expect eof
+set status [lindex [wait] 3]
+if {$status == 0} {
+  puts stderr "expected non-zero exit code for early-exit feature create smoke"
+  exit 1
+}
+exit 0

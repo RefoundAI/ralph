@@ -1,0 +1,22 @@
+#!/usr/bin/env expect -f
+set timeout 60
+
+set ralph [lindex $argv 0]
+set mock [lindex $argv 1]
+set workdir [lindex $argv 2]
+
+if {$ralph eq "" || $mock eq "" || $workdir eq ""} {
+  puts stderr "usage: interactive_task_create.expect <ralph_bin> <mock_agent_bin> <workdir>"
+  exit 2
+}
+
+set cmd "cd \"$workdir\" && \"$ralph\" task create --agent \"env MOCK_RESPONSE='task create smoke response' '$mock'\""
+spawn -noecho /usr/bin/env bash -lc $cmd
+
+# The first Enter on an empty modal buffer exits the interactive loop cleanly.
+after 1500
+send -- "\r"
+
+expect eof
+set status [lindex [wait] 3]
+exit $status

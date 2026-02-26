@@ -1,0 +1,52 @@
+name: CI Smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y expect util-linux
+
+      - name: Build binary and mock agents
+        run: cargo build --features test-mock-agents --bins --examples
+
+      - name: Run test suite
+        run: |
+          cargo test -q
+          cargo test -q --features test-mock-agents --test acp_integration
+
+      - name: Run TTY smoke checks
+        env:
+          SMOKE_ARTIFACT_DIR: ${{ github.workspace }}/tests/smoke/artifacts
+        run: tests/smoke/tty_smoke.sh
+
+      - name: Run non-TTY smoke checks
+        env:
+          SMOKE_ARTIFACT_DIR: ${{ github.workspace }}/tests/smoke/artifacts
+        run: tests/smoke/non_tty_smoke.sh
+
+      - name: Upload smoke artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-artifacts
+          path: tests/smoke/artifacts

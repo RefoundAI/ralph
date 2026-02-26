@@ -14,6 +14,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use agent_client_protocol::{
     Agent, AgentSideConnection, AuthenticateRequest, AuthenticateResponse, CancelNotification,
@@ -61,6 +62,14 @@ impl Agent for MockAgent {
     async fn prompt(&self, args: PromptRequest) -> Result<PromptResponse> {
         let raw_response =
             std::env::var("MOCK_RESPONSE").unwrap_or_else(|_| "Mock response".to_string());
+        let delay_ms = std::env::var("MOCK_DELAY_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
 
         // Special sentinel: when MOCK_RESPONSE == "ECHO_RALPH_MODEL", the agent echoes
         // the value of the RALPH_MODEL env var back to the client.  This is used by the
