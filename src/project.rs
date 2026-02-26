@@ -26,6 +26,28 @@ pub struct RalphConfig {
     pub execution: ExecutionConfig,
     #[serde(default)]
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub ui: UiConfig,
+}
+
+/// UI configuration section.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UiConfig {
+    /// Theme name: "light" (default) or "dark".
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            theme: default_theme(),
+        }
+    }
+}
+
+fn default_theme() -> String {
+    "light".to_string()
 }
 
 /// Agent configuration section.
@@ -451,5 +473,31 @@ mod tests {
         );
         // Existing file should be intact
         assert!(tmp.path().join(".claude/settings.json").exists());
+    }
+
+    #[test]
+    fn ui_config_defaults_to_light_theme() {
+        let config = RalphConfig::default();
+        assert_eq!(config.ui.theme, "light");
+    }
+
+    #[test]
+    fn ui_config_parses_dark_theme() {
+        let toml_content = r#"
+[ui]
+theme = "dark"
+"#;
+        let config: RalphConfig = toml::from_str(toml_content).unwrap();
+        assert_eq!(config.ui.theme, "dark");
+    }
+
+    #[test]
+    fn ui_config_missing_section_uses_default() {
+        let toml_content = r#"
+[execution]
+max_retries = 3
+"#;
+        let config: RalphConfig = toml::from_str(toml_content).unwrap();
+        assert_eq!(config.ui.theme, "light");
     }
 }

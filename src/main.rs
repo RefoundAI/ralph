@@ -14,6 +14,7 @@ mod project;
 mod review;
 mod run_loop;
 mod strategy;
+mod ui;
 mod verification;
 
 use anyhow::Result;
@@ -263,6 +264,7 @@ mod tests {
 
 async fn run() -> Result<ExitCode> {
     let args = cli::Args::parse_args();
+    let ui_mode = ui::UiMode::resolve(args.no_ui);
 
     match args.command {
         Some(cli::Command::Init) => {
@@ -270,8 +272,8 @@ async fn run() -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Some(cli::Command::Auth { agent }) => handle_auth(agent).await,
-        Some(cli::Command::Feature { action }) => handle_feature(action).await,
-        Some(cli::Command::Task { action }) => handle_task(action).await,
+        Some(cli::Command::Feature { action }) => handle_feature(action, ui_mode).await,
+        Some(cli::Command::Task { action }) => handle_task(action, ui_mode).await,
         Some(cli::Command::Run {
             target,
             limit,
@@ -282,6 +284,8 @@ async fn run() -> Result<ExitCode> {
             agent,
         }) => {
             let project = project::discover()?;
+            ui::theme::init(ui::theme::resolve_theme_name(&project.config.ui.theme));
+            let ui_guard = ui::start(ui_mode);
 
             // Resolve target: check feature names first, then task IDs
             let db_path = project.root.join(".ralph/progress.db");
@@ -316,34 +320,54 @@ async fn run() -> Result<ExitCode> {
 
             output::formatter::print_iteration_info(&config);
 
-            match run_loop::run(config).await? {
+            let (exit_code, summary) = match run_loop::run(config).await? {
                 run_loop::Outcome::Complete => {
                     output::formatter::print_complete();
-                    Ok(ExitCode::SUCCESS)
+                    (ExitCode::SUCCESS, Some("Tasks complete.".to_string()))
                 }
                 run_loop::Outcome::Failure => {
                     output::formatter::print_failure();
-                    Ok(ExitCode::FAILURE)
+                    (
+                        ExitCode::FAILURE,
+                        Some("Critical failure. See progress file for details.".to_string()),
+                    )
                 }
                 run_loop::Outcome::LimitReached => {
                     output::formatter::print_limit_reached();
-                    Ok(ExitCode::SUCCESS)
+                    (
+                        ExitCode::SUCCESS,
+                        Some("Iteration limit reached.".to_string()),
+                    )
                 }
                 run_loop::Outcome::Blocked => {
-                    eprintln!("Loop blocked: no ready tasks, but incomplete tasks remain");
-                    Ok(ExitCode::from(2))
+                    output::formatter::print_warning(
+                        "Loop blocked: no ready tasks, but incomplete tasks remain",
+                    );
+                    (ExitCode::from(2), Some("Loop blocked.".to_string()))
                 }
                 run_loop::Outcome::NoPlan => {
-                    eprintln!(
-                        "No plan: DAG is empty. Run 'ralph feature create <name>' to create tasks"
+                    output::formatter::print_warning(
+                        "No plan: DAG is empty. Run 'ralph feature create <name>' to create tasks",
                     );
-                    Ok(ExitCode::from(3))
+                    (ExitCode::from(3), Some("No plan available.".to_string()))
                 }
                 run_loop::Outcome::Interrupted => {
-                    println!("Run interrupted by user.");
-                    Ok(ExitCode::SUCCESS)
+                    output::formatter::print_warning("Run interrupted by user.");
+                    (
+                        ExitCode::SUCCESS,
+                        Some("Run interrupted by user.".to_string()),
+                    )
+                }
+            };
+
+            if ui_guard.is_active() {
+                drop(ui_guard);
+                if let Some(line) = summary {
+                    println!("{line}");
                 }
             }
+
+            Ok(exit_code)
         }
         None => {
             cli::Args::parse_from(["ralph", "--help"]);
@@ -357,7 +381,16 @@ async fn run() -> Result<ExitCode> {
 /// The ACP agent binary (e.g. `claude-agent-acp`) may not have its own auth command;
 /// authentication is managed by the `claude` CLI which the agent delegates to.
 async fn handle_auth(_agent: Option<String>) -> Result<ExitCode> {
-    println!("{}", "Running: claude auth login".bright_cyan());
+    if ui::is_active() {
+        ui::stop();
+    }
+
+    if let Some(agent) = _agent {
+        output::formatter::print_info(&format!(
+            "Auth is delegated to `claude auth login`; ignoring --agent={agent}."
+        ));
+    }
+    output::formatter::print_info("Running: claude auth login");
 
     let status = std::process::Command::new("claude")
         .args(["auth", "login"])
@@ -368,29 +401,28 @@ async fn handle_auth(_agent: Option<String>) -> Result<ExitCode> {
         .map_err(|e| anyhow::anyhow!("failed to run 'claude auth login': {e}"))?;
 
     if status.success() {
-        println!("{}", "Authentication successful.".bright_green());
+        output::formatter::print_info("Authentication successful.");
         Ok(ExitCode::SUCCESS)
     } else {
-        eprintln!(
-            "{}",
-            format!(
-                "Authentication failed (exit code: {}).",
-                status.code().unwrap_or(-1)
-            )
-            .bright_red()
-        );
+        output::formatter::print_error(&format!(
+            "Authentication failed (exit code: {}).",
+            status.code().unwrap_or(-1)
+        ));
         Ok(ExitCode::FAILURE)
     }
 }
 
 /// Handle `ralph feature <action>` subcommands.
-async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
+async fn handle_feature(action: cli::FeatureAction, ui_mode: ui::UiMode) -> Result<ExitCode> {
     let project = project::discover()?;
+    ui::theme::init(ui::theme::resolve_theme_name(&project.config.ui.theme));
     let db_path = project.root.join(".ralph/progress.db");
     let db = dag::open_db(db_path.to_str().unwrap())?;
 
     match action {
         cli::FeatureAction::Create { name, model, agent } => {
+            let ui_guard = ui::start(ui_mode);
+
             // Resolve agent command: --agent flag > RALPH_AGENT env > config > "claude"
             let agent_command = agent
                 .or_else(|| std::env::var("RALPH_AGENT").ok())
@@ -425,13 +457,13 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             // Skip if feature already has a spec on disk
             let has_spec = spec_path.exists();
             if has_spec {
-                eprintln!(
+                output::formatter::print_info(&format!(
                     "Spec already exists at {}, skipping spec phase.",
                     spec_path_str
-                );
+                ));
             } else {
-                eprintln!("\n{}", "Phase 1: Specification".bright_cyan().bold());
-                eprintln!("{}\n", "Interview → write spec → review".dimmed());
+                output::formatter::print_info("Phase 1: Specification");
+                output::formatter::print_info("Interview -> write spec -> review");
 
                 // Gather project context
                 let context = gather_project_context(&project, &db, false);
@@ -469,7 +501,7 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
 
                 // Update feature with spec path
                 feature::update_feature_spec_path(&db, &feat.id, &spec_path_str)?;
-                eprintln!("Spec saved to {}", spec_path_str);
+                output::formatter::print_info(&format!("Spec saved to {}", spec_path_str));
             }
 
             // Bail if spec wasn't actually written
@@ -484,13 +516,13 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             // Skip if feature already has a plan on disk
             let has_plan = plan_path.exists();
             if has_plan {
-                eprintln!(
+                output::formatter::print_info(&format!(
                     "Plan already exists at {}, skipping plan phase.",
                     plan_path_str
-                );
+                ));
             } else {
-                eprintln!("\n{}", "Phase 2: Implementation Plan".bright_cyan().bold());
-                eprintln!("{}\n", "Interview → write plan → review".dimmed());
+                output::formatter::print_info("Phase 2: Implementation Plan");
+                output::formatter::print_info("Interview -> write plan -> review");
 
                 let spec_content = feature::read_spec(&project.root, &name)?;
 
@@ -536,7 +568,7 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                 // Update feature with plan path and status
                 feature::update_feature_plan_path(&db, &feat.id, &plan_path_str)?;
                 feature::update_feature_status(&db, &feat.id, "planned")?;
-                eprintln!("Plan saved to {}", plan_path_str);
+                output::formatter::print_info(&format!("Plan saved to {}", plan_path_str));
             }
 
             // Bail if plan wasn't actually written
@@ -548,8 +580,8 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             }
 
             // ── Phase 3: Task DAG ────────────────────────────────────────
-            eprintln!("\n{}", "Phase 3: Task Decomposition".bright_cyan().bold());
-            eprintln!("{}\n", "Creating task DAG from plan".dimmed());
+            output::formatter::print_info("Phase 3: Task Decomposition");
+            output::formatter::print_info("Creating task DAG from plan");
 
             let spec_content = feature::read_spec(&project.root, &name)?;
             let plan_content = feature::read_plan(&project.root, &name)?;
@@ -577,7 +609,10 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
                     max_retries,
                 },
             )?;
-            eprintln!("Created root task: {} Feature: {}", root.id, name);
+            output::formatter::print_info(&format!(
+                "Created root task: {} Feature: {}",
+                root.id, name
+            ));
 
             // Build system prompt for non-interactive DAG creation
             let system_prompt =
@@ -598,53 +633,63 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             let child_count = tree.len() - 1; // exclude root
 
             if child_count == 0 {
-                eprintln!("Warning: no child tasks were created under {}", root.id);
+                output::formatter::print_warning(&format!(
+                    "Warning: no child tasks were created under {}",
+                    root.id
+                ));
             } else {
-                eprintln!("\nCreated {} tasks for feature '{}':", child_count, name);
-                print_task_tree(&tree, &root.id, "", true);
+                output::formatter::print_info(&format!(
+                    "Created {} tasks for feature '{}'",
+                    child_count, name
+                ));
+                if ui_guard.is_active() {
+                    let lines = render_task_tree_lines(&tree, &root.id);
+                    let _ = ui::show_explorer("Created Task DAG", lines);
+                } else {
+                    print_task_tree(&tree, &root.id, "", true);
+                }
             }
 
             // Update feature status to ready
             feature::update_feature_status(&db, &feat.id, "ready")?;
 
-            eprintln!(
-                "\n{}",
-                format!(
-                    "Feature '{}' is ready. Run 'ralph run {}' to start.",
-                    name, name
-                )
-                .bright_green()
-            );
+            output::formatter::print_info(&format!(
+                "Feature '{}' is ready. Run 'ralph run {}' to start.",
+                name, name
+            ));
+
+            if ui_guard.is_active() {
+                drop(ui_guard);
+            }
 
             Ok(ExitCode::SUCCESS)
         }
         cli::FeatureAction::Delete { name, yes } => {
+            let ui_guard = ui::start(ui_mode);
             let feat = feature::get_feature(&db, &name)?;
             let counts = dag::get_feature_task_counts(&db, &feat.id)?;
 
             // Show what will be deleted
-            println!("Feature: {}", feat.name.bold());
-            println!("Status:  {}", colorize_status(&feat.status));
+            output::formatter::print_info(&format!("Feature: {}", feat.name.bold()));
+            output::formatter::print_info(&format!("Status:  {}", colorize_status(&feat.status)));
             if counts.total > 0 {
                 let in_progress: usize = db.conn().query_row(
                     "SELECT COUNT(*) FROM tasks WHERE feature_id = ? AND status = 'in_progress'",
                     [&feat.id],
                     |row| row.get(0),
                 )?;
-                println!(
+                output::formatter::print_info(&format!(
                     "Tasks:   {} total ({} done, {} in progress, {} blocked)",
                     counts.total, counts.done, in_progress, counts.blocked
-                );
+                ));
                 if counts.done > 0 && counts.done < counts.total {
-                    println!(
-                        "{}",
-                        "Warning: this feature is partially completed.".yellow()
+                    output::formatter::print_warning(
+                        "Warning: this feature is partially completed.",
                     );
                 }
                 if in_progress > 0 {
-                    println!(
-                        "{}",
-                        "Warning: some tasks are currently in progress.".yellow()
+                    output::formatter::print_warning(
+                        "Warning: some tasks are currently in progress.",
                     );
                 }
             }
@@ -652,21 +697,18 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             // Check for feature directory on disk
             let feature_dir = project.root.join(".ralph/features").join(&name);
             if feature_dir.exists() {
-                println!("Files:   {}/", feature_dir.display());
+                output::formatter::print_info(&format!("Files:   {}/", feature_dir.display()));
             }
 
-            // Confirm unless --yes
-            if !yes {
-                eprint!(
-                    "\nDelete feature '{}' and all associated data? [y/N] ",
-                    name
-                );
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input)?;
-                if !input.trim().eq_ignore_ascii_case("y") {
-                    println!("Cancelled.");
-                    return Ok(ExitCode::SUCCESS);
-                }
+            if !confirm_if_ui_active(
+                &ui_guard,
+                yes,
+                "Delete Feature",
+                &format!("Delete feature '{}' and all associated data?", name),
+                false,
+            ) {
+                output::formatter::print_info("Cancelled.");
+                return Ok(ExitCode::SUCCESS);
             }
 
             // Delete tasks
@@ -680,48 +722,51 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
             // Delete feature from DB
             feature::delete_feature(&db, &feat.id)?;
 
-            println!(
-                "{}",
-                format!(
-                    "Deleted feature '{}' ({} tasks removed).",
-                    name, deleted_tasks
-                )
-                .bright_green()
-            );
+            output::formatter::print_info(&format!(
+                "Deleted feature '{}' ({} tasks removed).",
+                name, deleted_tasks
+            ));
             Ok(ExitCode::SUCCESS)
         }
         cli::FeatureAction::List => {
             let features = feature::list_features(&db)?;
 
             if features.is_empty() {
-                println!("No features. Run 'ralph feature create <name>' to create one.");
+                output::formatter::print_info(
+                    "No features. Run 'ralph feature create <name>' to create one.",
+                );
                 return Ok(ExitCode::SUCCESS);
             }
 
+            let mut lines: Vec<String> = Vec::new();
             for feat in &features {
                 let counts = dag::get_feature_task_counts(&db, &feat.id)?;
-                let status_display = match feat.status.as_str() {
-                    "draft" => feat.status.yellow().to_string(),
-                    "planned" => feat.status.blue().to_string(),
-                    "ready" => feat.status.cyan().to_string(),
-                    "running" => feat.status.magenta().to_string(),
-                    "done" => feat.status.green().to_string(),
-                    "failed" => feat.status.red().to_string(),
-                    _ => feat.status.clone(),
-                };
+                let status_display = feat.status.clone();
 
                 if counts.total > 0 {
-                    println!(
+                    lines.push(format!(
                         "  {:<16} [{}]  {}/{} done, {} ready",
                         feat.name, status_display, counts.done, counts.total, counts.ready
-                    );
+                    ));
                 } else {
                     let detail = match feat.status.as_str() {
                         "draft" => "spec only",
                         "planned" => "spec + plan ready",
                         _ => "",
                     };
-                    println!("  {:<16} [{}]  {}", feat.name, status_display, detail);
+                    lines.push(format!(
+                        "  {:<16} [{}]  {}",
+                        feat.name, status_display, detail
+                    ));
+                }
+            }
+
+            let ui_guard = ui::start(ui_mode);
+            if ui_guard.is_active() {
+                let _ = ui::show_explorer("Feature Explorer", lines);
+            } else {
+                for line in lines {
+                    println!("{line}");
                 }
             }
             Ok(ExitCode::SUCCESS)
@@ -730,8 +775,9 @@ async fn handle_feature(action: cli::FeatureAction) -> Result<ExitCode> {
 }
 
 /// Handle `ralph task <action>` subcommands.
-async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
+async fn handle_task(action: cli::TaskAction, ui_mode: ui::UiMode) -> Result<ExitCode> {
     let project = project::discover()?;
+    ui::theme::init(ui::theme::resolve_theme_name(&project.config.ui.theme));
     let db_path = project.root.join(".ralph/progress.db");
     let db = dag::open_db(db_path.to_str().unwrap())?;
 
@@ -766,6 +812,7 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         cli::TaskAction::Create { model, agent } => {
+            let ui_guard = ui::start(ui_mode);
             // Resolve agent command: --agent flag > RALPH_AGENT env > config > "claude"
             let agent_command = agent
                 .or_else(|| std::env::var("RALPH_AGENT").ok())
@@ -789,7 +836,10 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
                 None, // no write path restrictions
             )
             .await?;
-            println!("Task creation session complete.");
+            output::formatter::print_info("Task creation session complete.");
+            if ui_guard.is_active() {
+                drop(ui_guard);
+            }
             Ok(ExitCode::SUCCESS)
         }
         cli::TaskAction::Show { id, json } => {
@@ -797,7 +847,15 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&task)?);
             } else {
-                print_task_details(&db, &task)?;
+                let lines = render_task_details_lines(&db, &task)?;
+                let ui_guard = ui::start(ui_mode);
+                if ui_guard.is_active() {
+                    let _ = ui::show_explorer(&format!("Task {}", id), lines);
+                } else {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -833,16 +891,27 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
 
             if tasks.is_empty() {
                 if feature.is_some() {
-                    println!("No tasks for this feature.");
+                    output::formatter::print_info("No tasks for this feature.");
                 } else {
-                    println!("No tasks found. Run 'ralph task add' or 'ralph task create' to create one.");
+                    output::formatter::print_info(
+                        "No tasks found. Run 'ralph task add' or 'ralph task create' to create one.",
+                    );
                 }
                 return Ok(ExitCode::SUCCESS);
             }
 
+            let mut lines: Vec<String> = Vec::new();
             for task in &tasks {
-                let status_display = colorize_status(&task.status);
-                println!("  {}  [{}]  {}", task.id, status_display, task.title);
+                lines.push(format!("  {}  [{}]  {}", task.id, task.status, task.title));
+            }
+
+            let ui_guard = ui::start(ui_mode);
+            if ui_guard.is_active() {
+                let _ = ui::show_explorer("Task Explorer", lines);
+            } else {
+                for line in lines {
+                    println!("{line}");
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
@@ -852,48 +921,133 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
             description,
             priority,
         } => {
+            let ui_guard = ui::start(ui_mode);
             let fields = dag::TaskUpdate {
                 title,
                 description,
                 priority,
             };
             let updated = dag::update_task(&db, &id, fields)?;
-            println!("Updated task {}", updated.id);
+            show_result_if_ui_active(
+                &ui_guard,
+                "Task Updated",
+                vec![format!("Updated task {}", updated.id)],
+            );
             Ok(ExitCode::SUCCESS)
         }
-        cli::TaskAction::Delete { id } => {
+        cli::TaskAction::Delete { id, yes } => {
+            let ui_guard = ui::start(ui_mode);
+            if !confirm_if_ui_active(
+                &ui_guard,
+                yes,
+                "Delete Task",
+                &format!("Delete task '{}'?", id),
+                false,
+            ) {
+                output::formatter::print_info("Cancelled.");
+                return Ok(ExitCode::SUCCESS);
+            }
             dag::delete_task(&db, &id)?;
-            println!("Deleted task {}", id);
+            show_result_if_ui_active(
+                &ui_guard,
+                "Task Deleted",
+                vec![format!("Deleted task {id}")],
+            );
             Ok(ExitCode::SUCCESS)
         }
-        cli::TaskAction::Done { id } => {
+        cli::TaskAction::Done { id, yes } => {
+            let ui_guard = ui::start(ui_mode);
+            if !confirm_if_ui_active(
+                &ui_guard,
+                yes,
+                "Mark Task Done",
+                &format!("Mark task '{}' as done?", id),
+                false,
+            ) {
+                output::formatter::print_info("Cancelled.");
+                return Ok(ExitCode::SUCCESS);
+            }
             dag::force_complete_task(db.conn(), &id)?;
-            println!("Marked {} as done", id);
+            show_result_if_ui_active(
+                &ui_guard,
+                "Task Updated",
+                vec![format!("Marked {id} as done")],
+            );
             Ok(ExitCode::SUCCESS)
         }
-        cli::TaskAction::Fail { id, reason } => {
+        cli::TaskAction::Fail { id, reason, yes } => {
+            let ui_guard = ui::start(ui_mode);
+            if !confirm_if_ui_active(
+                &ui_guard,
+                yes,
+                "Mark Task Failed",
+                &format!("Mark task '{}' as failed?", id),
+                false,
+            ) {
+                output::formatter::print_info("Cancelled.");
+                return Ok(ExitCode::SUCCESS);
+            }
             let reason = reason.as_deref().unwrap_or("Manually marked as failed");
             dag::force_fail_task(db.conn(), &id)?;
             dag::add_log(&db, &id, reason)?;
-            println!("Marked {} as failed", id);
+            show_result_if_ui_active(
+                &ui_guard,
+                "Task Updated",
+                vec![
+                    format!("Marked {id} as failed"),
+                    format!("Reason: {reason}"),
+                ],
+            );
             Ok(ExitCode::SUCCESS)
         }
-        cli::TaskAction::Reset { id } => {
+        cli::TaskAction::Reset { id, yes } => {
+            let ui_guard = ui::start(ui_mode);
+            if !confirm_if_ui_active(
+                &ui_guard,
+                yes,
+                "Reset Task",
+                &format!("Reset task '{}' to pending?", id),
+                false,
+            ) {
+                output::formatter::print_info("Cancelled.");
+                return Ok(ExitCode::SUCCESS);
+            }
             dag::force_reset_task(db.conn(), &id)?;
-            println!("Reset {} to pending", id);
+            show_result_if_ui_active(
+                &ui_guard,
+                "Task Updated",
+                vec![format!("Reset {id} to pending")],
+            );
             Ok(ExitCode::SUCCESS)
         }
         cli::TaskAction::Log { id, message } => {
+            let ui_guard = ui::start(ui_mode);
             if let Some(msg) = message {
                 dag::add_log(&db, &id, &msg)?;
-                println!("Added log entry to {}", id);
+                show_result_if_ui_active(
+                    &ui_guard,
+                    "Task Log Updated",
+                    vec![format!("Added log entry to {id}")],
+                );
             } else {
                 let logs = dag::get_task_logs(&db, &id)?;
                 if logs.is_empty() {
-                    println!("No log entries for {}", id);
+                    show_result_if_ui_active(
+                        &ui_guard,
+                        "Task Log",
+                        vec![format!("No log entries for {id}")],
+                    );
                 } else {
-                    for log in &logs {
-                        println!("  [{}]  {}", log.timestamp, log.message);
+                    let lines: Vec<String> = logs
+                        .iter()
+                        .map(|log| format!("  [{}]  {}", log.timestamp, log.message))
+                        .collect();
+                    if ui_guard.is_active() {
+                        let _ = ui::show_explorer(&format!("Task Log {id}"), lines);
+                    } else {
+                        for line in lines {
+                            println!("{line}");
+                        }
                     }
                 }
             }
@@ -901,16 +1055,25 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
         }
         cli::TaskAction::Deps { action } => match action {
             cli::DepsAction::Add { blocker, blocked } => {
+                let ui_guard = ui::start(ui_mode);
                 dag::add_dependency(&db, &blocker, &blocked)?;
-                println!(
-                    "Added dependency: {} must complete before {}",
-                    blocker, blocked
+                show_result_if_ui_active(
+                    &ui_guard,
+                    "Dependency Added",
+                    vec![format!(
+                        "Added dependency: {blocker} must complete before {blocked}"
+                    )],
                 );
                 Ok(ExitCode::SUCCESS)
             }
             cli::DepsAction::Rm { blocker, blocked } => {
+                let ui_guard = ui::start(ui_mode);
                 dag::remove_dependency(&db, &blocker, &blocked)?;
-                println!("Removed dependency: {} -> {}", blocker, blocked);
+                show_result_if_ui_active(
+                    &ui_guard,
+                    "Dependency Removed",
+                    vec![format!("Removed dependency: {blocker} -> {blocked}")],
+                );
                 Ok(ExitCode::SUCCESS)
             }
             cli::DepsAction::List { id } => {
@@ -918,22 +1081,30 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
                 let blocked_by_me = dag::get_tasks_blocked_by(&db, &id)?;
 
                 if blockers.is_empty() && blocked_by_me.is_empty() {
-                    println!("No dependencies for {}", id);
+                    output::formatter::print_info(&format!("No dependencies for {}", id));
                     return Ok(ExitCode::SUCCESS);
                 }
 
+                let mut lines = Vec::new();
                 if !blockers.is_empty() {
-                    println!("  Blocked by:");
+                    lines.push("  Blocked by:".to_string());
                     for t in &blockers {
-                        let status_display = colorize_status(&t.status);
-                        println!("    {}  [{}]  {}", t.id, status_display, t.title);
+                        lines.push(format!("    {}  [{}]  {}", t.id, t.status, t.title));
                     }
                 }
                 if !blocked_by_me.is_empty() {
-                    println!("  Blocks:");
+                    lines.push("  Blocks:".to_string());
                     for t in &blocked_by_me {
-                        let status_display = colorize_status(&t.status);
-                        println!("    {}  [{}]  {}", t.id, status_display, t.title);
+                        lines.push(format!("    {}  [{}]  {}", t.id, t.status, t.title));
+                    }
+                }
+
+                let ui_guard = ui::start(ui_mode);
+                if ui_guard.is_active() {
+                    let _ = ui::show_explorer(&format!("Dependencies for {}", id), lines);
+                } else {
+                    for line in lines {
+                        println!("{line}");
                     }
                 }
                 Ok(ExitCode::SUCCESS)
@@ -944,10 +1115,39 @@ async fn handle_task(action: cli::TaskAction) -> Result<ExitCode> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&tree)?);
             } else {
-                print_task_tree(&tree, &id, "", true);
+                let lines = render_task_tree_lines(&tree, &id);
+                let ui_guard = ui::start(ui_mode);
+                if ui_guard.is_active() {
+                    let _ = ui::show_explorer(&format!("Tree {}", id), lines);
+                } else {
+                    print_task_tree(&tree, &id, "", true);
+                }
             }
             Ok(ExitCode::SUCCESS)
         }
+    }
+}
+
+fn confirm_if_ui_active(
+    ui_guard: &ui::UiGuard,
+    bypass: bool,
+    title: &str,
+    prompt: &str,
+    default_yes: bool,
+) -> bool {
+    if bypass || !ui_guard.is_active() {
+        return true;
+    }
+    ui::prompt_confirm(title, prompt, default_yes).unwrap_or(false)
+}
+
+fn show_result_if_ui_active(ui_guard: &ui::UiGuard, title: &str, lines: Vec<String>) {
+    if ui_guard.is_active() {
+        let _ = ui::show_explorer(title, lines);
+        return;
+    }
+    for line in lines {
+        output::formatter::print_info(&line);
     }
 }
 
@@ -963,58 +1163,58 @@ fn colorize_status(status: &str) -> String {
     }
 }
 
-/// Print full task details.
-fn print_task_details(db: &dag::Db, task: &dag::Task) -> Result<()> {
-    let status_display = colorize_status(&task.status);
-    println!("{}  [{}]  {}", task.id, status_display, task.title);
+fn render_task_details_lines(db: &dag::Db, task: &dag::Task) -> Result<Vec<String>> {
+    let mut lines = Vec::new();
+    lines.push(format!("{}  [{}]  {}", task.id, task.status, task.title));
 
     if let Some(ref pid) = task.parent_id {
-        println!("  parent:       {}", pid);
+        lines.push(format!("  parent:       {}", pid));
     }
     if let Some(ref fid) = task.feature_id {
-        // Try to resolve feature name
         if let Ok(feat) = feature::get_feature_by_id(db, fid) {
-            println!("  feature:      {} ({})", feat.name, fid);
+            lines.push(format!("  feature:      {} ({})", feat.name, fid));
         } else {
-            println!("  feature:      {}", fid);
+            lines.push(format!("  feature:      {}", fid));
         }
     }
-    println!("  priority:     {}", task.priority);
-    println!("  retries:      {}/{}", task.retry_count, task.max_retries);
-    println!(
+    lines.push(format!("  priority:     {}", task.priority));
+    lines.push(format!(
+        "  retries:      {}/{}",
+        task.retry_count, task.max_retries
+    ));
+    lines.push(format!(
         "  verification: {}",
         task.verification_status.as_deref().unwrap_or("none")
-    );
-    println!("  created:      {}", task.created_at);
+    ));
+    lines.push(format!("  created:      {}", task.created_at));
 
     if !task.description.is_empty() {
-        println!("\n  Description:");
+        lines.push(String::new());
+        lines.push("  Description:".to_string());
         for line in task.description.lines() {
-            println!("    {}", line);
+            lines.push(format!("    {}", line));
         }
     }
 
-    // Show blockers
     let blockers = dag::get_task_blockers(db, &task.id)?;
     if !blockers.is_empty() {
-        println!("\n  Blocked by:");
+        lines.push(String::new());
+        lines.push("  Blocked by:".to_string());
         for t in &blockers {
-            let s = colorize_status(&t.status);
-            println!("    {}  [{}]  {}", t.id, s, t.title);
+            lines.push(format!("    {}  [{}]  {}", t.id, t.status, t.title));
         }
     }
 
-    // Show what this task blocks
     let blocks = dag::get_tasks_blocked_by(db, &task.id)?;
     if !blocks.is_empty() {
-        println!("\n  Blocks:");
+        lines.push(String::new());
+        lines.push("  Blocks:".to_string());
         for t in &blocks {
-            let s = colorize_status(&t.status);
-            println!("    {}  [{}]  {}", t.id, s, t.title);
+            lines.push(format!("    {}  [{}]  {}", t.id, t.status, t.title));
         }
     }
 
-    Ok(())
+    Ok(lines)
 }
 
 /// Print a task tree with Unicode box-drawing characters.
@@ -1062,6 +1262,57 @@ fn print_task_tree(tree: &[dag::Task], current_id: &str, prefix: &str, is_last: 
         };
 
         print_task_tree(tree, &child.id, &next_prefix, is_last_child);
+    }
+}
+
+fn render_task_tree_lines(tree: &[dag::Task], current_id: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    render_task_tree_lines_inner(tree, current_id, "", true, &mut lines);
+    lines
+}
+
+fn render_task_tree_lines_inner(
+    tree: &[dag::Task],
+    current_id: &str,
+    prefix: &str,
+    is_last: bool,
+    out: &mut Vec<String>,
+) {
+    let task = match tree.iter().find(|t| t.id == current_id) {
+        Some(t) => t,
+        None => return,
+    };
+
+    if prefix.is_empty() {
+        out.push(format!("{}  [{}]  {}", task.id, task.status, task.title));
+    } else {
+        let connector = if is_last { "└─" } else { "├─" };
+        out.push(format!(
+            "{}{} {}  [{}]  {}",
+            prefix, connector, task.id, task.status, task.title
+        ));
+    }
+
+    let children: Vec<&dag::Task> = tree
+        .iter()
+        .filter(|t| t.parent_id.as_deref() == Some(current_id))
+        .collect();
+
+    for (i, child) in children.iter().enumerate() {
+        let is_last_child = i == children.len() - 1;
+        let child_prefix = if prefix.is_empty() {
+            "".to_string()
+        } else if is_last {
+            format!("{}   ", prefix)
+        } else {
+            format!("{}│  ", prefix)
+        };
+        let next_prefix = if prefix.is_empty() {
+            "".to_string()
+        } else {
+            child_prefix
+        };
+        render_task_tree_lines_inner(tree, &child.id, &next_prefix, is_last_child, out);
     }
 }
 

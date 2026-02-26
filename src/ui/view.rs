@@ -8,8 +8,8 @@ use crate::ui::theme;
 
 /// Draw one frame of the UI.
 pub fn render(frame: &mut Frame<'_>, state: &AppState) {
-    // Paint the entire frame black so no terminal background bleeds through.
-    let bg = Block::default().style(Style::default().bg(Color::Black));
+    // Paint the entire frame with the theme background so no terminal background bleeds through.
+    let bg = Block::default().style(Style::default().bg(theme::background()));
     frame.render_widget(bg, frame.area());
 
     match &state.screen {
@@ -233,7 +233,7 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                     cursor_row = visual_row;
                     cursor_col = 0;
                     lines.push(Line::from(vec![
-                        Span::styled(" ", Style::default().fg(Color::Black).bg(Color::White)),
+                        Span::styled(" ", theme::cursor()),
                         Span::raw(""),
                     ]));
                 } else {
@@ -278,7 +278,7 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                                     } else {
                                         post.chars().next().unwrap().to_string()
                                     },
-                                    Style::default().fg(Color::Black).bg(Color::White),
+                                    theme::cursor(),
                                 ),
                                 Span::styled(post_rest.to_string(), theme::modal_text()),
                             ]));
@@ -304,17 +304,14 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                         let post_rest = &post[cursor_ch.len_utf8()..];
                         lines.push(Line::from(vec![
                             Span::styled(pre.to_string(), theme::modal_text()),
-                            Span::styled(
-                                cursor_ch.to_string(),
-                                Style::default().fg(Color::Black).bg(Color::White),
-                            ),
+                            Span::styled(cursor_ch.to_string(), theme::cursor()),
                             Span::styled(post_rest.to_string(), theme::modal_text()),
                         ]));
                     } else {
                         // Cursor at end of line.
                         lines.push(Line::from(vec![
                             Span::styled(row_text.to_string(), theme::modal_text()),
-                            Span::styled(" ", Style::default().fg(Color::Black).bg(Color::White)),
+                            Span::styled(" ", theme::cursor()),
                         ]));
                     }
                 } else {
@@ -655,14 +652,15 @@ mod tests {
         );
 
         // Verify highlighted choice has distinct styling by checking the buffer cells.
+        let title_fg = theme::title().fg.unwrap();
         let buf = terminal.backend().buffer();
         let mut highlight_found = false;
         for y in 0..buf.area.height {
             for x in 0..buf.area.width.saturating_sub(1) {
                 if buf[(x, y)].symbol() == ">" {
-                    // Check that cells in the highlighted row use cyan bold (theme::title()).
+                    // Check that cells in the highlighted row use the title foreground color.
                     let cell = &buf[(x, y)];
-                    if cell.fg == Color::Cyan {
+                    if cell.fg == title_fg {
                         highlight_found = true;
                     }
                     break;
@@ -674,7 +672,7 @@ mod tests {
         }
         assert!(
             highlight_found,
-            "Highlighted choice should use cyan styling (theme::title())"
+            "Highlighted choice should use theme::title() foreground color"
         );
     }
 
