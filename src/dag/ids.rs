@@ -12,7 +12,7 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Generate a new task ID.
 ///
-/// Format: `t-` + 6 hex chars from SHA-256 of `(timestamp_nanos || counter)`.
+/// Format: `t-` + 8 hex chars from SHA-256 of `(timestamp_nanos || counter)`.
 ///
 /// On collision (UNIQUE violation when inserting), the caller should retry
 /// by calling this function again. This function increments an internal counter
@@ -31,13 +31,16 @@ pub fn generate_task_id() -> String {
     hasher.update(counter.to_le_bytes());
     let hash = hasher.finalize();
 
-    // Take first 3 bytes (6 hex chars)
-    format!("t-{:02x}{:02x}{:02x}", hash[0], hash[1], hash[2])
+    // Take first 4 bytes (8 hex chars) to reduce collision probability.
+    format!(
+        "t-{:02x}{:02x}{:02x}{:02x}",
+        hash[0], hash[1], hash[2], hash[3]
+    )
 }
 
 /// Generate a new feature ID.
 ///
-/// Format: `f-` + 6 hex chars from SHA-256 of `(timestamp_nanos || counter)`.
+/// Format: `f-` + 8 hex chars from SHA-256 of `(timestamp_nanos || counter)`.
 pub fn generate_feature_id() -> String {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -51,7 +54,10 @@ pub fn generate_feature_id() -> String {
     hasher.update(counter.to_le_bytes());
     let hash = hasher.finalize();
 
-    format!("f-{:02x}{:02x}{:02x}", hash[0], hash[1], hash[2])
+    format!(
+        "f-{:02x}{:02x}{:02x}{:02x}",
+        hash[0], hash[1], hash[2], hash[3]
+    )
 }
 
 /// Generate a task ID and insert it into the database.
@@ -91,11 +97,11 @@ mod tests {
     #[test]
     fn test_id_format() {
         let id = generate_task_id();
-        // Should match regex ^t-[0-9a-f]{6}$
+        // Should match regex ^t-[0-9a-f]{8}$
         assert!(id.starts_with("t-"));
-        assert_eq!(id.len(), 8); // "t-" + 6 hex chars = 8 total
+        assert_eq!(id.len(), 10); // "t-" + 8 hex chars = 10 total
         let hex_part = &id[2..];
-        assert_eq!(hex_part.len(), 6);
+        assert_eq!(hex_part.len(), 8);
         assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
