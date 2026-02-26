@@ -660,7 +660,7 @@ async fn handle_feature(action: cli::FeatureAction, ui_mode: ui::UiMode) -> Resu
             feature::update_feature_status(&db, &feat.id, "ready")?;
 
             output::formatter::print_info(&format!(
-                "Feature '{}' is ready. Run 'ralph run {}' to start.",
+                "Created feature \"{}\". Run 'ralph run {}' to start.",
                 name, name
             ));
 
@@ -827,6 +827,10 @@ async fn handle_task(action: cli::TaskAction, ui_mode: ui::UiMode) -> Result<Exi
                 .or_else(|| std::env::var("RALPH_AGENT").ok())
                 .unwrap_or_else(|| project.config.agent.command.clone());
 
+            // Snapshot existing task IDs before the session
+            let before_ids: std::collections::HashSet<String> =
+                dag::get_all_tasks(&db)?.into_iter().map(|t| t.id).collect();
+
             // Gather project context including standalone tasks
             let context = gather_project_context(&project, &db, true);
 
@@ -845,7 +849,20 @@ async fn handle_task(action: cli::TaskAction, ui_mode: ui::UiMode) -> Result<Exi
                 None, // no write path restrictions
             )
             .await?;
-            output::formatter::print_info("Task creation session complete.");
+
+            // Report newly created tasks
+            let new_tasks: Vec<dag::Task> = dag::get_all_tasks(&db)?
+                .into_iter()
+                .filter(|t| !before_ids.contains(&t.id))
+                .collect();
+            if new_tasks.is_empty() {
+                output::formatter::print_info("Task creation session complete. No tasks created.");
+            } else {
+                for task in &new_tasks {
+                    output::formatter::print_info(&format!("Created task {}", task.id));
+                }
+            }
+
             if ui_guard.is_active() {
                 drop(ui_guard);
             }
