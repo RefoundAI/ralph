@@ -51,6 +51,15 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
     // Resolve feature context (spec + plan content) if targeting a feature
     let (feature_id, spec_content, plan_content) = resolve_feature_context(&config, &db)?;
 
+    // Emit iteration 1 start event (iterations 2+ are emitted in advance_iteration_with_model_selection)
+    formatter::emit_event_info(
+        "iter",
+        &format!(
+            "iteration 1 started \u{2014} model={} strategy={}",
+            config.current_model, config.model_strategy
+        ),
+    );
+
     loop {
         // Get scoped ready tasks
         let ready_tasks = get_scoped_ready_tasks(&config, &db, feature_id.as_deref())?;
@@ -202,6 +211,10 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 formatter::print_warning(
                     "ralph: agent reported Cancelled stop reason (unexpected), releasing task claim",
                 );
+                formatter::emit_event_info(
+                    "iter",
+                    &format!("agent stopped: Cancelled \u{2014} releasing {}", task_id),
+                );
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
                 formatter::emit_event_info("task", &format!("{} incomplete (no sigil)", task_id));
@@ -226,6 +239,13 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     return Ok(Outcome::Complete);
                 }
                 if config.limit_reached() {
+                    formatter::emit_event_info(
+                        "iter",
+                        &format!(
+                            "iteration limit reached ({}/{})",
+                            config.iteration, config.limit
+                        ),
+                    );
                     return Ok(Outcome::LimitReached);
                 }
                 advance_iteration_with_model_selection(&mut config, &db, &progress_db, None);
@@ -236,6 +256,13 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     "ralph: agent hit token/turn limit ({:?}), releasing task claim",
                     streaming_result.stop_reason
                 ));
+                formatter::emit_event_info(
+                    "iter",
+                    &format!(
+                        "agent stopped: {:?} \u{2014} releasing {}",
+                        streaming_result.stop_reason, task_id
+                    ),
+                );
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
                 formatter::emit_event_info("task", &format!("{} incomplete (no sigil)", task_id));
@@ -260,6 +287,13 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     return Ok(Outcome::Complete);
                 }
                 if config.limit_reached() {
+                    formatter::emit_event_info(
+                        "iter",
+                        &format!(
+                            "iteration limit reached ({}/{})",
+                            config.iteration, config.limit
+                        ),
+                    );
                     return Ok(Outcome::LimitReached);
                 }
                 advance_iteration_with_model_selection(&mut config, &db, &progress_db, None);
@@ -267,6 +301,11 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
             }
             StopReason::Refusal => {
                 formatter::print_warning("ralph: agent refused the request, failing task");
+                formatter::emit_event(
+                    "iter",
+                    &format!("agent stopped: Refusal \u{2014} failing {}", task_id),
+                    true,
+                );
                 dag::fail_task(&db, &task_id, "Agent refused the request")
                     .context("Failed to fail task")?;
                 formatter::print_task_failed(config.iteration, &task_id);
@@ -296,6 +335,13 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     return Ok(Outcome::Complete);
                 }
                 if config.limit_reached() {
+                    formatter::emit_event_info(
+                        "iter",
+                        &format!(
+                            "iteration limit reached ({}/{})",
+                            config.iteration, config.limit
+                        ),
+                    );
                     return Ok(Outcome::LimitReached);
                 }
                 advance_iteration_with_model_selection(&mut config, &db, &progress_db, None);
@@ -307,6 +353,13 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     "ralph: agent stopped with unknown reason: {:?}, releasing task claim",
                     streaming_result.stop_reason
                 ));
+                formatter::emit_event_info(
+                    "iter",
+                    &format!(
+                        "agent stopped: {:?} \u{2014} releasing {}",
+                        streaming_result.stop_reason, task_id
+                    ),
+                );
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
                 formatter::emit_event_info("task", &format!("{} incomplete (no sigil)", task_id));
@@ -331,6 +384,13 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     return Ok(Outcome::Complete);
                 }
                 if config.limit_reached() {
+                    formatter::emit_event_info(
+                        "iter",
+                        &format!(
+                            "iteration limit reached ({}/{})",
+                            config.iteration, config.limit
+                        ),
+                    );
                     return Ok(Outcome::LimitReached);
                 }
                 advance_iteration_with_model_selection(&mut config, &db, &progress_db, None);
@@ -476,6 +536,13 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
 
         // Check iteration limit
         if config.limit_reached() {
+            formatter::emit_event_info(
+                "iter",
+                &format!(
+                    "iteration limit reached ({}/{})",
+                    config.iteration, config.limit
+                ),
+            );
             return Ok(Outcome::LimitReached);
         }
 
@@ -522,6 +589,13 @@ fn advance_iteration_with_model_selection(
 
     config.current_model = selection.model;
     formatter::print_iteration_info(config);
+    formatter::emit_event_info(
+        "iter",
+        &format!(
+            "iteration {} started \u{2014} model={} strategy={}",
+            config.iteration, config.current_model, config.model_strategy
+        ),
+    );
 }
 
 /// Resolve feature context: returns (feature_id, spec_content, plan_content).
