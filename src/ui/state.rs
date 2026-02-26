@@ -56,10 +56,10 @@ pub struct AppState {
     pub input_title: String,
     /// Hint text shown when inactive or as header when active.
     pub input_hint: String,
-    /// Committed input lines (from Enter presses).
-    pub input_lines: Vec<String>,
-    /// Current line being typed.
-    pub input_current_line: String,
+    /// Full input buffer (may contain newlines from Shift+Enter).
+    pub input_text: String,
+    /// Byte offset of the cursor within `input_text`.
+    pub input_cursor: usize,
     /// When `Some`, the Input pane renders as a choice selector.
     pub input_choices: Option<Vec<String>>,
     /// Which choice is highlighted in choice mode.
@@ -81,8 +81,8 @@ impl Default for AppState {
             input_active: false,
             input_title: "Input".to_string(),
             input_hint: "Waiting for agent...".to_string(),
-            input_lines: Vec::new(),
-            input_current_line: String::new(),
+            input_text: String::new(),
+            input_cursor: 0,
             input_choices: None,
             input_choice_cursor: 0,
         }
@@ -176,8 +176,8 @@ impl AppState {
         self.input_active = true;
         self.input_title = title;
         self.input_hint = hint;
-        self.input_lines.clear();
-        self.input_current_line.clear();
+        self.input_text.clear();
+        self.input_cursor = 0;
         self.input_choices = choices;
         self.input_choice_cursor = 0;
     }
@@ -187,8 +187,8 @@ impl AppState {
         self.input_active = false;
         self.input_title = "Input".to_string();
         self.input_hint = "Waiting for agent...".to_string();
-        self.input_lines.clear();
-        self.input_current_line.clear();
+        self.input_text.clear();
+        self.input_cursor = 0;
         self.input_choices = None;
         self.input_choice_cursor = 0;
     }
@@ -251,8 +251,8 @@ mod tests {
         assert!(!state.input_active);
         assert_eq!(state.input_title, "Input");
         assert_eq!(state.input_hint, "Waiting for agent...");
-        assert!(state.input_lines.is_empty());
-        assert!(state.input_current_line.is_empty());
+        assert!(state.input_text.is_empty());
+        assert_eq!(state.input_cursor, 0);
         assert!(state.input_choices.is_none());
         assert_eq!(state.input_choice_cursor, 0);
 
@@ -265,22 +265,22 @@ mod tests {
         assert!(state.input_active);
         assert_eq!(state.input_title, "Interactive Prompt");
         assert_eq!(state.input_hint, "Type your response");
-        assert!(state.input_lines.is_empty());
-        assert!(state.input_current_line.is_empty());
+        assert!(state.input_text.is_empty());
+        assert_eq!(state.input_cursor, 0);
         assert!(state.input_choices.is_none());
         assert_eq!(state.input_choice_cursor, 0);
 
         // Simulate some typing.
-        state.input_current_line = "hello".to_string();
-        state.input_lines.push("first line".to_string());
+        state.input_text = "hello\nfirst line".to_string();
+        state.input_cursor = state.input_text.len();
 
         // Deactivate resets everything.
         state.deactivate_input();
         assert!(!state.input_active);
         assert_eq!(state.input_title, "Input");
         assert_eq!(state.input_hint, "Waiting for agent...");
-        assert!(state.input_lines.is_empty());
-        assert!(state.input_current_line.is_empty());
+        assert!(state.input_text.is_empty());
+        assert_eq!(state.input_cursor, 0);
         assert!(state.input_choices.is_none());
         assert_eq!(state.input_choice_cursor, 0);
 

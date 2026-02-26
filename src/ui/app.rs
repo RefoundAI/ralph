@@ -232,7 +232,8 @@ fn process_key(
                 KeyCode::Char(ch) => {
                     // Any other character switches to free-text mode
                     state.input_choices = None;
-                    state.input_current_line.push(ch);
+                    state.input_text.push(ch);
+                    state.input_cursor = state.input_text.len();
                 }
                 _ => {}
             }
@@ -252,44 +253,99 @@ fn process_key(
                 }
                 state.deactivate_input();
             }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                // Shift+Enter inserts a newline.
+                state.input_text.insert(state.input_cursor, '\n');
+                state.input_cursor += 1;
+            }
             KeyCode::Enter => {
-                if state.input_current_line.is_empty() {
-                    let old = std::mem::replace(interaction, Interaction::None);
-                    if let Interaction::Multiline { reply } = old {
-                        if state.input_lines.is_empty() {
-                            let _ = reply.send(UiPromptResult::Exit);
-                        } else {
-                            let _ = reply.send(UiPromptResult::Input(state.input_lines.join("\n")));
-                        }
+                // Enter submits the input.
+                let old = std::mem::replace(interaction, Interaction::None);
+                if let Interaction::Multiline { reply } = old {
+                    let text = state.input_text.trim_end().to_string();
+                    if text.is_empty() {
+                        let _ = reply.send(UiPromptResult::Exit);
+                    } else {
+                        let _ = reply.send(UiPromptResult::Input(text));
                     }
-                    state.deactivate_input();
-                } else {
-                    let line = std::mem::take(&mut state.input_current_line);
-                    state.input_lines.push(line);
                 }
+                state.deactivate_input();
             }
             KeyCode::Backspace => {
-                state.input_current_line.pop();
+                if state.input_cursor > 0 {
+                    // Find the previous char boundary.
+                    let prev = state.input_text[..state.input_cursor]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    state.input_text.drain(prev..state.input_cursor);
+                    state.input_cursor = prev;
+                }
             }
-            KeyCode::Char(ch) => {
-                state.input_current_line.push(ch);
+            KeyCode::Delete => {
+                if state.input_cursor < state.input_text.len() {
+                    let next = state.input_cursor
+                        + state.input_text[state.input_cursor..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(0);
+                    state.input_text.drain(state.input_cursor..next);
+                }
+            }
+            KeyCode::Left => {
+                if state.input_cursor > 0 {
+                    state.input_cursor = state.input_text[..state.input_cursor]
+                        .char_indices()
+                        .next_back()
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                }
+            }
+            KeyCode::Right => {
+                if state.input_cursor < state.input_text.len() {
+                    state.input_cursor += state.input_text[state.input_cursor..]
+                        .chars()
+                        .next()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(0);
+                }
             }
             KeyCode::Up => {
-                state.agent_scroll_up(1);
+                // Move cursor to the same column on the previous line.
+                input_cursor_up(state);
+            }
+            KeyCode::Down => {
+                // Move cursor to the same column on the next line.
+                input_cursor_down(state);
+            }
+            KeyCode::Home => {
+                // Move cursor to start of current line.
+                let before = &state.input_text[..state.input_cursor];
+                state.input_cursor = match before.rfind('\n') {
+                    Some(pos) => pos + 1,
+                    None => 0,
+                };
+            }
+            KeyCode::End => {
+                // Move cursor to end of current line.
+                let after = &state.input_text[state.input_cursor..];
+                state.input_cursor += match after.find('\n') {
+                    Some(pos) => pos,
+                    None => after.len(),
+                };
+            }
+            KeyCode::Char(ch) => {
+                state.input_text.insert(state.input_cursor, ch);
+                state.input_cursor += ch.len_utf8();
             }
             KeyCode::PageUp => {
                 state.agent_scroll_up(20);
             }
-            KeyCode::Down => {
-                let line_count = state.agent_text.lines().count();
-                state.agent_scroll_down(1, line_count);
-            }
             KeyCode::PageDown => {
                 let line_count = state.agent_text.lines().count();
                 state.agent_scroll_down(20, line_count);
-            }
-            KeyCode::End => {
-                state.agent_scroll_to_bottom();
             }
             _ => {}
         },
@@ -366,6 +422,55 @@ fn process_key(
     }
 }
 
+/// Move the input cursor up one line, preserving the column position.
+fn input_cursor_up(state: &mut AppState) {
+    let text = &state.input_text;
+    let before = &text[..state.input_cursor];
+
+    // Find start of current line and the column offset.
+    let cur_line_start = match before.rfind('\n') {
+        Some(pos) => pos + 1,
+        None => return, // Already on the first line.
+    };
+    let col = state.input_cursor - cur_line_start;
+
+    // Find start of previous line.
+    let prev_line_start = match before[..cur_line_start.saturating_sub(1)].rfind('\n') {
+        Some(pos) => pos + 1,
+        None => 0,
+    };
+    let prev_line_len = cur_line_start.saturating_sub(1) - prev_line_start;
+    state.input_cursor = prev_line_start + col.min(prev_line_len);
+}
+
+/// Move the input cursor down one line, preserving the column position.
+fn input_cursor_down(state: &mut AppState) {
+    let text = &state.input_text;
+    let before = &text[..state.input_cursor];
+    let after = &text[state.input_cursor..];
+
+    // Find start of current line and column offset.
+    let cur_line_start = match before.rfind('\n') {
+        Some(pos) => pos + 1,
+        None => 0,
+    };
+    let col = state.input_cursor - cur_line_start;
+
+    // Find the newline after the cursor (end of current line).
+    let Some(nl_offset) = after.find('\n') else {
+        return; // Already on the last line.
+    };
+    let next_line_start = state.input_cursor + nl_offset + 1;
+
+    // Find the end of the next line.
+    let next_line_end = match text[next_line_start..].find('\n') {
+        Some(pos) => next_line_start + pos,
+        None => text.len(),
+    };
+    let next_line_len = next_line_end - next_line_start;
+    state.input_cursor = next_line_start + col.min(next_line_len);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn freetext_keystroke_no_dual_state() {
+    fn freetext_typing_and_backspace() {
         let mut state = AppState::default();
         let (tx, _rx) = std::sync::mpsc::channel();
 
@@ -390,48 +495,40 @@ mod tests {
         // Type "hi"
         process_key(&mut state, &mut interaction, key(KeyCode::Char('h')));
         process_key(&mut state, &mut interaction, key(KeyCode::Char('i')));
-        assert_eq!(state.input_current_line, "hi");
-        assert!(state.input_lines.is_empty());
+        assert_eq!(state.input_text, "hi");
+        assert_eq!(state.input_cursor, 2);
 
-        // Enter commits the line
-        process_key(&mut state, &mut interaction, key(KeyCode::Enter));
-        assert!(state.input_current_line.is_empty());
-        assert_eq!(state.input_lines, vec!["hi"]);
-
-        // Type more and backspace
-        process_key(&mut state, &mut interaction, key(KeyCode::Char('x')));
-        process_key(&mut state, &mut interaction, key(KeyCode::Char('y')));
-        assert_eq!(state.input_current_line, "xy");
+        // Backspace deletes last char
         process_key(&mut state, &mut interaction, key(KeyCode::Backspace));
-        assert_eq!(state.input_current_line, "x");
+        assert_eq!(state.input_text, "h");
+        assert_eq!(state.input_cursor, 1);
 
         // No modal should be involved at any point
         assert!(state.modal.is_none());
     }
 
     #[test]
-    fn freetext_submit_on_empty_enter() {
+    fn freetext_enter_submits() {
         let mut state = AppState::default();
         let (tx, rx) = std::sync::mpsc::channel();
 
         state.activate_input("Test".to_string(), "hint".to_string(), None);
         let mut interaction = Interaction::Multiline { reply: tx };
 
-        // Type a line and commit it
+        // Type some text
         process_key(&mut state, &mut interaction, key(KeyCode::Char('a')));
-        process_key(&mut state, &mut interaction, key(KeyCode::Enter));
-        assert_eq!(state.input_lines, vec!["a"]);
+        process_key(&mut state, &mut interaction, key(KeyCode::Char('b')));
 
-        // Empty enter on non-empty buffer submits
+        // Enter submits
         process_key(&mut state, &mut interaction, key(KeyCode::Enter));
         let result = rx.try_recv().unwrap();
-        assert!(matches!(result, UiPromptResult::Input(s) if s == "a"));
+        assert!(matches!(result, UiPromptResult::Input(s) if s == "ab"));
         assert!(!state.input_active);
         assert!(matches!(interaction, Interaction::None));
     }
 
     #[test]
-    fn freetext_empty_enter_on_empty_buffer_exits() {
+    fn freetext_empty_enter_exits() {
         let mut state = AppState::default();
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -443,6 +540,28 @@ mod tests {
         let result = rx.try_recv().unwrap();
         assert!(matches!(result, UiPromptResult::Exit));
         assert!(!state.input_active);
+    }
+
+    #[test]
+    fn freetext_shift_enter_inserts_newline() {
+        let mut state = AppState::default();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        state.activate_input("Test".to_string(), "hint".to_string(), None);
+        let mut interaction = Interaction::Multiline { reply: tx };
+
+        process_key(&mut state, &mut interaction, key(KeyCode::Char('a')));
+        process_key(
+            &mut state,
+            &mut interaction,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+        );
+        process_key(&mut state, &mut interaction, key(KeyCode::Char('b')));
+
+        assert_eq!(state.input_text, "a\nb");
+        assert_eq!(state.input_cursor, 3);
+        // Should still be active (not submitted)
+        assert!(matches!(interaction, Interaction::Multiline { .. }));
     }
 
     #[test]
@@ -461,11 +580,112 @@ mod tests {
     }
 
     #[test]
-    fn scroll_keys_work_during_active_input() {
+    fn cursor_navigation_left_right() {
         let mut state = AppState::default();
         let (tx, _rx) = std::sync::mpsc::channel();
 
-        // Populate agent text with enough lines to scroll
+        state.activate_input("Test".to_string(), "hint".to_string(), None);
+        let mut interaction = Interaction::Multiline { reply: tx };
+
+        // Type "abc"
+        for ch in ['a', 'b', 'c'] {
+            process_key(&mut state, &mut interaction, key(KeyCode::Char(ch)));
+        }
+        assert_eq!(state.input_cursor, 3);
+
+        // Left moves back one char
+        process_key(&mut state, &mut interaction, key(KeyCode::Left));
+        assert_eq!(state.input_cursor, 2);
+
+        // Type 'x' at cursor position
+        process_key(&mut state, &mut interaction, key(KeyCode::Char('x')));
+        assert_eq!(state.input_text, "abxc");
+        assert_eq!(state.input_cursor, 3);
+
+        // Right moves forward
+        process_key(&mut state, &mut interaction, key(KeyCode::Right));
+        assert_eq!(state.input_cursor, 4);
+
+        // Left at position 0 stays at 0
+        state.input_cursor = 0;
+        process_key(&mut state, &mut interaction, key(KeyCode::Left));
+        assert_eq!(state.input_cursor, 0);
+    }
+
+    #[test]
+    fn cursor_navigation_home_end() {
+        let mut state = AppState::default();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        state.activate_input("Test".to_string(), "hint".to_string(), None);
+        let mut interaction = Interaction::Multiline { reply: tx };
+
+        // Type "ab\ncd" (using Shift+Enter for newline)
+        for ch in ['a', 'b'] {
+            process_key(&mut state, &mut interaction, key(KeyCode::Char(ch)));
+        }
+        process_key(
+            &mut state,
+            &mut interaction,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+        );
+        for ch in ['c', 'd'] {
+            process_key(&mut state, &mut interaction, key(KeyCode::Char(ch)));
+        }
+        assert_eq!(state.input_text, "ab\ncd");
+        assert_eq!(state.input_cursor, 5); // end of "cd"
+
+        // Home moves to start of current line
+        process_key(&mut state, &mut interaction, key(KeyCode::Home));
+        assert_eq!(state.input_cursor, 3); // start of "cd"
+
+        // End moves to end of current line
+        process_key(&mut state, &mut interaction, key(KeyCode::End));
+        assert_eq!(state.input_cursor, 5); // end of "cd"
+    }
+
+    #[test]
+    fn cursor_navigation_up_down() {
+        let mut state = AppState::default();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        state.activate_input("Test".to_string(), "hint".to_string(), None);
+        let mut interaction = Interaction::Multiline { reply: tx };
+
+        // Build "ab\ncd\nef"
+        state.input_text = "ab\ncd\nef".to_string();
+        state.input_cursor = 7; // at 'f' in "ef"
+
+        // Up from "ef" line, col 1 → "cd" line, col 1
+        process_key(&mut state, &mut interaction, key(KeyCode::Up));
+        assert_eq!(state.input_cursor, 4); // 'd' in "cd"
+
+        // Up from "cd" line, col 1 → "ab" line, col 1
+        process_key(&mut state, &mut interaction, key(KeyCode::Up));
+        assert_eq!(state.input_cursor, 1); // 'b' in "ab"
+
+        // Up from first line → stays
+        process_key(&mut state, &mut interaction, key(KeyCode::Up));
+        assert_eq!(state.input_cursor, 1);
+
+        // Down from "ab" line, col 1 → "cd" line, col 1
+        process_key(&mut state, &mut interaction, key(KeyCode::Down));
+        assert_eq!(state.input_cursor, 4);
+
+        // Down from "cd" line, col 1 → "ef" line, col 1
+        process_key(&mut state, &mut interaction, key(KeyCode::Down));
+        assert_eq!(state.input_cursor, 7);
+
+        // Down from last line → stays
+        process_key(&mut state, &mut interaction, key(KeyCode::Down));
+        assert_eq!(state.input_cursor, 7);
+    }
+
+    #[test]
+    fn pageup_pagedown_scroll_agent_during_input() {
+        let mut state = AppState::default();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
         state.agent_text = (0..50)
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
@@ -476,26 +696,44 @@ mod tests {
         // Initially auto-scrolling (None)
         assert!(state.agent_scroll.is_none());
 
-        // Up arrow should pin scroll
-        process_key(&mut state, &mut interaction, key(KeyCode::Up));
+        // PageUp scrolls agent stream
+        process_key(&mut state, &mut interaction, key(KeyCode::PageUp));
         assert!(state.agent_scroll.is_some());
 
-        // PageUp scrolls further up
-        let before = state.agent_scroll.unwrap();
-        process_key(&mut state, &mut interaction, key(KeyCode::PageUp));
-        assert!(state.agent_scroll.unwrap() < before);
-
-        // Down scrolls back
-        let before = state.agent_scroll.unwrap();
-        process_key(&mut state, &mut interaction, key(KeyCode::Down));
-        assert!(state.agent_scroll.unwrap() > before);
-
-        // End resumes auto-scroll
-        process_key(&mut state, &mut interaction, key(KeyCode::End));
-        assert!(state.agent_scroll.is_none());
-
-        // Interaction should still be Multiline (scroll doesn't resolve it)
+        // Interaction should still be Multiline
         assert!(matches!(interaction, Interaction::Multiline { .. }));
+    }
+
+    #[test]
+    fn backspace_at_mid_cursor() {
+        let mut state = AppState::default();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        state.activate_input("Test".to_string(), "hint".to_string(), None);
+        let mut interaction = Interaction::Multiline { reply: tx };
+
+        state.input_text = "abc".to_string();
+        state.input_cursor = 2; // before 'c'
+
+        process_key(&mut state, &mut interaction, key(KeyCode::Backspace));
+        assert_eq!(state.input_text, "ac");
+        assert_eq!(state.input_cursor, 1);
+    }
+
+    #[test]
+    fn delete_key() {
+        let mut state = AppState::default();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        state.activate_input("Test".to_string(), "hint".to_string(), None);
+        let mut interaction = Interaction::Multiline { reply: tx };
+
+        state.input_text = "abc".to_string();
+        state.input_cursor = 1; // before 'b'
+
+        process_key(&mut state, &mut interaction, key(KeyCode::Delete));
+        assert_eq!(state.input_text, "ac");
+        assert_eq!(state.input_cursor, 1);
     }
 
     #[test]
@@ -577,7 +815,7 @@ mod tests {
         process_key(&mut state, &mut interaction, key(KeyCode::Char('a')));
 
         assert!(state.input_choices.is_none());
-        assert_eq!(state.input_current_line, "a");
+        assert_eq!(state.input_text, "a");
         // Interaction should still be Multiline (not resolved)
         assert!(matches!(interaction, Interaction::Multiline { .. }));
         // Input should still be active

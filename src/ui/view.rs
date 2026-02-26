@@ -102,11 +102,13 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
     let input_height: u16 = if !state.input_active {
         3 // inactive: border + hint line + border
     } else if state.input_choices.is_none() {
-        // Active free-text: hint_lines + committed_lines + 4 (border, current line, hint bar, border)
+        // Active free-text: hint_lines + wrapped_text_lines + 3 (border, hint bar, border)
+        // Calculate available inner width for wrapping estimate.
+        let est_inner = body[1].width.saturating_sub(2).max(1) as usize;
         let hint_lines = state.input_hint.lines().count().max(1) as u16;
-        let committed_lines = state.input_lines.len() as u16;
-        let raw = hint_lines + committed_lines + 4;
-        let cap = (right_column_height / 4).max(5);
+        let text_visual_lines = count_wrapped_lines(&state.input_text, est_inner).max(1) as u16;
+        let raw = hint_lines + text_visual_lines + 3; // borders + hint bar
+        let cap = (right_column_height / 2).max(5);
         raw.min(cap)
     } else {
         // Active choice mode: num_choices + 4 (top border, hint line, bottom hint bar, bottom border)
@@ -163,6 +165,8 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
 
     let footer_text = if state.input_active && state.input_choices.is_some() {
         "PgUp/PgDn scroll agent stream · ↑/↓ navigate choices · 1-9 quick-select · Esc exit"
+    } else if state.input_active {
+        "Enter=submit · Shift+Enter=newline · ↑/↓/←/→ navigate · PgUp/PgDn scroll agent"
     } else {
         "↑/↓ scroll agent stream · End resume auto-scroll · --no-ui for plain output"
     };
@@ -184,33 +188,153 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .style(theme::input_inactive());
         frame.render_widget(widget, area);
     } else if state.input_choices.is_none() {
-        // Active free-text: hint, committed lines, current line with cursor, hint bar.
+        // Active free-text: hint, input text with cursor, hint bar.
+        let pane_inner = area.inner(ratatui::layout::Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
+        let inner_w = pane_inner.width.max(1) as usize;
+
         let mut lines: Vec<Line<'_>> = Vec::new();
 
         // Hint text in subdued style.
+        let hint_line_count = state.input_hint.lines().count().max(1);
         for hint_line in state.input_hint.lines() {
             lines.push(Line::styled(hint_line.to_string(), theme::subdued()));
         }
 
-        // Committed lines with '│ ' prefix.
-        for committed in &state.input_lines {
-            lines.push(Line::from(vec![
-                Span::styled("│ ", theme::subdued()),
-                Span::styled(committed.clone(), theme::modal_text()),
-            ]));
+        // Build visual lines by walking through the text with wrapping.
+        // We need to compute cursor row/col for terminal cursor positioning.
+        let mut cursor_row: u16 = 0;
+        let mut cursor_col: u16 = 0;
+        let mut visual_row: u16 = 0;
+
+        // Process each logical line of the input text.
+        for (line_idx, logical_line) in state.input_text.split('\n').enumerate() {
+            let line_start_in_text = if line_idx == 0 {
+                0
+            } else {
+                // Sum of all previous lines + their '\n' chars
+                state
+                    .input_text
+                    .split('\n')
+                    .take(line_idx)
+                    .map(|l| l.len() + 1)
+                    .sum::<usize>()
+            };
+
+            // Does the cursor fall within this logical line?
+            let cursor_in_line = state.input_cursor >= line_start_in_text
+                && state.input_cursor <= line_start_in_text + logical_line.len();
+
+            // Visual wrap this line.
+            if logical_line.is_empty() {
+                if cursor_in_line {
+                    cursor_row = visual_row;
+                    cursor_col = 0;
+                    lines.push(Line::from(vec![
+                        Span::styled(" ", Style::default().fg(Color::Black).bg(Color::White)),
+                        Span::raw(""),
+                    ]));
+                } else {
+                    lines.push(Line::from(""));
+                }
+                visual_row += 1;
+            } else {
+                // Break logical line into visual rows based on inner_w.
+                let mut col = 0;
+                let mut row_start = 0;
+                let cursor_offset_in_line = if cursor_in_line {
+                    state.input_cursor - line_start_in_text
+                } else {
+                    usize::MAX
+                };
+
+                for (byte_idx, _ch) in logical_line.char_indices() {
+                    let ch_w = 1; // assume 1 column per char for simplicity
+                    if col >= inner_w {
+                        // Emit wrapped row.
+                        let row_text = &logical_line[row_start..byte_idx];
+                        if cursor_in_line
+                            && cursor_offset_in_line >= row_start
+                            && cursor_offset_in_line < byte_idx
+                        {
+                            // Cursor is in this row.
+                            let local_off = cursor_offset_in_line - row_start;
+                            cursor_row = visual_row;
+                            cursor_col = local_off as u16;
+                            let (pre, post) = row_text.split_at(local_off);
+                            let (_, post_rest) = if post.is_empty() {
+                                (" ", "")
+                            } else {
+                                let ch = post.chars().next().unwrap();
+                                post.split_at(ch.len_utf8())
+                            };
+                            lines.push(Line::from(vec![
+                                Span::styled(pre.to_string(), theme::modal_text()),
+                                Span::styled(
+                                    if post.is_empty() {
+                                        " ".to_string()
+                                    } else {
+                                        post.chars().next().unwrap().to_string()
+                                    },
+                                    Style::default().fg(Color::Black).bg(Color::White),
+                                ),
+                                Span::styled(post_rest.to_string(), theme::modal_text()),
+                            ]));
+                        } else {
+                            lines.push(Line::styled(row_text.to_string(), theme::modal_text()));
+                        }
+                        visual_row += 1;
+                        row_start = byte_idx;
+                        col = 0;
+                    }
+                    col += ch_w;
+                }
+
+                // Emit the last (or only) row of this logical line.
+                let row_text = &logical_line[row_start..];
+                if cursor_in_line && cursor_offset_in_line >= row_start {
+                    let local_off = cursor_offset_in_line - row_start;
+                    cursor_row = visual_row;
+                    cursor_col = local_off as u16;
+                    if local_off < row_text.len() {
+                        let (pre, post) = row_text.split_at(local_off);
+                        let cursor_ch = post.chars().next().unwrap();
+                        let post_rest = &post[cursor_ch.len_utf8()..];
+                        lines.push(Line::from(vec![
+                            Span::styled(pre.to_string(), theme::modal_text()),
+                            Span::styled(
+                                cursor_ch.to_string(),
+                                Style::default().fg(Color::Black).bg(Color::White),
+                            ),
+                            Span::styled(post_rest.to_string(), theme::modal_text()),
+                        ]));
+                    } else {
+                        // Cursor at end of line.
+                        lines.push(Line::from(vec![
+                            Span::styled(row_text.to_string(), theme::modal_text()),
+                            Span::styled(" ", Style::default().fg(Color::Black).bg(Color::White)),
+                        ]));
+                    }
+                } else {
+                    lines.push(Line::styled(row_text.to_string(), theme::modal_text()));
+                }
+                visual_row += 1;
+            }
         }
 
-        // Current line with '│ ' prefix and '█' cursor block.
-        lines.push(Line::from(vec![
-            Span::styled("│ ", theme::subdued()),
-            Span::styled(state.input_current_line.clone(), theme::modal_text()),
-            Span::styled("█", theme::title()),
-        ]));
+        // If text is empty, show cursor on its own.
+        if state.input_text.is_empty() {
+            cursor_row = 0;
+            cursor_col = 0;
+            // The empty-text line was already handled above (empty split produces one "").
+        }
 
-        // Blank line then hint bar.
+        // Hint bar.
         lines.push(Line::from(""));
         lines.push(Line::styled(
-            "Enter=newline  Empty Enter=submit  Esc=exit  Ctrl+C=interrupt",
+            "Enter=submit  Shift+Enter=newline  Esc=exit  Ctrl+C=interrupt",
             theme::subdued(),
         ));
 
@@ -224,25 +348,14 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             .style(theme::subdued());
         frame.render_widget(widget, area);
 
-        // Cursor positioning: place terminal cursor at the typing position.
-        let pane_inner = area.inner(ratatui::layout::Margin {
-            horizontal: 1,
-            vertical: 1,
-        });
+        // Position terminal cursor for blinking effect.
         if pane_inner.width > 0 && pane_inner.height > 0 {
-            let hint_lines = state.input_hint.lines().count().max(1) as u16;
-            let committed_lines = state.input_lines.len() as u16;
-            let cursor_x = pane_inner
-                .x
-                .saturating_add(2 + state.input_current_line.len() as u16)
-                .min(pane_inner.x + pane_inner.width.saturating_sub(1));
-            let cursor_y = pane_inner.y + hint_lines + committed_lines;
-            if cursor_x >= pane_inner.x
-                && cursor_x < pane_inner.x + pane_inner.width
-                && cursor_y >= pane_inner.y
-                && cursor_y < pane_inner.y + pane_inner.height
+            let abs_cursor_y = pane_inner.y + (hint_line_count as u16) + cursor_row;
+            let abs_cursor_x = pane_inner.x + cursor_col;
+            if abs_cursor_x < pane_inner.x + pane_inner.width
+                && abs_cursor_y < pane_inner.y + pane_inner.height
             {
-                frame.set_cursor_position((cursor_x, cursor_y));
+                frame.set_cursor_position((abs_cursor_x, abs_cursor_y));
             }
         }
     } else {
@@ -283,6 +396,23 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
         frame.render_widget(widget, area);
         // No cursor positioning in choice mode — selection is visual via highlight.
     }
+}
+
+/// Count the total visual lines that `text` occupies when wrapped at `width` columns.
+fn count_wrapped_lines(text: &str, width: usize) -> usize {
+    if text.is_empty() {
+        return 1;
+    }
+    let w = width.max(1);
+    text.split('\n')
+        .map(|line| {
+            if line.is_empty() {
+                1
+            } else {
+                (line.len() + w - 1) / w
+            }
+        })
+        .sum()
 }
 
 fn render_explorer(frame: &mut Frame<'_>, title: &str, lines: &[String], scroll: usize) {
@@ -468,24 +598,14 @@ mod tests {
         state.input_active = true;
         state.input_title = "Interactive Prompt".to_string();
         state.input_hint = "Type your response".to_string();
-        state.input_lines = vec!["hello".to_string(), "world".to_string()];
-        state.input_current_line = "typing".to_string();
+        state.input_text = "hello\nworld\ntyping".to_string();
+        state.input_cursor = state.input_text.len(); // cursor at end
         terminal.draw(|f| render(f, &state)).unwrap();
         let text = buffer_text(terminal.backend().buffer());
-        // Committed lines should appear with '│ ' prefix.
-        assert!(
-            text.contains("│ hello"),
-            "First committed line should appear: {text}"
-        );
-        assert!(
-            text.contains("│ world"),
-            "Second committed line should appear: {text}"
-        );
-        // Current line should show with cursor block.
-        assert!(
-            text.contains("typing█"),
-            "Current line with cursor block should appear: {text}"
-        );
+        // All lines should appear in the input.
+        assert!(text.contains("hello"), "First line should appear: {text}");
+        assert!(text.contains("world"), "Second line should appear: {text}");
+        assert!(text.contains("typing"), "Third line should appear: {text}");
         // Active border title should appear.
         assert!(
             text.contains("Interactive Prompt"),
