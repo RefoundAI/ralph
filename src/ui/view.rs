@@ -271,7 +271,7 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                                 post.split_at(ch.len_utf8())
                             };
                             lines.push(Line::from(vec![
-                                Span::styled(pre.to_string(), theme::modal_text()),
+                                Span::styled(pre.to_string(), theme::input_text()),
                                 Span::styled(
                                     if post.is_empty() {
                                         " ".to_string()
@@ -280,10 +280,10 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                                     },
                                     theme::cursor(),
                                 ),
-                                Span::styled(post_rest.to_string(), theme::modal_text()),
+                                Span::styled(post_rest.to_string(), theme::input_text()),
                             ]));
                         } else {
-                            lines.push(Line::styled(row_text.to_string(), theme::modal_text()));
+                            lines.push(Line::styled(row_text.to_string(), theme::input_text()));
                         }
                         visual_row += 1;
                         row_start = byte_idx;
@@ -303,19 +303,19 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
                         let cursor_ch = post.chars().next().unwrap();
                         let post_rest = &post[cursor_ch.len_utf8()..];
                         lines.push(Line::from(vec![
-                            Span::styled(pre.to_string(), theme::modal_text()),
+                            Span::styled(pre.to_string(), theme::input_text()),
                             Span::styled(cursor_ch.to_string(), theme::cursor()),
-                            Span::styled(post_rest.to_string(), theme::modal_text()),
+                            Span::styled(post_rest.to_string(), theme::input_text()),
                         ]));
                     } else {
                         // Cursor at end of line.
                         lines.push(Line::from(vec![
-                            Span::styled(row_text.to_string(), theme::modal_text()),
+                            Span::styled(row_text.to_string(), theme::input_text()),
                             Span::styled(" ", theme::cursor()),
                         ]));
                     }
                 } else {
-                    lines.push(Line::styled(row_text.to_string(), theme::modal_text()));
+                    lines.push(Line::styled(row_text.to_string(), theme::input_text()));
                 }
                 visual_row += 1;
             }

@@ -32,6 +32,10 @@ pub struct Theme {
     pub modal_text_fg: Color,
     pub input_inactive_fg: Color,
     pub modal_border_fg: Color,
+    /// Foreground for user-typed input text.
+    /// Defaults to `Color::Reset` so the terminal's native foreground is used,
+    /// ensuring readability on both light and dark terminal backgrounds.
+    pub input_text_fg: Color,
     /// Foreground for the cursor block (character under cursor).
     pub cursor_fg: Color,
     /// Background for the cursor block.
@@ -57,6 +61,7 @@ impl Theme {
             modal_text_fg: Color::White,
             input_inactive_fg: Color::DarkGray,
             modal_border_fg: Color::Cyan,
+            input_text_fg: Color::Reset,
             cursor_fg: Color::Black,
             cursor_bg: Color::White,
         }
@@ -80,6 +85,7 @@ impl Theme {
             modal_text_fg: Color::Black,
             input_inactive_fg: Color::Rgb(160, 160, 160),
             modal_border_fg: Color::Blue,
+            input_text_fg: Color::Reset,
             cursor_fg: Color::White,
             cursor_bg: Color::Black,
         }
@@ -152,6 +158,7 @@ pub struct ColorOverrides {
     pub dim_overlay: Option<String>,
     pub modal_text: Option<String>,
     pub input_inactive: Option<String>,
+    pub input_text: Option<String>,
     pub modal_border: Option<String>,
     pub cursor_fg: Option<String>,
     pub cursor_bg: Option<String>,
@@ -172,6 +179,7 @@ impl ColorOverrides {
             ("dim_overlay", &self.dim_overlay),
             ("modal_text", &self.modal_text),
             ("input_inactive", &self.input_inactive),
+            ("input_text", &self.input_text),
             ("modal_border", &self.modal_border),
             ("cursor_fg", &self.cursor_fg),
             ("cursor_bg", &self.cursor_bg),
@@ -206,6 +214,7 @@ impl ColorOverrides {
         set(&mut theme.dim_overlay_fg, &self.dim_overlay);
         set(&mut theme.modal_text_fg, &self.modal_text);
         set(&mut theme.input_inactive_fg, &self.input_inactive);
+        set(&mut theme.input_text_fg, &self.input_text);
         set(&mut theme.modal_border_fg, &self.modal_border);
         set(&mut theme.cursor_fg, &self.cursor_fg);
         set(&mut theme.cursor_bg, &self.cursor_bg);
@@ -344,6 +353,13 @@ pub fn modal_border() -> Style {
         .fg(t.modal_border_fg)
         .bg(t.background)
         .add_modifier(Modifier::BOLD)
+}
+
+/// Style for user-typed input text. Uses `Color::Reset` by default so
+/// the terminal's native foreground is used, readable on any background.
+pub fn input_text() -> Style {
+    let t = active();
+    Style::default().fg(t.input_text_fg).bg(t.background)
 }
 
 /// Style for the cursor block (inverted fg/bg).
@@ -520,6 +536,7 @@ mod tests {
             dim_overlay: Some("#999999".to_string()),
             modal_text: Some("#aaaaaa".to_string()),
             input_inactive: Some("#bbbbbb".to_string()),
+            input_text: Some("#ab1234".to_string()),
             modal_border: Some("#cccccc".to_string()),
             cursor_fg: Some("#dddddd".to_string()),
             cursor_bg: Some("#eeeeee".to_string()),
