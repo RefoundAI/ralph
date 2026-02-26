@@ -97,8 +97,20 @@ fn render_dashboard(frame: &mut Frame<'_>, state: &AppState) {
     );
     frame.render_widget(tools, left[1]);
 
-    // Right column: Agent Stream (fills remaining) over Input (fixed height).
-    let input_height: u16 = 3; // inactive: border + hint line + border
+    // Right column: Agent Stream (fills remaining) over Input (dynamic height).
+    let right_column_height = body[1].height;
+    let input_height: u16 = if !state.input_active {
+        3 // inactive: border + hint line + border
+    } else if state.input_choices.is_none() {
+        // Active free-text: hint_lines + committed_lines + 4 (border, current line, hint bar, border)
+        let hint_lines = state.input_hint.lines().count().max(1) as u16;
+        let committed_lines = state.input_lines.len() as u16;
+        let raw = hint_lines + committed_lines + 4;
+        let cap = (right_column_height / 4).max(5);
+        raw.min(cap)
+    } else {
+        3 // choice mode: handled in Phase 4
+    };
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(input_height)])
@@ -167,17 +179,78 @@ fn render_input_pane(frame: &mut Frame<'_>, area: Rect, state: &AppState) {
             )
             .style(theme::input_inactive());
         frame.render_widget(widget, area);
+    } else if state.input_choices.is_none() {
+        // Active free-text: hint, committed lines, current line with cursor, hint bar.
+        let mut lines: Vec<Line<'_>> = Vec::new();
+
+        // Hint text in subdued style.
+        for hint_line in state.input_hint.lines() {
+            lines.push(Line::styled(hint_line.to_string(), theme::subdued()));
+        }
+
+        // Committed lines with '│ ' prefix.
+        for committed in &state.input_lines {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", theme::subdued()),
+                Span::styled(committed.clone(), theme::modal_text()),
+            ]));
+        }
+
+        // Current line with '│ ' prefix and '█' cursor block.
+        lines.push(Line::from(vec![
+            Span::styled("│ ", theme::subdued()),
+            Span::styled(state.input_current_line.clone(), theme::modal_text()),
+            Span::styled("█", theme::title()),
+        ]));
+
+        // Blank line then hint bar.
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Enter=newline  Empty Enter=submit  Esc=exit  Ctrl+C=interrupt",
+            theme::subdued(),
+        ));
+
+        let widget = Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(state.input_title.as_str())
+                    .borders(Borders::ALL)
+                    .border_style(theme::modal_border()),
+            )
+            .style(theme::subdued());
+        frame.render_widget(widget, area);
+
+        // Cursor positioning: place terminal cursor at the typing position.
+        let pane_inner = area.inner(ratatui::layout::Margin {
+            horizontal: 1,
+            vertical: 1,
+        });
+        if pane_inner.width > 0 && pane_inner.height > 0 {
+            let hint_lines = state.input_hint.lines().count().max(1) as u16;
+            let committed_lines = state.input_lines.len() as u16;
+            let cursor_x = pane_inner
+                .x
+                .saturating_add(2 + state.input_current_line.len() as u16)
+                .min(pane_inner.x + pane_inner.width.saturating_sub(1));
+            let cursor_y = pane_inner.y + hint_lines + committed_lines;
+            if cursor_x >= pane_inner.x
+                && cursor_x < pane_inner.x + pane_inner.width
+                && cursor_y >= pane_inner.y
+                && cursor_y < pane_inner.y + pane_inner.height
+            {
+                frame.set_cursor_position((cursor_x, cursor_y));
+            }
+        }
     } else {
-        // Active rendering is deferred to Phase 3 (free-text) and Phase 4 (choices).
-        // For now, show the inactive view as a placeholder.
+        // Active choice mode: deferred to Phase 4.
         let widget = Paragraph::new(state.input_hint.as_str())
             .block(
                 Block::default()
                     .title(state.input_title.as_str())
                     .borders(Borders::ALL)
-                    .border_style(theme::input_inactive()),
+                    .border_style(theme::modal_border()),
             )
-            .style(theme::input_inactive());
+            .style(theme::subdued());
         frame.render_widget(widget, area);
     }
 }
@@ -354,6 +427,39 @@ mod tests {
         assert!(
             text.contains("Waiting for agent..."),
             "Inactive hint should appear"
+        );
+    }
+
+    #[test]
+    fn dashboard_renders_input_pane_active_freetext() {
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = AppState::default();
+        state.input_active = true;
+        state.input_title = "Interactive Prompt".to_string();
+        state.input_hint = "Type your response".to_string();
+        state.input_lines = vec!["hello".to_string(), "world".to_string()];
+        state.input_current_line = "typing".to_string();
+        terminal.draw(|f| render(f, &state)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        // Committed lines should appear with '│ ' prefix.
+        assert!(
+            text.contains("│ hello"),
+            "First committed line should appear: {text}"
+        );
+        assert!(
+            text.contains("│ world"),
+            "Second committed line should appear: {text}"
+        );
+        // Current line should show with cursor block.
+        assert!(
+            text.contains("typing█"),
+            "Current line with cursor block should appear: {text}"
+        );
+        // Active border title should appear.
+        assert!(
+            text.contains("Interactive Prompt"),
+            "Active input title should appear: {text}"
         );
     }
 
