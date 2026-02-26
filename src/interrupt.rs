@@ -10,25 +10,28 @@ use crate::dag::Task;
 
 /// Global interrupt flag, registered once with SIGINT.
 static INTERRUPT_FLAG: OnceLock<Arc<AtomicBool>> = OnceLock::new();
+/// Separate signal-only flag used for conditional hard shutdown on repeated SIGINT.
+///
+/// This must remain independent from `INTERRUPT_FLAG` because UI Ctrl+C in raw
+/// mode sets `INTERRUPT_FLAG` programmatically; if both behaviors share one
+/// flag, a later real SIGINT can be misinterpreted as a "second" interrupt.
+static SIGINT_SHUTDOWN_FLAG: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 
 /// Register the SIGINT handler. Safe to call multiple times (only the first
 /// call registers; subsequent calls are no-ops).
 pub fn register_signal_handler() -> Result<()> {
-    let flag = INTERRUPT_FLAG.get_or_init(|| Arc::new(AtomicBool::new(false)));
+    let interrupt_flag = INTERRUPT_FLAG.get_or_init(|| Arc::new(AtomicBool::new(false)));
+    let shutdown_flag = SIGINT_SHUTDOWN_FLAG.get_or_init(|| Arc::new(AtomicBool::new(false)));
 
-    // First handler: set the flag on first Ctrl+C
-    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(flag))?;
-
-    // Second handler: if the flag is already set (i.e. second Ctrl+C), force-exit
-    let flag_clone = Arc::clone(flag);
-    unsafe {
-        signal_hook::low_level::register(signal_hook::consts::SIGINT, move || {
-            if flag_clone.load(Ordering::SeqCst) {
-                // Second Ctrl+C — hard exit
-                std::process::exit(130);
-            }
-        })?;
-    }
+    // Force-exit on second real SIGINT while allowing the first to trigger
+    // graceful handling.
+    signal_hook::flag::register_conditional_shutdown(
+        signal_hook::consts::SIGINT,
+        130,
+        Arc::clone(shutdown_flag),
+    )?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(shutdown_flag))?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(interrupt_flag))?;
 
     Ok(())
 }
@@ -46,6 +49,15 @@ pub fn clear_interrupt() {
     if let Some(flag) = INTERRUPT_FLAG.get() {
         flag.store(false, Ordering::SeqCst);
     }
+    if let Some(flag) = SIGINT_SHUTDOWN_FLAG.get() {
+        flag.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Set the interrupt flag programmatically (used by TUI Ctrl+C handling in raw mode).
+pub fn request_interrupt() {
+    let flag = INTERRUPT_FLAG.get_or_init(|| Arc::new(AtomicBool::new(false)));
+    flag.store(true, Ordering::SeqCst);
 }
 
 /// Prompt the user for feedback on the interrupted task.
@@ -53,6 +65,25 @@ pub fn clear_interrupt() {
 /// Returns `Some(feedback)` if the user typed something, or `None` if they
 /// pressed Enter immediately or stdin is not a terminal.
 pub fn prompt_for_feedback(task: &Task) -> Result<Option<String>> {
+    if crate::ui::is_active() {
+        let title = format!("Interrupted {}", task.id);
+        let hint = format!(
+            "{}\n{}\n\nProvide feedback. Empty line submits. Empty buffer skips.",
+            task.id, task.title
+        );
+        return Ok(match crate::ui::prompt_multiline(&title, &hint) {
+            Some(crate::ui::UiPromptResult::Input(text)) => {
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(text)
+                }
+            }
+            Some(crate::ui::UiPromptResult::Exit) | None => None,
+            Some(crate::ui::UiPromptResult::Interrupted) => None,
+        });
+    }
+
     if !std::io::stdin().is_terminal() {
         return Ok(None);
     }
@@ -101,6 +132,13 @@ pub fn append_feedback_to_description(description: &str, feedback: &str, iterati
 /// Returns `true` for "Y" (default) or `false` for "n".
 /// Non-TTY defaults to `false`.
 pub fn should_continue() -> Result<bool> {
+    if crate::ui::is_active() {
+        return Ok(
+            crate::ui::prompt_confirm("Continue Run", "Continue after interruption?", true)
+                .unwrap_or(false),
+        );
+    }
+
     if !std::io::stdin().is_terminal() {
         return Ok(false);
     }
@@ -146,5 +184,21 @@ mod tests {
         // Note: in test context the OnceLock may or may not be initialized
         // depending on test order, so we just verify it doesn't panic
         let _ = is_interrupted();
+    }
+
+    #[test]
+    fn request_interrupt_sets_flag() {
+        clear_interrupt();
+        request_interrupt();
+        assert!(is_interrupted());
+        clear_interrupt();
+    }
+
+    #[test]
+    fn clear_interrupt_resets_signal_shutdown_flag() {
+        let flag = SIGINT_SHUTDOWN_FLAG.get_or_init(|| Arc::new(AtomicBool::new(false)));
+        flag.store(true, Ordering::SeqCst);
+        clear_interrupt();
+        assert!(!flag.load(Ordering::SeqCst));
     }
 }
