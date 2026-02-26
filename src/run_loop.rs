@@ -57,10 +57,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
 
         // Print DAG summary at the start of each iteration
         if config.iteration == 1 {
-            println!(
-                "DAG: {} tasks, {} ready, {} done, {} blocked",
-                counts.total, counts.ready, counts.done, counts.blocked
-            );
+            formatter::print_dag_summary(counts.total, counts.ready, counts.done, counts.blocked);
         }
 
         // Check if DAG is empty
@@ -70,7 +67,12 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
 
         // Check if all tasks are resolved before declaring blocked
         if ready_tasks.is_empty() {
-            if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+            if recover_stuck_target_claim(&config, &db)? {
+                continue;
+            }
+            if scoped_target_resolved(&config, &db, feature_id.as_deref())
+                .context("Failed to check if run target is resolved")?
+            {
                 return Ok(Outcome::Complete);
             }
             return Ok(Outcome::Blocked);
@@ -88,8 +90,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
 
         // Set up logging
         let log_file = logger::setup_log_file();
-        println!("Log will be written to: ");
-        formatter::hyperlink(&log_file);
+        formatter::print_log_location("Log will be written to:", &log_file);
 
         // Build iteration context
         let iteration_context = build_iteration_context(
@@ -101,14 +102,21 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
         )?;
 
         // Run the ACP agent iteration
-        let run_result = acp::connection::run_iteration(&config, &iteration_context)
-            .await
-            .context("Failed to run agent")?;
+        let run_result = match acp::connection::run_iteration(&config, &iteration_context).await {
+            Ok(result) => result,
+            Err(err) => {
+                try_release_claim(&db, &task_id, "agent run error");
+                return Err(err).context("Failed to run agent");
+            }
+        };
 
         // Handle interrupt: prompt for feedback, reset task, optionally continue
         let streaming_result = match run_result {
             RunResult::Interrupted => {
                 formatter::print_interrupted(config.iteration, &task_id, &task.title);
+
+                // Release claim first so interrupt follow-up failures do not strand task state.
+                dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
 
                 // Prompt for feedback
                 let feedback = crate::interrupt::prompt_for_feedback(task)?;
@@ -133,9 +141,6 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                         &format!("User feedback (iteration {}): {}", config.iteration, fb),
                     )?;
                 }
-
-                // Release claim (reset task to pending)
-                dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
 
                 // Journal entry for the interrupted iteration
                 let journal_entry = journal::JournalEntry {
@@ -170,8 +175,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
             RunResult::Completed(r) => r,
         };
 
-        println!("Log available at: ");
-        formatter::hyperlink(&log_file);
+        formatter::print_log_location("Log available at:", &log_file);
 
         // Handle non-EndTurn stop reasons BEFORE sigil processing (FR-6.6).
         //
@@ -188,8 +192,8 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
             }
             StopReason::Cancelled => {
                 // Unexpected: cancellation is normally caught in connection.rs.
-                eprintln!(
-                    "ralph: agent reported Cancelled stop reason (unexpected), releasing task claim"
+                formatter::print_warning(
+                    "ralph: agent reported Cancelled stop reason (unexpected), releasing task claim",
                 );
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
@@ -208,7 +212,9 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     created_at: chrono::Utc::now().to_rfc3339(),
                 };
                 journal::insert_journal_entry(&db, &journal_entry).ok();
-                if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+                if scoped_target_resolved(&config, &db, feature_id.as_deref())
+                    .context("Failed to check if run target is resolved")?
+                {
                     return Ok(Outcome::Complete);
                 }
                 if config.limit_reached() {
@@ -229,10 +235,10 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 continue;
             }
             StopReason::MaxTokens | StopReason::MaxTurnRequests => {
-                eprintln!(
+                formatter::print_warning(&format!(
                     "ralph: agent hit token/turn limit ({:?}), releasing task claim",
                     streaming_result.stop_reason
-                );
+                ));
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
                 let journal_entry = journal::JournalEntry {
@@ -250,7 +256,9 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     created_at: chrono::Utc::now().to_rfc3339(),
                 };
                 journal::insert_journal_entry(&db, &journal_entry).ok();
-                if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+                if scoped_target_resolved(&config, &db, feature_id.as_deref())
+                    .context("Failed to check if run target is resolved")?
+                {
                     return Ok(Outcome::Complete);
                 }
                 if config.limit_reached() {
@@ -271,7 +279,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 continue;
             }
             StopReason::Refusal => {
-                eprintln!("ralph: agent refused the request, failing task");
+                formatter::print_warning("ralph: agent refused the request, failing task");
                 dag::fail_task(&db, &task_id, "Agent refused the request")
                     .context("Failed to fail task")?;
                 formatter::print_task_failed(config.iteration, &task_id);
@@ -290,7 +298,9 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     created_at: chrono::Utc::now().to_rfc3339(),
                 };
                 journal::insert_journal_entry(&db, &journal_entry).ok();
-                if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+                if scoped_target_resolved(&config, &db, feature_id.as_deref())
+                    .context("Failed to check if run target is resolved")?
+                {
                     return Ok(Outcome::Complete);
                 }
                 if config.limit_reached() {
@@ -312,10 +322,10 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
             }
             _ => {
                 // Unknown stop reason (#[non_exhaustive]) — treat as incomplete (blocked).
-                eprintln!(
+                formatter::print_warning(&format!(
                     "ralph: agent stopped with unknown reason: {:?}, releasing task claim",
                     streaming_result.stop_reason
-                );
+                ));
                 dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
                 formatter::print_task_incomplete(config.iteration, &task_id);
                 let journal_entry = journal::JournalEntry {
@@ -333,7 +343,9 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     created_at: chrono::Utc::now().to_rfc3339(),
                 };
                 journal::insert_journal_entry(&db, &journal_entry).ok();
-                if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+                if scoped_target_resolved(&config, &db, feature_id.as_deref())
+                    .context("Failed to check if run target is resolved")?
+                {
                     return Ok(Outcome::Complete);
                 }
                 if config.limit_reached() {
@@ -362,13 +374,15 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
 
         // Check for FAILURE sigil - this short-circuits before DAG update
         if sigils.is_failure {
+            dag::release_claim(&db, &task_id)
+                .context("Failed to release task claim before failure outcome")?;
             return Ok(Outcome::Failure);
         }
 
         // Handle task completion/failure sigils
         if let Some(ref done_id) = sigils.task_done {
             if done_id == &task_id {
-                handle_task_done(
+                if let Err(err) = handle_task_done(
                     &db,
                     &config,
                     task,
@@ -376,23 +390,33 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                     plan_content.as_deref(),
                     &log_file,
                 )
-                .await?;
+                .await
+                {
+                    try_release_claim(&db, &task_id, "task completion handling error");
+                    return Err(err).context("Failed to handle task completion");
+                }
             } else {
-                eprintln!(
+                formatter::print_warning(&format!(
                     "Warning: task-done sigil ID {} does not match assigned task {}",
                     done_id, task_id
-                );
+                ));
+                dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
+                formatter::print_task_incomplete(config.iteration, &task_id);
             }
         } else if let Some(ref failed_id) = sigils.task_failed {
             if failed_id == &task_id {
-                dag::fail_task(&db, &task_id, "Task marked failed by Claude")
-                    .context("Failed to fail task")?;
+                if let Err(err) = dag::fail_task(&db, &task_id, "Task marked failed by Claude") {
+                    try_release_claim(&db, &task_id, "task failure handling error");
+                    return Err(err).context("Failed to fail task");
+                }
                 formatter::print_task_failed(config.iteration, &task_id);
             } else {
-                eprintln!(
+                formatter::print_warning(&format!(
                     "Warning: task-failed sigil ID {} does not match assigned task {}",
                     failed_id, task_id
-                );
+                ));
+                dag::release_claim(&db, &task_id).context("Failed to release task claim")?;
+                formatter::print_task_incomplete(config.iteration, &task_id);
             }
         } else {
             // No sigil - release the claim and treat as incomplete
@@ -407,9 +431,9 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
             let outcome = if let Some(ref t) = updated_task {
                 if t.retry_count > task.retry_count {
                     "retried"
-                } else if sigils.task_done.is_some() {
+                } else if t.status == "done" {
                     "done"
-                } else if sigils.task_failed.is_some() {
+                } else if t.status == "failed" {
                     "failed"
                 } else {
                     "blocked"
@@ -438,7 +462,7 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 created_at: chrono::Utc::now().to_rfc3339(),
             };
             if let Err(e) = journal::insert_journal_entry(&db, &journal_entry) {
-                eprintln!("Warning: failed to write journal entry: {}", e);
+                formatter::print_warning(&format!("Warning: failed to write journal entry: {}", e));
             }
 
             // Write knowledge entries emitted by the agent
@@ -449,17 +473,25 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
                 };
                 match knowledge::write_knowledge_entry(&config.project_root, sigil, feature_name) {
                     Ok(path) => {
-                        eprintln!("  Knowledge entry written: {}", path.display());
+                        formatter::print_info(&format!(
+                            "  Knowledge entry written: {}",
+                            path.display()
+                        ));
                     }
                     Err(e) => {
-                        eprintln!("  Warning: failed to write knowledge entry: {}", e);
+                        formatter::print_warning(&format!(
+                            "  Warning: failed to write knowledge entry: {}",
+                            e
+                        ));
                     }
                 }
             }
         }
 
         // Check if all tasks are resolved
-        if dag::all_resolved(&db).context("Failed to check if all tasks resolved")? {
+        if scoped_target_resolved(&config, &db, feature_id.as_deref())
+            .context("Failed to check if run target is resolved")?
+        {
             return Ok(Outcome::Complete);
         }
 
@@ -491,6 +523,14 @@ pub async fn run(mut config: Config) -> Result<Outcome> {
     }
 }
 
+fn try_release_claim(db: &Db, task_id: &str, context: &str) {
+    if let Err(err) = dag::release_claim(db, task_id) {
+        formatter::print_warning(&format!(
+            "Warning: failed to release task claim for {task_id} after {context}: {err}"
+        ));
+    }
+}
+
 /// Resolve feature context: returns (feature_id, spec_content, plan_content).
 fn resolve_feature_context(
     config: &Config,
@@ -519,6 +559,33 @@ fn resolve_feature_context(
     }
 }
 
+/// If a task-target run has no ready tasks because this run left its own claim
+/// in `in_progress`, release it and continue the loop.
+fn recover_stuck_target_claim(config: &Config, db: &Db) -> Result<bool> {
+    let Some(RunTarget::Task(task_id)) = &config.run_target else {
+        return Ok(false);
+    };
+
+    let task = match dag::get_task(db, task_id) {
+        Ok(task) => task,
+        Err(_) => return Ok(false),
+    };
+
+    if task.status != "in_progress" {
+        return Ok(false);
+    }
+    if task.claimed_by.as_deref() != Some(config.agent_id.as_str()) {
+        return Ok(false);
+    }
+
+    formatter::print_warning(&format!(
+        "Recovering stale in-progress claim for {} from this run.",
+        task_id
+    ));
+    dag::release_claim(db, task_id).context("Failed to release stale claim")?;
+    Ok(true)
+}
+
 /// Get ready tasks scoped to the run target.
 fn get_scoped_ready_tasks(config: &Config, db: &Db, feature_id: Option<&str>) -> Result<Vec<Task>> {
     match &config.run_target {
@@ -536,6 +603,34 @@ fn get_scoped_ready_tasks(config: &Config, db: &Db, feature_id: Option<&str>) ->
             Ok(ready.into_iter().filter(|t| t.id == *task_id).collect())
         }
         None => dag::get_ready_tasks(db).context("Failed to get ready tasks"),
+    }
+}
+
+/// Check whether the current run target is resolved.
+///
+/// - `run <task-id>` resolves when that task is `done` or `failed`, regardless
+///   of unrelated tasks elsewhere in the DAG.
+/// - `run <feature-name>` resolves when all tasks for that feature are `done`/`failed`.
+/// - Unscoped runs resolve when the full DAG is resolved.
+fn scoped_target_resolved(config: &Config, db: &Db, feature_id: Option<&str>) -> Result<bool> {
+    match &config.run_target {
+        Some(RunTarget::Task(task_id)) => {
+            let task = dag::get_task(db, task_id)?;
+            Ok(matches!(task.status.as_str(), "done" | "failed"))
+        }
+        Some(RunTarget::Feature(_)) => {
+            if let Some(fid) = feature_id {
+                let unresolved: i64 = db.conn().query_row(
+                    "SELECT COUNT(*) FROM tasks WHERE feature_id = ? AND status NOT IN ('done', 'failed')",
+                    [fid],
+                    |row| row.get(0),
+                )?;
+                Ok(unresolved == 0)
+            } else {
+                dag::all_resolved(db)
+            }
+        }
+        None => dag::all_resolved(db),
     }
 }
 
@@ -938,5 +1033,167 @@ mod tests {
 
         let reason = get_last_failure_reason(&db, "t-nonexistent").unwrap();
         assert_eq!(reason, "No failure reason recorded");
+    }
+
+    #[test]
+    fn recover_stuck_target_claim_releases_same_agent_claim() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = dag::open_db(temp_file.path().to_str().unwrap()).unwrap();
+        let task = dag::create_task(&db, "recover me", None, None, 0).unwrap();
+        dag::claim_task(&db, &task.id, "agent-test").unwrap();
+
+        let mut config = Config::from_run_args(
+            None,
+            None,
+            None,
+            crate::project::ProjectConfig {
+                root: std::path::PathBuf::from("."),
+                config: crate::project::RalphConfig::default(),
+            },
+            Some(RunTarget::Task(task.id.clone())),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        config.agent_id = "agent-test".to_string();
+
+        let recovered = recover_stuck_target_claim(&config, &db).unwrap();
+        assert!(recovered);
+
+        let updated = dag::get_task(&db, &task.id).unwrap();
+        assert_eq!(updated.status, "pending");
+        assert_eq!(updated.claimed_by, None);
+    }
+
+    #[test]
+    fn recover_stuck_target_claim_ignores_other_agent_claim() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = dag::open_db(temp_file.path().to_str().unwrap()).unwrap();
+        let task = dag::create_task(&db, "stay claimed", None, None, 0).unwrap();
+        dag::claim_task(&db, &task.id, "agent-other").unwrap();
+
+        let mut config = Config::from_run_args(
+            None,
+            None,
+            None,
+            crate::project::ProjectConfig {
+                root: std::path::PathBuf::from("."),
+                config: crate::project::RalphConfig::default(),
+            },
+            Some(RunTarget::Task(task.id.clone())),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+        config.agent_id = "agent-test".to_string();
+
+        let recovered = recover_stuck_target_claim(&config, &db).unwrap();
+        assert!(!recovered);
+
+        let updated = dag::get_task(&db, &task.id).unwrap();
+        assert_eq!(updated.status, "in_progress");
+        assert_eq!(updated.claimed_by.as_deref(), Some("agent-other"));
+    }
+
+    #[test]
+    fn try_release_claim_resets_in_progress_task() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = dag::open_db(temp_file.path().to_str().unwrap()).unwrap();
+        let task = dag::create_task(&db, "release me", None, None, 0).unwrap();
+        dag::claim_task(&db, &task.id, "agent-test").unwrap();
+
+        try_release_claim(&db, &task.id, "test cleanup");
+
+        let updated = dag::get_task(&db, &task.id).unwrap();
+        assert_eq!(updated.status, "pending");
+        assert_eq!(updated.claimed_by, None);
+    }
+
+    #[test]
+    fn scoped_target_resolved_task_ignores_unrelated_pending_tasks() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = dag::open_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        let target = dag::create_task(&db, "target", None, None, 0).unwrap();
+        let _other = dag::create_task(&db, "other pending", None, None, 0).unwrap();
+        dag::claim_task(&db, &target.id, "agent-test").unwrap();
+        dag::complete_task(&db, &target.id).unwrap();
+
+        let config = Config::from_run_args(
+            None,
+            None,
+            None,
+            crate::project::ProjectConfig {
+                root: std::path::PathBuf::from("."),
+                config: crate::project::RalphConfig::default(),
+            },
+            Some(RunTarget::Task(target.id)),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+
+        assert!(scoped_target_resolved(&config, &db, None).unwrap());
+        assert!(!dag::all_resolved(&db).unwrap());
+    }
+
+    #[test]
+    fn scoped_target_resolved_feature_ignores_unrelated_pending_tasks() {
+        let temp_file = tempfile::NamedTempFile::new().unwrap();
+        let db = dag::open_db(temp_file.path().to_str().unwrap()).unwrap();
+
+        let feat_target = feature::create_feature(&db, "feat-target").unwrap();
+        let feat_other = feature::create_feature(&db, "feat-other").unwrap();
+
+        let target_task = dag::create_task_with_feature(
+            &db,
+            dag::CreateTaskParams {
+                title: "target feature task",
+                description: None,
+                parent_id: None,
+                priority: 0,
+                feature_id: Some(&feat_target.id),
+                task_type: "feature",
+                max_retries: 3,
+            },
+        )
+        .unwrap();
+        dag::claim_task(&db, &target_task.id, "agent-test").unwrap();
+        dag::complete_task(&db, &target_task.id).unwrap();
+
+        let _other_task = dag::create_task_with_feature(
+            &db,
+            dag::CreateTaskParams {
+                title: "other feature pending task",
+                description: None,
+                parent_id: None,
+                priority: 0,
+                feature_id: Some(&feat_other.id),
+                task_type: "feature",
+                max_retries: 3,
+            },
+        )
+        .unwrap();
+
+        let config = Config::from_run_args(
+            None,
+            None,
+            None,
+            crate::project::ProjectConfig {
+                root: std::path::PathBuf::from("."),
+                config: crate::project::RalphConfig::default(),
+            },
+            Some(RunTarget::Feature("feat-target".to_string())),
+            None,
+            false,
+            None,
+        )
+        .unwrap();
+
+        assert!(scoped_target_resolved(&config, &db, Some(&feat_target.id)).unwrap());
+        assert!(!dag::all_resolved(&db).unwrap());
     }
 }

@@ -30,7 +30,6 @@ use agent_client_protocol::{
     PromptRequest, ProtocolVersion, StopReason, TextContent,
 };
 use anyhow::{anyhow, Result};
-use colored::Colorize;
 use tokio::task::LocalSet;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -40,6 +39,7 @@ use crate::acp::streaming::flush_stdout;
 use crate::acp::types::{IterationContext, RunResult, StreamingResult};
 use crate::config::Config;
 use crate::interrupt;
+use crate::output::formatter;
 
 /// Inputs for executing one ACP session lifecycle.
 struct RunAcpSessionParams {
@@ -266,7 +266,7 @@ async fn run_acp_session(params: RunAcpSessionParams) -> Result<RunResult> {
             }
 
             // Pass everything else through.
-            eprintln!("{line}");
+            formatter::print_warning(&line);
         }
     });
 
@@ -293,7 +293,7 @@ async fn run_acp_session(params: RunAcpSessionParams) -> Result<RunResult> {
     });
 
     // ── 4. ACP handshake ──────────────────────────────────────────────────
-    print!("{}", "  Connecting...".dimmed());
+    formatter::print_info("  Connecting...");
     flush_stdout();
 
     let fs_caps = FileSystemCapability::new()
@@ -318,7 +318,7 @@ async fn run_acp_session(params: RunAcpSessionParams) -> Result<RunResult> {
             None => anyhow!("ACP initialize failed: {e}"),
         })?;
 
-    print!("{}", " initialized...".dimmed());
+    formatter::print_info("  Initialized ACP client.");
     flush_stdout();
 
     // Attempt authentication if the agent advertises auth methods.
@@ -340,7 +340,7 @@ async fn run_acp_session(params: RunAcpSessionParams) -> Result<RunResult> {
         })?;
 
     let session_id = session_resp.session_id;
-    println!("{}", " ready".dimmed());
+    formatter::print_info("  ACP session ready.");
 
     // ── 6. Send prompt (racing against interrupt) ─────────────────────────
     let prompt_req = PromptRequest::new(
@@ -387,9 +387,9 @@ async fn run_acp_session(params: RunAcpSessionParams) -> Result<RunResult> {
         other => {
             // MaxTokens, MaxTurnRequests, Refusal, or unknown (#[non_exhaustive]).
             // Return as Completed with the stop reason; run_loop will decide how to handle it.
-            eprintln!(
+            formatter::print_warning(&format!(
                 "ralph: agent stopped with non-EndTurn reason: {other:?} — treating as incomplete"
-            );
+            ));
             RunResult::Completed(StreamingResult {
                 full_text,
                 files_modified,
