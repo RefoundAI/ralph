@@ -139,7 +139,7 @@ fn render_dashboard(
                     if el.is_error {
                         theme::error()
                     } else {
-                        theme::info()
+                        theme::subdued()
                     },
                 ),
             ])

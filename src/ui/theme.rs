@@ -546,6 +546,7 @@ pub fn error() -> Style {
     Style::default().fg(t.error_fg).bg(t.background)
 }
 
+#[allow(dead_code)]
 pub fn info() -> Style {
     let t = active();
     Style::default().fg(t.info_fg).bg(t.background)
