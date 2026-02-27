@@ -170,12 +170,10 @@ fn render_dashboard(
     frame.render_widget(events_panel, left_panels[0]);
     areas.events = Some(left_panels[0]);
 
-    // Bottom-left: Tool Activity.
+    // Bottom-left: Tool Activity (chronological, newest at bottom).
     let tool_lines: Vec<Line<'_>> = state
         .tools
         .iter()
-        .rev()
-        .take(80)
         .map(|tl| {
             if tl.name.is_empty() {
                 // Detail line (indented, no tool name).
@@ -197,11 +195,14 @@ fn render_dashboard(
         .collect();
     let tools_inner_h = left_panels[1].height.saturating_sub(2) as usize;
     let tools_max_offset = tool_lines.len().saturating_sub(tools_inner_h);
-    let tools_scroll_clamped = state.tools_scroll.min(tools_max_offset);
-    let tools_title = if tools_scroll_clamped > 0 {
+    let tools_scroll_offset = match state.tools_scroll {
+        Some(pinned) => pinned.min(tools_max_offset),
+        None => tools_max_offset, // auto-scroll to bottom
+    };
+    let tools_title = if state.tools_scroll.is_some() {
         format!(
             "Tool Activity [scroll {}/{}]",
-            tools_scroll_clamped, tools_max_offset
+            tools_scroll_offset, tools_max_offset
         )
     } else {
         "Tool Activity".to_string()
@@ -213,7 +214,7 @@ fn render_dashboard(
                 .borders(Borders::ALL)
                 .border_style(theme::border()),
         )
-        .scroll((tools_scroll_clamped as u16, 0));
+        .scroll((tools_scroll_offset as u16, 0));
     frame.render_widget(tools_panel, left_panels[1]);
     areas.tools = Some(left_panels[1]);
 

@@ -54,8 +54,9 @@ pub struct AppState {
     /// When `None`, Agent Stream auto-scrolls to the bottom.
     /// When `Some(offset)`, the user has pinned the scroll position.
     pub agent_scroll: Option<usize>,
-    /// Scroll offset for the Tool Activity panel.
-    pub tools_scroll: usize,
+    /// When `None`, Tool Activity panel auto-scrolls to the bottom.
+    /// When `Some(offset)`, the user has pinned the scroll position.
+    pub tools_scroll: Option<usize>,
     /// Scroll offset for the Input pane content (when it overflows).
     pub input_scroll: usize,
     pub screen: UiScreen,
@@ -92,7 +93,7 @@ impl Default for AppState {
             agent_line_count: 0,
             agent_revision: 0,
             agent_scroll: None,
-            tools_scroll: 0,
+            tools_scroll: None,
             input_scroll: 0,
             screen: UiScreen::Dashboard,
             modal: None,
@@ -277,14 +278,30 @@ impl AppState {
         self.events_scroll = None;
     }
 
-    /// Scroll the Tool Activity panel up by `n` lines.
+    /// Scroll the Tool Activity panel up by `n` lines. Activates pinned scroll mode.
     pub fn tools_scroll_up(&mut self, n: usize) {
-        self.tools_scroll = self.tools_scroll.saturating_sub(n);
+        let current = self.tools_scroll.unwrap_or(self.tools.len());
+        self.tools_scroll = Some(current.saturating_sub(n));
     }
 
-    /// Scroll the Tool Activity panel down by `n` lines.
+    /// Scroll the Tool Activity panel down by `n` lines, capped at the bottom.
+    /// Reaching the bottom resumes auto-scroll.
     pub fn tools_scroll_down(&mut self, n: usize, max_offset: usize) {
-        self.tools_scroll = (self.tools_scroll + n).min(max_offset);
+        if let Some(offset) = self.tools_scroll {
+            let new = (offset + n).min(max_offset);
+            if new >= max_offset {
+                self.tools_scroll = None;
+            } else {
+                self.tools_scroll = Some(new);
+            }
+        }
+        // If None (auto-scroll), down is a no-op — already at bottom.
+    }
+
+    /// Reset Tool Activity panel to auto-scroll (follow the tail).
+    #[allow(dead_code)]
+    pub fn tools_scroll_to_bottom(&mut self) {
+        self.tools_scroll = None;
     }
 
     /// Scroll the Input pane up by `n` lines.
