@@ -34,6 +34,7 @@ Ralph's design decisions, pitfalls, and constraints are documented in `.ralph/kn
 | Config | `configuration-layers.md` | run args contract, model strategy |
 | Prompts | `system-prompt-construction.md` | sigil parsing, journal, knowledge, roam linking |
 | UI / TUI | `ratatui-ui-runtime.md` | event routing, plain fallback, interactive modals, explorer views |
+| Events | `event-emission-system.md` | auto-transitions, run loop, formatter, theme tokens |
 | Testing | `mock-acp-agent-binary.md` | LocalSet patterns, integration test binary paths |
 
 ### Commonly needed knowledge
@@ -44,6 +45,7 @@ Ralph's design decisions, pitfalls, and constraints are documented in `.ralph/kn
 - **ACP imports**: Read `acp-trait-imports.md` + `acp-schema-types-import-path.md`
 - **Linter reverting your edits**: Read `linter-hook-reverts-files-on-compile-error.md`
 - **Changing UI behavior**: Read `ratatui-ui-runtime.md` + `ui-event-routing-and-plain-fallback.md` + `ui-interactive-modals-and-explorer-views.md`
+- **Adding event emissions**: Read `event-emission-system.md` + `auto-transitions.md`
 - **Adding a destructive command**: Read `feature-delete-command.md` for the confirmation/`--yes` pattern
 
 ## Source Layout
