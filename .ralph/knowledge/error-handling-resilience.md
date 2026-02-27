@@ -48,4 +48,4 @@ If the loop exits abnormally (panic, kill signal, DB error), tasks may be left i
 
 ACP does not report API cost. Journal entries record `cost_usd = 0.0`. Duration tracked by Ralph's own `Instant::now()` timer. Cost line omitted from journal rendering when `cost_usd == 0.0`.
 
-See also: [[Run Loop Lifecycle]], [[ACP Connection Lifecycle]], [[Interrupt Handling]], [[Sigil Parsing]], [[Linter Hook Reverts Files on Compile Error]]
+See also: [[Run Loop Lifecycle]], [[ACP Connection Lifecycle]], [[Interrupt Handling]], [[Sigil Parsing]], [[Linter Hook Reverts Files on Compile Error]], [[Event Emission System]]

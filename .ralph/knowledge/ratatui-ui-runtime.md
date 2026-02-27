@@ -25,9 +25,13 @@ Ralph now has a global TUI runtime in `src/ui/` powered by `ratatui` + `crosster
 
 ## Screens and Interactions
 
-- **Dashboard:** run status + logs + agent stream + tool activity.
+- **Dashboard:** split left column (DAG summary + Events panel) + right column (agent stream + tool activity + input pane). Events panel shows structured orchestration events with category coloring and scroll support.
 - **Explorer:** read-only full-screen list/detail view with keyboard scroll.
 - **Modal:** multiline input + confirm dialogs for interactive flows.
+
+## UiEvent Variants
+
+`StatusLine`, `DagSummary`, `CurrentTask`, `AgentText`, `AgentThinking` (indented thinking), `ToolActivity(ToolLine)`, `ToolDetail` (indented under tool), `IterationDivider { iteration }`, `Event(EventLine)` (structured events for Events panel).
 
 ## Wiring
 

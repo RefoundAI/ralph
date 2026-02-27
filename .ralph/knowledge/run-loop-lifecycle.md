@@ -11,15 +11,16 @@ Core iteration loop in `src/run_loop.rs`. Registers SIGINT handler at startup vi
 1. **Get ready tasks**: `get_scoped_ready_tasks()` filters by feature or task ID
 2. **Check state**: Empty DAG → `NoPlan`, all resolved → `Complete`, no ready tasks → `Blocked`
 3. **Claim task**: Atomically claim one ready task with agent ID
-4. **Build context**: `build_iteration_context()` — parent, blockers, spec/plan ([[Feature Lifecycle]]), retry info, journal (smart-select, [[Journal System]]), knowledge (tag-match + link-expand, [[Knowledge System]])
-5. **Select model**: Strategy picks model — see [[Model Strategy Selection]]
-6. **Run ACP agent**: `run_iteration()` spawns agent via [[ACP Connection Lifecycle]]
-7. **Check interrupt**: If `Interrupted`, enter interrupt flow ([[Interrupt Handling]])
-8. **Parse output**: `extract_sigils()` — see [[Sigil Parsing]]
-9. **Handle FAILURE**: `<promise>FAILURE</promise>` exits immediately, no DAG update
-10. **Handle task sigils**: `<task-done>` / `<task-failed>`, run [[Verification Agent]] if enabled
-11. **Post-iteration**: Write journal entry (always), write knowledge entries (if sigils present)
-12. **Check completion**: All resolved → exit 0, limit reached → exit 0, blocked → exit 2
+4. **Emit events**: Task lifecycle events via `emit_event_info()` — see [[Event Emission System]]
+5. **Build context**: `build_iteration_context()` — parent, blockers, spec/plan ([[Feature Lifecycle]]), retry info, journal (smart-select, [[Journal System]]), knowledge (tag-match + link-expand, [[Knowledge System]])
+6. **Select model**: Strategy picks model — see [[Model Strategy Selection]]
+7. **Run ACP agent**: `run_iteration()` spawns agent via [[ACP Connection Lifecycle]]
+8. **Check interrupt**: If `Interrupted`, enter interrupt flow ([[Interrupt Handling]])
+9. **Parse output**: `extract_sigils()` — see [[Sigil Parsing]]
+10. **Handle FAILURE**: `<promise>FAILURE</promise>` exits immediately, no DAG update
+11. **Handle task sigils**: `<task-done>` / `<task-failed>`, run [[Verification Agent]] if enabled. `set_task_status()` returns `Vec<AutoTransition>` — callers emit each as an event (see [[Auto-Transitions]])
+12. **Post-iteration**: Write journal entry (always), write knowledge entries (if sigils present), emit journal/knowledge events
+13. **Check completion**: All resolved → exit 0, limit reached → exit 0, blocked → exit 2
 
 ## Helper Functions
 
@@ -41,4 +42,4 @@ Non-EndTurn stop reasons (`MaxTokens`, `Refusal`, etc.) release the claim and co
 
 `Blocked` typically means dependency deadlock (remaining tasks depend on failed blockers) or all remaining tasks are claimed by another agent. `NoPlan` means no `feature build` or `task add` has populated the DAG yet.
 
-See also: [[Sigil Parsing]], [[Model Strategy Selection]], [[ACP Connection Lifecycle]], [[Interrupt Handling]], [[Verification Agent]], [[Journal System]], [[Knowledge System]], [[Feature Lifecycle]], [[Auto-Transitions]], [[Error Handling and Resilience]], [[Execution Modes]]
+See also: [[Sigil Parsing]], [[Model Strategy Selection]], [[ACP Connection Lifecycle]], [[Interrupt Handling]], [[Verification Agent]], [[Journal System]], [[Knowledge System]], [[Feature Lifecycle]], [[Auto-Transitions]], [[Error Handling and Resilience]], [[Execution Modes]], [[Event Emission System]]

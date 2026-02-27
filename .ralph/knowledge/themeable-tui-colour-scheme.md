@@ -25,4 +25,4 @@ Color overrides come from `[ui.colors]` in `.ralph.toml` — see [[Custom Color 
 ## Adding New Tokens
 Add field to `Theme` struct, set values in both `Theme::dark()` and `Theme::light()`, add accessor function.
 
-See also: [[Ratatui UI Runtime]], [[Configuration Layers]], [[UI Event Routing and Plain Fallback]], [[Theme Color Addition Checklist]], [[TUI Markdown Rendering Architecture]], [[Custom Color Palettes in .ralph.toml]]
+See also: [[Ratatui UI Runtime]], [[Configuration Layers]], [[UI Event Routing and Plain Fallback]], [[Theme Color Addition Checklist]], [[TUI Markdown Rendering Architecture]], [[Custom Color Palettes in .ralph.toml]], [[Event Emission System]]

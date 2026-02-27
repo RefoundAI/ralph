@@ -17,7 +17,7 @@ title = "magenta"     # named color
 ```
 
 ## Architecture
-- `ColorOverrides` struct in `src/ui/theme.rs` — 24 `Option<String>` fields matching Theme tokens
+- `ColorOverrides` struct in `src/ui/theme.rs` — 35 `Option<String>` fields matching Theme tokens
 - `parse_color()` handles hex (#rrggbb) and 17 named terminal colors (case-insensitive)
 - `ColorOverrides::validate()` checks all set values at config load time
 - `ColorOverrides::apply_to()` merges overrides onto a base Theme (maps short names to `_fg`-suffixed Theme fields, e.g. `border` → `border_fg`)
@@ -27,10 +27,12 @@ title = "magenta"     # named color
 Runs in `load_config()` in `src/project.rs`. Invalid colors produce errors like:
 `invalid color for ui.colors.border: unknown color 'neon-pink': expected a hex value like '#ff5500' or a named color...`
 
-## Token Names (24 total)
+## Token Names (35 total)
 Core: `background`, `border`, `title`, `status`, `subdued`, `info`, `warn`, `error`, `dim_overlay`, `modal_text`, `input_inactive`, `input_text`, `modal_border`, `cursor_fg`, `cursor_bg`
 Markdown rendering: `heading`, `code_span`, `code_block`, `link`, `blockquote`, `list_bullet`, `hr`
 Tool activity: `accent`, `tool_name`
+Sigil rendering: `sigil_body`
+Events panel: `event_task`, `event_iter`, `event_feature`, `event_verify`, `event_review`, `event_journal`, `event_knowledge`, `event_interrupt`, `event_dag`, `event_config`
 
 ## Raw String Gotcha
 Tests with TOML containing hex colors need `r##"..."##` not `r#"..."#` because `"#` terminates r# strings.
