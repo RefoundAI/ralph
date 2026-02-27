@@ -235,16 +235,17 @@ impl AppState {
     }
 
     /// Scroll the Agent Stream panel down by `n` lines, capped at the bottom.
-    /// Passing the total line count allows clamping.
+    /// Reaching the bottom resumes auto-scroll.
     pub fn agent_scroll_down(&mut self, n: usize, max_offset: usize) {
-        let current = self.agent_scroll.unwrap_or(max_offset);
-        let new = (current + n).min(max_offset);
-        // If we've scrolled back to the bottom, resume auto-scroll.
-        if new >= max_offset {
-            self.agent_scroll = None;
-        } else {
-            self.agent_scroll = Some(new);
+        if let Some(offset) = self.agent_scroll {
+            let new = (offset + n).min(max_offset);
+            if new >= max_offset {
+                self.agent_scroll = None;
+            } else {
+                self.agent_scroll = Some(new);
+            }
         }
+        // If None (auto-scroll), down is a no-op — already at bottom.
     }
 
     /// Reset Agent Stream to auto-scroll (follow the tail).

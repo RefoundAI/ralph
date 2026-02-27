@@ -478,10 +478,12 @@ fn process_mouse(
 
     if let Some(ref r) = areas.agent {
         if in_rect(r) {
+            let inner_h = r.height.saturating_sub(2) as usize;
+            let max_offset = state.agent_line_count.saturating_sub(inner_h);
             if scroll_lines < 0 {
                 state.agent_scroll_up((-scroll_lines) as usize);
             } else {
-                state.agent_scroll_down(scroll_lines as usize, state.agent_line_count);
+                state.agent_scroll_down(scroll_lines as usize, max_offset);
             }
             return;
         }
@@ -504,8 +506,7 @@ fn process_mouse(
     if let Some(ref r) = areas.tools {
         if in_rect(r) {
             let inner_h = r.height.saturating_sub(2) as usize;
-            let total = state.tools.len().min(80);
-            let max_offset = total.saturating_sub(inner_h);
+            let max_offset = state.tools.len().saturating_sub(inner_h);
             if scroll_lines < 0 {
                 state.tools_scroll_up((-scroll_lines) as usize);
             } else {
